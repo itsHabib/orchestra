@@ -145,9 +145,19 @@ var planCmd = &cobra.Command{
 				Teams:   make(map[string]workspace.TeamState),
 			}
 
+			// Build a map from team name → tier peers for peer context
+			tierPeersMap := make(map[string][]string)
+			for _, tierNames := range tiers {
+				if len(tierNames) > 1 {
+					for _, name := range tierNames {
+						tierPeersMap[name] = tierNames
+					}
+				}
+			}
+
 			bold.Println("  ═══ Prompts ═══")
 			for _, team := range cfg.Teams {
-				prompt := injection.BuildPrompt(team, cfg.Name, state, cfg)
+				prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, tierPeersMap[team.Name])
 				fmt.Println()
 				bold.Printf("  ─── %s ───\n", team.Name)
 				fmt.Println(prompt)

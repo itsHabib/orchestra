@@ -22,7 +22,7 @@ func TestBuildPrompt_SoloNoDeps(t *testing.T) {
 			},
 		},
 	}
-	prompt := BuildPrompt(team, "my-project", nil, &config.Config{})
+	prompt := BuildPrompt(team, "my-project", nil, &config.Config{}, nil)
 
 	checks := []string{
 		"You are: Backend Lead",
@@ -66,7 +66,7 @@ func TestBuildPrompt_SoloWithDeps(t *testing.T) {
 			{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}},
 		},
 	}
-	prompt := BuildPrompt(team, "proj", state, cfg)
+	prompt := BuildPrompt(team, "proj", state, cfg, nil)
 
 	if !strings.Contains(prompt, "Context from Previous Teams") {
 		t.Error("missing previous teams section")
@@ -92,7 +92,7 @@ func TestBuildPrompt_TeamLeadWithMembers(t *testing.T) {
 			{Summary: "Build DB", Details: "Postgres", Verify: "go test"},
 		},
 	}
-	prompt := BuildPrompt(team, "proj", nil, &config.Config{})
+	prompt := BuildPrompt(team, "proj", nil, &config.Config{}, nil)
 
 	if !strings.Contains(prompt, "You have 2 teammates") {
 		t.Error("missing team count")
@@ -124,7 +124,7 @@ func TestBuildPrompt_TeamLeadWithDeps(t *testing.T) {
 	cfg := &config.Config{
 		Teams: []config.Team{{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}}},
 	}
-	prompt := BuildPrompt(team, "proj", state, cfg)
+	prompt := BuildPrompt(team, "proj", state, cfg, nil)
 
 	if !strings.Contains(prompt, "TeamCreate") {
 		t.Error("missing TeamCreate instruction for team lead")
@@ -142,7 +142,7 @@ func TestBuildPrompt_ContextInjectedVerbatim(t *testing.T) {
 		Context: ctx,
 		Tasks:   []config.Task{{Summary: "t", Details: "d", Verify: "v"}},
 	}
-	prompt := BuildPrompt(team, "p", nil, &config.Config{})
+	prompt := BuildPrompt(team, "p", nil, &config.Config{}, nil)
 	if !strings.Contains(prompt, ctx) {
 		t.Error("context not injected verbatim")
 	}
@@ -159,10 +159,88 @@ func TestBuildPrompt_TaskFieldsPresent(t *testing.T) {
 			Verify:       "go test -v ./...",
 		}},
 	}
-	prompt := BuildPrompt(team, "p", nil, &config.Config{})
+	prompt := BuildPrompt(team, "p", nil, &config.Config{}, nil)
 	for _, s := range []string{"Build the thing", "Detailed requirements here", "src/foo.go, src/bar.go", "`go test -v ./...`"} {
 		if !strings.Contains(prompt, s) {
 			t.Errorf("missing %q in prompt", s)
 		}
+	}
+}
+
+func TestBuildPrompt_WithTierPeers(t *testing.T) {
+	cfg := &config.Config{
+		Teams: []config.Team{
+			{
+				Name: "frontend",
+				Lead: config.Lead{Role: "Frontend Lead"},
+				Tasks: []config.Task{
+					{Summary: "Build dashboard UI"},
+					{Summary: "Implement auth flow"},
+				},
+			},
+			{
+				Name: "backend",
+				Lead: config.Lead{Role: "Backend Lead"},
+				Tasks: []config.Task{
+					{Summary: "Build API"},
+				},
+			},
+			{
+				Name: "devops",
+				Lead: config.Lead{Role: "DevOps Lead"},
+				Tasks: []config.Task{
+					{Summary: "Set up Docker"},
+					{Summary: "Configure GitHub Actions"},
+				},
+			},
+		},
+	}
+
+	tierPeers := []string{"frontend", "backend", "devops"}
+
+	// Test from backend's perspective
+	team := *cfg.TeamByName("backend")
+	prompt := BuildPrompt(team, "proj", nil, cfg, tierPeers)
+
+	// Should contain the section header
+	if !strings.Contains(prompt, "## Parallel Teams (Your Tier)") {
+		t.Error("missing parallel teams section header")
+	}
+	// Should list frontend and devops but not backend itself
+	if !strings.Contains(prompt, "frontend (Frontend Lead): Build dashboard UI, Implement auth flow") {
+		t.Error("missing frontend peer entry")
+	}
+	if !strings.Contains(prompt, "devops (DevOps Lead): Set up Docker, Configure GitHub Actions") {
+		t.Error("missing devops peer entry")
+	}
+	if strings.Contains(prompt, "- backend (Backend Lead)") {
+		t.Error("should not list self as peer")
+	}
+}
+
+func TestBuildPrompt_NilTierPeers(t *testing.T) {
+	team := config.Team{
+		Name: "solo",
+		Lead: config.Lead{Role: "Solo Lead"},
+		Tasks: []config.Task{{Summary: "Do stuff", Verify: "true"}},
+	}
+	prompt := BuildPrompt(team, "proj", nil, &config.Config{}, nil)
+
+	if strings.Contains(prompt, "Parallel Teams") {
+		t.Error("nil tierPeers should not produce parallel teams section")
+	}
+}
+
+func TestBuildPrompt_SingleTierPeer(t *testing.T) {
+	// When a team is alone in its tier, tierPeers has only itself — section should be skipped
+	cfg := &config.Config{
+		Teams: []config.Team{
+			{Name: "only", Lead: config.Lead{Role: "Lead"}, Tasks: []config.Task{{Summary: "Work"}}},
+		},
+	}
+	prompt := BuildPrompt(cfg.Teams[0], "proj", nil, cfg, []string{"only"})
+
+	if strings.Contains(prompt, "Parallel Teams") {
+		t.Error("single-team tier should not produce parallel teams section")
 	}
 }

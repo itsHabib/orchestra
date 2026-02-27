@@ -9,7 +9,8 @@ import (
 )
 
 // BuildPrompt constructs the full prompt for a team's claude -p session.
-func BuildPrompt(team config.Team, projectName string, state *workspace.State, cfg *config.Config) string {
+// tierPeers is the list of all team names in the same tier (including self); pass nil for single-team spawns.
+func BuildPrompt(team config.Team, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are: %s\n", team.Lead.Role)
@@ -39,6 +40,33 @@ func BuildPrompt(team config.Team, projectName string, state *workspace.State, c
 			fmt.Fprintf(&b, "Verify: `%s`\n", task.Verify)
 		}
 		b.WriteString("\n")
+	}
+
+	// Parallel teams (same tier)
+	if len(tierPeers) > 0 {
+		var peers []string
+		for _, p := range tierPeers {
+			if p != team.Name {
+				peers = append(peers, p)
+			}
+		}
+		if len(peers) > 0 {
+			b.WriteString("## Parallel Teams (Your Tier)\n")
+			b.WriteString("These teams are running alongside you in the same tier. Coordinate your work\n")
+			b.WriteString("to avoid conflicts — don't modify files they own, and design compatible interfaces.\n")
+			b.WriteString("If you need to share interface contracts or coordination notes with peers,\n")
+			b.WriteString("write them to .orchestra/shared/ so other teams can reference them.\n\n")
+			for _, p := range peers {
+				if pt := cfg.TeamByName(p); pt != nil {
+					var summaries []string
+					for _, task := range pt.Tasks {
+						summaries = append(summaries, task.Summary)
+					}
+					fmt.Fprintf(&b, "- %s (%s): %s\n", p, pt.Lead.Role, strings.Join(summaries, ", "))
+				}
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	// Team members section (only for team leads)

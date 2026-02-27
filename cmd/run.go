@@ -88,7 +88,13 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 
 				logger.TeamMsg(teamName, "Starting %s", team.Lead.Role)
 
-				prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg)
+				// Compute peer names (other teams in this tier)
+				var peers []string
+				if len(tierNames) > 1 {
+					peers = tierNames
+				}
+
+				prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg, peers)
 				logWriter, _ := ws.LogWriter(teamName)
 				defer logWriter.Close()
 
