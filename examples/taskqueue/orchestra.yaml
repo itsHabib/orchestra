@@ -1,0 +1,424 @@
+name: "taskqueue"
+
+defaults:
+  model: opus
+  max_turns: 200
+  permission_mode: bypassPermissions
+  timeout_minutes: 30
+
+teams:
+  - name: engine
+    lead:
+      role: "Engine Tech Lead — coordinates store, worker pool, and API development"
+    members:
+      - role: "Database & Store Engineer"
+        focus: "SQLite schema, task store CRUD, state machine transitions, store tests"
+      - role: "Worker Pool Engineer"
+        focus: "Concurrent worker pool, retry logic with exponential backoff, graceful shutdown"
+      - role: "API & Server Engineer"
+        focus: "HTTP handlers, routing, middleware, server entrypoint, handler tests"
+    context: |
+      You are building a persistent task queue system in Go.
+
+      Tech stack:
+      - Go 1.22+, standard library net/http
+      - go-chi/chi/v5 for routing
+      - modernc.org/sqlite (pure Go, no CGO)
+      - google/uuid for task IDs
+
+      Project layout:
+        taskqueue/
+        ├── cmd/server/main.go
+        ├── internal/
+        │   ├── store/
+        │   │   ├── store.go           # SQLite task repository
+        │   │   ├── store_test.go
+        │   │   └── errors.go
+        │   ├── model/
+        │   │   └── task.go            # Task struct, status enum, priority
+        │   ├── worker/
+        │   │   ├── pool.go            # Worker pool with configurable concurrency
+        │   │   ├── pool_test.go
+        │   │   └── retry.go           # Exponential backoff retry logic
+        │   ├── handler/
+        │   │   ├── handler.go         # HTTP handlers
+        │   │   ├── handler_test.go
+        │   │   └── types.go           # Request/response structs
+        │   ├── middleware/
+        │   │   └── logging.go
+        │   └── config/
+        │       └── config.go          # Env-based config
+        ├── go.mod
+        └── go.sum
+
+      Task model:
+        type Task struct {
+          ID          string    // UUID
+          Type        string    // e.g. "email", "webhook", "process"
+          Payload     string    // JSON string
+          Status      Status    // pending, running, completed, failed, cancelled
+          Priority    int       // 0 = low, 1 = normal, 2 = high
+          Attempts    int       // number of attempts so far
+          MaxRetries  int       // max retry count (default 3)
+          Result      string    // JSON result or error message
+          CreatedAt   time.Time
+          UpdatedAt   time.Time
+          ScheduledAt time.Time // when to run (for delayed tasks)
+        }
+
+      Status transitions:
+        pending → running → completed
+        pending → running → failed → pending (retry)
+        pending → cancelled
+        running → failed (after max retries exhausted)
+
+      Database schema:
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          payload TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority INTEGER NOT NULL DEFAULT 1,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 3,
+          result TEXT DEFAULT '',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          scheduled_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_tasks_status ON tasks(status);
+        CREATE INDEX idx_tasks_priority_scheduled ON tasks(priority DESC, scheduled_at ASC);
+
+      API design:
+        POST   /api/tasks            — enqueue a new task
+        GET    /api/tasks            — list tasks, supports ?status=X&limit=N&offset=N
+        GET    /api/tasks/{id}       — get task details
+        DELETE /api/tasks/{id}       — cancel a pending task
+        POST   /api/tasks/{id}/retry — retry a failed task
+        GET    /api/stats            — queue stats (counts by status)
+        GET    /health               — {"status": "ok"}
+
+      Worker pool:
+        - Configurable concurrency (WORKER_COUNT env, default 4)
+        - Polls store for pending tasks ordered by priority DESC, scheduled_at ASC
+        - Locks a task by setting status=running atomically
+        - Simulates work by sleeping for a duration from the payload (for testing)
+        - On failure: increment attempts, if attempts < max_retries set pending else set failed
+        - Exponential backoff: delay = min(base * 2^attempt, maxDelay)
+        - Graceful shutdown: finish in-progress tasks on SIGINT/SIGTERM
+
+      Conventions:
+      - All errors return JSON: {"error": "message"}
+      - Server port via PORT env (default 8080)
+      - DB path via DB_PATH env (default ./taskqueue.db)
+      - Run `go mod init taskqueue` first, then `go mod tidy` after all files written
+    tasks:
+      - summary: "Initialize Go module and create task model"
+        details: |
+          Run `go mod init taskqueue`.
+          Create internal/model/task.go with Task struct, Status type (string enum
+          with constants: StatusPending, StatusRunning, StatusCompleted, StatusFailed,
+          StatusCancelled), and Priority constants.
+        deliverables:
+          - "taskqueue/go.mod"
+          - "taskqueue/internal/model/task.go"
+        verify: "cd taskqueue && go build ./internal/model/..."
+
+      - summary: "Implement SQLite store with full task CRUD and state transitions"
+        details: |
+          Create internal/store/store.go with:
+          - NewStore(dsn string) — opens SQLite, creates tasks table + indexes
+          - Create(task model.Task) (model.Task, error) — insert with generated UUID
+          - Get(id string) (model.Task, error)
+          - List(status string, limit, offset int) ([]model.Task, error)
+          - Update(task model.Task) error — updates status, attempts, result, updated_at
+          - Cancel(id string) error — only if status=pending
+          - ClaimNext() (model.Task, error) — atomically claim highest-priority pending task
+          - Stats() (map[string]int, error) — count by status
+          Create internal/store/errors.go with ErrNotFound, ErrInvalidTransition.
+          Write thorough unit tests in store_test.go using :memory: SQLite.
+        deliverables:
+          - "taskqueue/internal/store/store.go"
+          - "taskqueue/internal/store/errors.go"
+          - "taskqueue/internal/store/store_test.go"
+        verify: "cd taskqueue && go test ./internal/store/... -v"
+
+      - summary: "Implement worker pool with retry and backoff"
+        details: |
+          Create internal/worker/retry.go with:
+          - BackoffDuration(attempt int, base, max time.Duration) time.Duration
+          Create internal/worker/pool.go with:
+          - Pool struct with configurable worker count, store reference, poll interval
+          - Start(ctx context.Context) — launches N goroutines
+          - Each worker: polls store.ClaimNext(), processes task, updates result/status
+          - On failure: increments attempts, retries if under max, else marks failed
+          - Respects context cancellation for graceful shutdown
+          - "Processing" a task means: parse payload for "duration_ms" field, sleep that long
+            (this simulates real work and makes testing predictable)
+          Write pool_test.go testing: basic processing, retry on failure, max retries exhausted,
+          graceful shutdown.
+        deliverables:
+          - "taskqueue/internal/worker/pool.go"
+          - "taskqueue/internal/worker/pool_test.go"
+          - "taskqueue/internal/worker/retry.go"
+        verify: "cd taskqueue && go test ./internal/worker/... -v"
+
+      - summary: "Implement HTTP handlers and request/response types"
+        details: |
+          Create internal/handler/types.go with request/response structs.
+          Create internal/handler/handler.go with:
+          - Handler struct taking Store interface
+          - POST /api/tasks — parse JSON, validate, create task
+          - GET /api/tasks — list with status/limit/offset query params
+          - GET /api/tasks/{id} — single task details
+          - DELETE /api/tasks/{id} — cancel task (400 if not pending)
+          - POST /api/tasks/{id}/retry — reset failed task to pending
+          - GET /api/stats — counts per status
+          - GET /health — status ok
+          Write handler_test.go with httptest for each endpoint.
+        deliverables:
+          - "taskqueue/internal/handler/handler.go"
+          - "taskqueue/internal/handler/types.go"
+          - "taskqueue/internal/handler/handler_test.go"
+        verify: "cd taskqueue && go test ./internal/handler/... -v"
+
+      - summary: "Implement config, logging middleware, and server entrypoint"
+        details: |
+          Create internal/config/config.go — reads PORT, DB_PATH, WORKER_COUNT from env.
+          Create internal/middleware/logging.go — logs method, path, status, duration.
+          Create cmd/server/main.go — wires store, worker pool, handlers, starts server,
+          handles graceful shutdown on SIGINT/SIGTERM.
+        deliverables:
+          - "taskqueue/internal/config/config.go"
+          - "taskqueue/internal/middleware/logging.go"
+          - "taskqueue/cmd/server/main.go"
+        verify: "cd taskqueue && go build ./cmd/server"
+
+      - summary: "Run go mod tidy and verify full build + all tests pass"
+        details: |
+          Run `go mod tidy` to resolve all dependencies.
+          Run `go test ./...` to verify all unit tests pass.
+          Run `go build ./cmd/server` to verify the server binary builds.
+          Fix any compilation errors or test failures.
+        deliverables:
+          - "taskqueue/go.sum"
+        verify: "cd taskqueue && go mod tidy && go test ./... && go build ./cmd/server"
+
+  - name: cli
+    lead:
+      role: "CLI Tech Lead — coordinates client library, command implementation, and output formatting"
+    depends_on:
+      - engine
+    members:
+      - role: "HTTP Client Engineer"
+        focus: "Client library wrapping the task queue API, error handling, response types"
+      - role: "CLI Commands Engineer"
+        focus: "CLI entrypoint, subcommand routing, flags, formatted output, help text"
+    context: |
+      You are building a CLI client for the task queue API built by the engine team.
+
+      Tech stack:
+      - Go 1.22+, standard library only (no CLI frameworks)
+      - net/http for API communication
+
+      Project layout — add to the existing taskqueue/ directory:
+        taskqueue/
+        ├── cmd/cli/main.go
+        └── internal/
+            └── client/
+                ├── client.go
+                └── client_test.go
+
+      CLI commands:
+        tq enqueue <type> [--payload '{}'] [--priority N] [--delay 5m]
+            → POST /api/tasks, print task ID and status
+        tq status <id>
+            → GET /api/tasks/{id}, print detailed task info
+        tq list [--status pending|running|failed|completed] [--limit N]
+            → GET /api/tasks, print formatted table
+        tq cancel <id>
+            → DELETE /api/tasks/{id}, confirm cancellation
+        tq retry <id>
+            → POST /api/tasks/{id}/retry, confirm retry
+        tq stats
+            → GET /api/stats, print queue statistics
+        tq help
+            → print usage
+
+      The API (built by engine team):
+        POST   /api/tasks            — {"type":"...","payload":"{}","priority":1,"max_retries":3}
+        GET    /api/tasks            — ?status=X&limit=N&offset=N → JSON array
+        GET    /api/tasks/{id}       — single task JSON
+        DELETE /api/tasks/{id}       — cancel pending task
+        POST   /api/tasks/{id}/retry — retry failed task
+        GET    /api/stats            — {"pending":N,"running":N,...}
+        GET    /health               — {"status":"ok"}
+
+      Conventions:
+      - Client struct takes baseURL (default http://localhost:8080)
+      - Configurable via TQ_API_URL env var
+      - Human-readable output: aligned columns, color-coded status
+      - Respect NO_COLOR env var
+      - Exit code 1 on errors, errors to stderr
+      - Duration formatting: "2m ago", "just now", etc.
+    tasks:
+      - summary: "Implement HTTP client library with full API coverage"
+        details: |
+          Create internal/client/client.go with:
+          - NewClient(baseURL string) *Client
+          - Enqueue(req EnqueueRequest) (Task, error)
+          - Get(id string) (Task, error)
+          - List(status string, limit, offset int) ([]Task, error)
+          - Cancel(id string) error
+          - Retry(id string) (Task, error)
+          - Stats() (map[string]int, error)
+          - Health() error
+          All methods handle HTTP errors, timeouts, connection refused gracefully.
+        deliverables:
+          - "taskqueue/internal/client/client.go"
+        verify: "cd taskqueue && go build ./internal/client/..."
+
+      - summary: "Write comprehensive client tests"
+        details: |
+          Create internal/client/client_test.go with httptest.NewServer mocks:
+          - TestEnqueue, TestGet, TestList, TestCancel, TestRetry, TestStats
+          - TestEnqueueServerError — mock 500, verify error handling
+          - TestConnectionRefused — verify graceful error message
+        deliverables:
+          - "taskqueue/internal/client/client_test.go"
+        verify: "cd taskqueue && go test ./internal/client/... -v"
+
+      - summary: "Implement CLI entrypoint with subcommand routing and flags"
+        details: |
+          Create cmd/cli/main.go with:
+          - Subcommand dispatch via os.Args
+          - enqueue: --payload, --priority, --delay flags
+          - list: --status, --limit flags
+          - status, cancel, retry: take task ID as argument
+          - stats, help: no arguments
+          - Reads TQ_API_URL env var
+        deliverables:
+          - "taskqueue/cmd/cli/main.go"
+        verify: "cd taskqueue && go build ./cmd/cli"
+
+      - summary: "Implement formatted output and status colors"
+        details: |
+          Add to CLI:
+          - Aligned table columns for list output (ID prefix, type, status, priority, attempts, age)
+          - Color-coded status: green=completed, yellow=running, red=failed, gray=cancelled
+          - Respect NO_COLOR env var
+          - Human-friendly time: "just now", "2m ago", "1h ago", "2d ago"
+          - Truncate long payloads with ellipsis in table view
+        deliverables:
+          - "taskqueue/cmd/cli/main.go"
+        verify: "cd taskqueue && go build ./cmd/cli"
+
+      - summary: "Verify full CLI build and all client tests pass"
+        details: |
+          Run go mod tidy, go test ./internal/client/..., go build ./cmd/cli.
+          Fix any issues. Ensure both binaries build: cmd/server and cmd/cli.
+        verify: "cd taskqueue && go mod tidy && go test ./internal/client/... -v && go build ./cmd/cli"
+
+  - name: integration
+    lead:
+      role: "QA Lead — designs test strategy, ensures full coverage across engine and CLI"
+    depends_on:
+      - engine
+      - cli
+    members:
+      - role: "API Integration Tester"
+        focus: "End-to-end API tests — task lifecycle, worker processing, edge cases"
+      - role: "Client & CLI Tester"
+        focus: "Client library against real server, queue stats verification"
+    context: |
+      You are writing integration tests for the task queue built by the engine and cli teams.
+
+      Tech stack:
+      - Go 1.22+ testing package
+      - httptest.NewServer for in-process server
+      - No external test dependencies
+
+      Project layout — add to the existing taskqueue/ directory:
+        taskqueue/
+        └── tests/
+            ├── api_test.go
+            ├── worker_test.go
+            ├── client_test.go
+            └── helpers_test.go
+
+      The existing codebase has:
+      - internal/model — Task struct, Status enum, Priority constants
+      - internal/store — SQLite store (Create, Get, List, Update, Cancel, ClaimNext, Stats)
+      - internal/worker — Worker pool with retry/backoff
+      - internal/handler — HTTP handlers for all API endpoints
+      - internal/client — HTTP client (Enqueue, Get, List, Cancel, Retry, Stats, Health)
+      - internal/config — env-based config
+      - internal/middleware — request logging
+      - cmd/server/main.go, cmd/cli/main.go
+
+      Conventions:
+      - t.TempDir() for SQLite files
+      - Each test gets its own server + store + worker pool
+      - httptest.NewServer wrapping the real handler
+      - Use short durations in payloads (10-50ms) so tests run fast
+      - Test the client package against real httptest servers
+    tasks:
+      - summary: "Create shared test helpers"
+        details: |
+          Create tests/helpers_test.go with:
+          - newTestEnv(t) — creates temp DB, store, handler, httptest.Server, client
+          - newTestEnvWithWorkers(t, count) — same but also starts a worker pool
+          - seedTasks(t, store, tasks) — bulk insert test tasks
+          - All use t.Cleanup for teardown
+        deliverables:
+          - "taskqueue/tests/helpers_test.go"
+        verify: "cd taskqueue && go vet ./tests/..."
+
+      - summary: "Write API lifecycle integration tests"
+        details: |
+          Create tests/api_test.go with:
+          - TestEnqueueAndGet: enqueue task, get by ID, verify fields
+          - TestListByStatus: enqueue mix of tasks, filter by status
+          - TestCancelPendingTask: enqueue, cancel, verify cancelled
+          - TestCancelRunningTaskFails: start worker, cancel running task, expect 400
+          - TestRetryFailedTask: create failed task, retry, verify back to pending
+          - TestQueueStats: seed tasks in various states, verify counts
+          - TestHealthEndpoint: verify 200 + status ok
+        deliverables:
+          - "taskqueue/tests/api_test.go"
+        verify: "cd taskqueue && go test ./tests/... -run 'TestEnqueue|TestList|TestCancel|TestRetry|TestQueue|TestHealth' -v"
+
+      - summary: "Write worker processing integration tests"
+        details: |
+          Create tests/worker_test.go with:
+          - TestWorkerProcessesTask: enqueue task with short duration, start workers, poll until completed
+          - TestWorkerRetriesOnFailure: enqueue task that fails, verify attempts increment
+          - TestWorkerMaxRetriesExhausted: task with max_retries=1, fails twice, verify status=failed
+          - TestWorkerPriorityOrdering: enqueue low + high priority, verify high processed first
+          - TestWorkerGracefulShutdown: start workers, cancel context, verify in-progress tasks finish
+        deliverables:
+          - "taskqueue/tests/worker_test.go"
+        verify: "cd taskqueue && go test ./tests/... -run 'TestWorker' -v -timeout 30s"
+
+      - summary: "Write client library integration tests"
+        details: |
+          Create tests/client_test.go with:
+          - TestClientEnqueue: client.Enqueue against real server
+          - TestClientGetTask: enqueue then client.Get
+          - TestClientListTasks: seed tasks, client.List with filters
+          - TestClientCancelTask: client.Cancel, verify
+          - TestClientRetryTask: client.Retry failed task
+          - TestClientStats: client.Stats against seeded data
+          - TestClientHealth: client.Health
+        deliverables:
+          - "taskqueue/tests/client_test.go"
+        verify: "cd taskqueue && go test ./tests/... -run 'TestClient' -v"
+
+      - summary: "Run full test suite and verify everything builds"
+        details: |
+          Run the complete suite:
+          - go mod tidy
+          - go test ./... -v
+          - go build ./cmd/server && go build ./cmd/cli
+          Fix any failures found.
+        verify: "cd taskqueue && go mod tidy && go test ./... -v && go build ./cmd/server && go build ./cmd/cli"

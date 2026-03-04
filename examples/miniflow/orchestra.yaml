@@ -1,0 +1,502 @@
+name: "miniflow"
+
+defaults:
+  model: opus
+  max_turns: 200
+  permission_mode: bypassPermissions
+  timeout_minutes: 30
+
+teams:
+  - name: engine
+    lead:
+      role: "Workflow Engine Lead — coordinates store, scheduler, executor, and activity runtime"
+    members:
+      - role: "Store & State Engineer"
+        focus: "SQLite persistence for workflows, activities, and event history (event sourcing)"
+      - role: "Scheduler & Executor Engineer"
+        focus: "Workflow scheduler, step executor, DAG resolution, retry/timeout handling"
+      - role: "Activity Runtime Engineer"
+        focus: "Activity worker, heartbeating, input/output serialization, failure handling"
+    context: |
+      You are building miniflow — a minimal workflow execution engine inspired by Temporal.
+      Think of it as "Temporal lite": define workflows as a sequence of activities (steps),
+      execute them durably with retries, and query their state via API.
+
+      Tech stack:
+      - Go 1.22+, standard library net/http
+      - go-chi/chi/v5 for routing
+      - modernc.org/sqlite (pure Go, no CGO)
+      - google/uuid for IDs
+
+      Core concepts:
+        - Workflow: a named sequence of activities to execute in order (defined as JSON)
+        - Activity: a single unit of work (e.g., "send-email", "charge-payment")
+        - WorkflowRun: an instance of a workflow being executed
+        - ActivityRun: an instance of an activity within a workflow run
+        - Event: an immutable log entry (event sourcing) tracking every state change
+
+      Project layout:
+        miniflow/
+        ├── cmd/server/main.go
+        ├── internal/
+        │   ├── model/
+        │   │   ├── workflow.go        # Workflow, Activity definitions
+        │   │   ├── run.go             # WorkflowRun, ActivityRun
+        │   │   └── event.go           # Event types and event log
+        │   ├── store/
+        │   │   ├── store.go           # SQLite persistence
+        │   │   ├── store_test.go
+        │   │   └── errors.go
+        │   ├── executor/
+        │   │   ├── executor.go        # Workflow executor (drives activities in sequence)
+        │   │   ├── executor_test.go
+        │   │   └── scheduler.go       # Polls for pending runs, dispatches to executor
+        │   ├── activity/
+        │   │   ├── worker.go          # Activity worker pool
+        │   │   ├── worker_test.go
+        │   │   ├── registry.go        # Registry of activity handlers
+        │   │   └── builtin.go         # Built-in activities: sleep, http-call, log, noop
+        │   ├── handler/
+        │   │   ├── handler.go
+        │   │   ├── handler_test.go
+        │   │   └── types.go
+        │   └── config/
+        │       └── config.go
+        ├── go.mod
+        └── go.sum
+
+      Database schema:
+        CREATE TABLE workflows (
+          id TEXT PRIMARY KEY,
+          name TEXT UNIQUE NOT NULL,
+          definition TEXT NOT NULL,      -- JSON: ordered list of activity specs
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE workflow_runs (
+          id TEXT PRIMARY KEY,
+          workflow_id TEXT NOT NULL REFERENCES workflows(id),
+          status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed, cancelled
+          input TEXT DEFAULT '{}',
+          output TEXT DEFAULT '',
+          current_step INTEGER DEFAULT 0,
+          started_at DATETIME,
+          completed_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE activity_runs (
+          id TEXT PRIMARY KEY,
+          workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+          activity_name TEXT NOT NULL,
+          step_index INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          input TEXT DEFAULT '{}',
+          output TEXT DEFAULT '',
+          attempts INTEGER DEFAULT 0,
+          max_retries INTEGER DEFAULT 3,
+          timeout_seconds INTEGER DEFAULT 30,
+          started_at DATETIME,
+          completed_at DATETIME,
+          last_heartbeat DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+          activity_run_id TEXT,
+          event_type TEXT NOT NULL,
+          payload TEXT DEFAULT '{}',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+      Event types:
+        workflow_started, workflow_completed, workflow_failed, workflow_cancelled,
+        activity_scheduled, activity_started, activity_completed, activity_failed,
+        activity_retried, activity_timed_out, activity_heartbeat
+
+      Workflow definition JSON format:
+        {
+          "activities": [
+            {
+              "name": "validate-input",
+              "type": "noop",
+              "input_expr": "$.input",
+              "timeout_seconds": 10,
+              "max_retries": 2
+            },
+            {
+              "name": "process-data",
+              "type": "sleep",
+              "input_expr": "$.steps[0].output",
+              "timeout_seconds": 30,
+              "max_retries": 3
+            }
+          ]
+        }
+
+      Built-in activity types (for testing, real activities would be external workers):
+        - noop: immediately succeeds, returns input as output
+        - sleep: sleeps for duration_ms from input, returns {"slept": N}
+        - http-call: makes HTTP GET/POST to URL from input, returns status + body
+        - log: logs a message from input, returns {"logged": true}
+        - fail: always fails (for testing retry logic)
+
+      Execution flow:
+        1. Register a workflow definition (POST /api/workflows)
+        2. Start a run (POST /api/workflows/{name}/run)
+        3. Scheduler picks up pending runs, creates activity_runs for current step
+        4. Activity worker claims activity_run, executes it, writes output
+        5. Executor sees activity completed, advances current_step, creates next activity_run
+        6. Repeat until all steps done → workflow_run status = completed
+        7. On activity failure: retry with backoff up to max_retries, then fail workflow
+
+      API design:
+        POST   /api/workflows              — register a workflow definition
+        GET    /api/workflows              — list all workflow definitions
+        GET    /api/workflows/{name}       — get workflow definition
+        POST   /api/workflows/{name}/run   — start a new workflow run with input
+        GET    /api/runs                   — list runs, ?status=X&limit=N
+        GET    /api/runs/{id}              — get run details + activity statuses
+        GET    /api/runs/{id}/events       — get event history for a run
+        POST   /api/runs/{id}/cancel       — cancel a running workflow
+        GET    /api/stats                  — counts of runs by status
+        GET    /health                     — {"status": "ok"}
+
+      Conventions:
+      - All IDs are UUIDs
+      - All errors return JSON: {"error": "message"}
+      - input_expr uses simple JSONPath-like syntax: $.input = workflow input,
+        $.steps[N].output = output of step N (implement as basic string parsing, not full JSONPath)
+      - Server port via PORT env (default 8080), DB via DB_PATH env (default ./miniflow.db)
+      - Worker count via WORKER_COUNT env (default 4)
+      - Run `go mod init miniflow` first, `go mod tidy` after all files written
+    tasks:
+      - summary: "Initialize Go module and create all model types"
+        details: |
+          Run `go mod init miniflow`.
+          Create internal/model/workflow.go: Workflow struct, ActivitySpec struct (name, type,
+          input_expr, timeout_seconds, max_retries), WorkflowDefinition (activities list).
+          Create internal/model/run.go: WorkflowRun struct, ActivityRun struct, Status constants.
+          Create internal/model/event.go: Event struct, EventType constants for all event types.
+        deliverables:
+          - "miniflow/go.mod"
+          - "miniflow/internal/model/workflow.go"
+          - "miniflow/internal/model/run.go"
+          - "miniflow/internal/model/event.go"
+        verify: "cd miniflow && go build ./internal/model/..."
+
+      - summary: "Implement SQLite store for workflows, runs, activities, and events"
+        details: |
+          Create internal/store/store.go with:
+          - NewStore(dsn) — creates all 4 tables + indexes
+          - CreateWorkflow / GetWorkflow / ListWorkflows
+          - CreateRun / GetRun / ListRuns / UpdateRun
+          - CreateActivityRun / GetActivityRun / UpdateActivityRun / ClaimNextActivity
+          - AppendEvent / ListEvents(runID)
+          - Stats() — counts of runs by status
+          ClaimNextActivity: atomically find oldest pending activity_run and set status=running.
+          Create store errors in errors.go.
+          Write store_test.go with :memory: SQLite — test each method, including ClaimNextActivity
+          concurrency.
+        deliverables:
+          - "miniflow/internal/store/store.go"
+          - "miniflow/internal/store/errors.go"
+          - "miniflow/internal/store/store_test.go"
+        verify: "cd miniflow && go test ./internal/store/... -v"
+
+      - summary: "Implement activity registry and built-in activity handlers"
+        details: |
+          Create internal/activity/registry.go:
+          - Registry struct with Register(name, HandlerFunc) and Execute(name, input) (output, error)
+          - HandlerFunc signature: func(ctx context.Context, input string) (string, error)
+          Create internal/activity/builtin.go with built-in handlers:
+          - noop: return input
+          - sleep: parse duration_ms from input JSON, sleep, return {"slept": N}
+          - http-call: parse url+method from input, make HTTP request, return {"status":N,"body":"..."}
+          - log: parse message from input, log it, return {"logged": true}
+          - fail: always returns an error (for testing retries)
+          Create internal/activity/worker.go:
+          - Worker pool that polls store.ClaimNextActivity
+          - Executes claimed activities via registry
+          - Writes output/status back to store
+          - Sends heartbeats during execution
+          - On failure: increments attempts, sets pending for retry or failed if exhausted
+          Write worker_test.go testing: successful execution, failure+retry, max retries, heartbeat.
+        deliverables:
+          - "miniflow/internal/activity/registry.go"
+          - "miniflow/internal/activity/builtin.go"
+          - "miniflow/internal/activity/worker.go"
+          - "miniflow/internal/activity/worker_test.go"
+        verify: "cd miniflow && go test ./internal/activity/... -v"
+
+      - summary: "Implement workflow executor and scheduler"
+        details: |
+          Create internal/executor/executor.go:
+          - Executor that drives a workflow run through its activity sequence
+          - AdvanceRun(runID): checks current_step, if previous activity completed,
+            creates next activity_run with resolved input (evaluate input_expr),
+            increments current_step. If all steps done, mark run completed.
+          - If activity failed (after all retries), mark run failed.
+          - Simple input_expr resolver: $.input → run's input, $.steps[N].output → Nth activity's output
+          Create internal/executor/scheduler.go:
+          - Scheduler that polls for running workflow_runs and calls AdvanceRun
+          - Also picks up pending runs and starts them (set status=running, create first activity)
+          Write executor_test.go: test happy path progression, failure propagation,
+          input expression resolution.
+        deliverables:
+          - "miniflow/internal/executor/executor.go"
+          - "miniflow/internal/executor/scheduler.go"
+          - "miniflow/internal/executor/executor_test.go"
+        verify: "cd miniflow && go test ./internal/executor/... -v"
+
+      - summary: "Implement HTTP handlers and server entrypoint"
+        details: |
+          Create internal/handler/types.go with request/response types.
+          Create internal/handler/handler.go with all API endpoints listed in the API design.
+          Create internal/config/config.go reading PORT, DB_PATH, WORKER_COUNT.
+          Create cmd/server/main.go wiring store, activity registry+workers, executor scheduler,
+          HTTP handlers. Graceful shutdown on SIGINT/SIGTERM.
+          Write handler_test.go with httptest for each endpoint.
+        deliverables:
+          - "miniflow/internal/handler/handler.go"
+          - "miniflow/internal/handler/types.go"
+          - "miniflow/internal/handler/handler_test.go"
+          - "miniflow/internal/config/config.go"
+          - "miniflow/cmd/server/main.go"
+        verify: "cd miniflow && go test ./internal/handler/... -v && go build ./cmd/server"
+
+      - summary: "Run go mod tidy and verify full build + all tests"
+        details: |
+          Run go mod tidy. Run go test ./... to verify all tests pass.
+          Run go build ./cmd/server. Fix any issues.
+        verify: "cd miniflow && go mod tidy && go test ./... && go build ./cmd/server"
+
+  - name: cli
+    lead:
+      role: "CLI Lead — coordinates client library and CLI command implementation"
+    depends_on:
+      - engine
+    members:
+      - role: "Client Library Engineer"
+        focus: "HTTP client wrapping the miniflow API, error handling, response types, client tests"
+      - role: "CLI Commands Engineer"
+        focus: "CLI entrypoint, subcommands, flags, workflow definition file loading, formatted output"
+    context: |
+      You are building a CLI for miniflow — a workflow execution engine built by the engine team.
+
+      Tech stack:
+      - Go 1.22+, standard library only
+      - net/http for API calls
+
+      Project layout — add to existing miniflow/ directory:
+        miniflow/
+        ├── cmd/cli/main.go
+        └── internal/
+            └── client/
+                ├── client.go
+                └── client_test.go
+
+      CLI commands:
+        miniflow register <workflow.json>
+            → POST /api/workflows, register workflow definition from file
+        miniflow run <workflow-name> [--input '{}']
+            → POST /api/workflows/{name}/run, print run ID
+        miniflow status <run-id>
+            → GET /api/runs/{id}, print run + activity statuses
+        miniflow events <run-id>
+            → GET /api/runs/{id}/events, print event timeline
+        miniflow list [--status X] [--limit N]
+            → GET /api/runs, print table
+        miniflow cancel <run-id>
+            → POST /api/runs/{id}/cancel
+        miniflow workflows
+            → GET /api/workflows, list registered workflows
+        miniflow stats
+            → GET /api/stats
+        miniflow help
+            → usage
+
+      The API (built by engine team):
+        POST   /api/workflows              — register workflow definition
+        GET    /api/workflows              — list workflows
+        GET    /api/workflows/{name}       — get workflow
+        POST   /api/workflows/{name}/run   — start run with input
+        GET    /api/runs                   — list runs ?status=X&limit=N
+        GET    /api/runs/{id}              — run details + activities
+        GET    /api/runs/{id}/events       — event history
+        POST   /api/runs/{id}/cancel       — cancel run
+        GET    /api/stats                  — run counts by status
+        GET    /health                     — health check
+
+      Conventions:
+      - Client baseURL default http://localhost:8080, override via MINIFLOW_API env
+      - Human-readable output, color-coded statuses
+      - Respect NO_COLOR env var
+      - Exit 1 on errors, errors to stderr
+      - Events display as a vertical timeline with timestamps
+    tasks:
+      - summary: "Implement HTTP client library with full API coverage"
+        details: |
+          Create internal/client/client.go with methods for every API endpoint:
+          RegisterWorkflow, GetWorkflow, ListWorkflows, StartRun, GetRun, ListRuns,
+          GetEvents, CancelRun, Stats, Health.
+          All methods return typed responses and handle HTTP errors gracefully.
+        deliverables:
+          - "miniflow/internal/client/client.go"
+        verify: "cd miniflow && go build ./internal/client/..."
+
+      - summary: "Write client library tests"
+        details: |
+          Create internal/client/client_test.go using httptest.NewServer mocks:
+          - Test each client method (register, run, get, list, events, cancel, stats, health)
+          - Test error scenarios (500, 404, connection refused)
+        deliverables:
+          - "miniflow/internal/client/client_test.go"
+        verify: "cd miniflow && go test ./internal/client/... -v"
+
+      - summary: "Implement CLI entrypoint with all subcommands"
+        details: |
+          Create cmd/cli/main.go with:
+          - Subcommand routing via os.Args
+          - register: reads workflow JSON file, posts to API
+          - run: --input flag, prints run ID
+          - status: prints run details with activity status table
+          - events: prints event timeline with timestamps
+          - list: --status, --limit flags, table output
+          - cancel, workflows, stats, help commands
+          - MINIFLOW_API env var for base URL
+        deliverables:
+          - "miniflow/cmd/cli/main.go"
+        verify: "cd miniflow && go build ./cmd/cli"
+
+      - summary: "Implement formatted output for status, events timeline, and tables"
+        details: |
+          Add rich output formatting:
+          - Status view: run info header + activity table (name, status, attempts, duration)
+          - Events timeline: vertical timeline with colored event types and timestamps
+          - List table: aligned columns (ID prefix, workflow, status, step progress, age)
+          - Stats: bar chart-style counts per status
+          - Color coding: green=completed, yellow=running, red=failed, blue=pending, gray=cancelled
+          - Respect NO_COLOR
+        deliverables:
+          - "miniflow/cmd/cli/main.go"
+        verify: "cd miniflow && go build ./cmd/cli"
+
+      - summary: "Verify full CLI build and all client tests"
+        details: |
+          Run go mod tidy, go test ./internal/client/..., go build ./cmd/cli.
+          Verify both server and CLI binaries build together.
+        verify: "cd miniflow && go mod tidy && go test ./internal/client/... -v && go build ./cmd/cli && go build ./cmd/server"
+
+  - name: integration
+    lead:
+      role: "QA Lead — designs end-to-end test strategy covering workflow lifecycle"
+    depends_on:
+      - engine
+      - cli
+    members:
+      - role: "Workflow Lifecycle Tester"
+        focus: "End-to-end workflow execution tests — register, run, activity progression, completion"
+      - role: "Failure & Edge Case Tester"
+        focus: "Retry logic, timeouts, cancellation, concurrent runs, event history verification"
+    context: |
+      You are writing integration tests for miniflow — a workflow execution engine.
+
+      Tech stack:
+      - Go 1.22+ testing
+      - httptest.NewServer
+      - No external test deps
+
+      Project layout — add to existing miniflow/ directory:
+        miniflow/
+        └── tests/
+            ├── helpers_test.go
+            ├── workflow_test.go
+            ├── failure_test.go
+            └── client_test.go
+
+      The existing codebase:
+      - internal/model — Workflow, WorkflowRun, ActivityRun, Event types
+      - internal/store — Full SQLite persistence
+      - internal/activity — Activity registry, built-in handlers (noop, sleep, log, fail), worker pool
+      - internal/executor — Workflow executor + scheduler
+      - internal/handler — All HTTP handlers
+      - internal/client — HTTP client for all endpoints
+      - cmd/server/main.go, cmd/cli/main.go
+
+      Built-in activity types available for testing:
+      - noop: pass-through, instant
+      - sleep: sleeps duration_ms from input
+      - log: logs message, instant
+      - fail: always errors (for retry testing)
+
+      Conventions:
+      - t.TempDir() for SQLite
+      - Each test creates own env (store, handler, workers, httptest server)
+      - Use short durations (10-50ms) for fast tests
+      - Start workers in tests that need activity execution
+      - Poll with short intervals + timeout for async completion checks
+    tasks:
+      - summary: "Create shared test helpers"
+        details: |
+          Create tests/helpers_test.go with:
+          - newTestEnv(t) — store, handler, httptest.Server, client (no workers)
+          - newTestEnvWithWorkers(t, count) — same + activity worker pool running
+          - registerTestWorkflow(t, client, activities) — helper to register a workflow
+          - waitForRunStatus(t, client, runID, status, timeout) — poll until status reached
+          - sampleWorkflow(activitySpecs...) — builds workflow definition JSON
+        deliverables:
+          - "miniflow/tests/helpers_test.go"
+        verify: "cd miniflow && go vet ./tests/..."
+
+      - summary: "Write workflow lifecycle integration tests"
+        details: |
+          Create tests/workflow_test.go with:
+          - TestRegisterAndListWorkflows: register 2 workflows, list, verify both returned
+          - TestSimpleWorkflowExecution: register 2-step noop workflow, run, wait for completed,
+            verify all activities completed in order
+          - TestWorkflowWithDataPassing: register workflow where step 2 uses $.steps[0].output,
+            verify output propagated correctly
+          - TestMultiStepWorkflow: 4-step workflow (noop→sleep→log→noop), verify all complete
+          - TestRunWithInput: start run with custom input JSON, verify activities receive it
+          - TestListRunsFiltered: start multiple runs, filter by status
+        deliverables:
+          - "miniflow/tests/workflow_test.go"
+        verify: "cd miniflow && go test ./tests/... -run 'TestRegister|TestSimple|TestWorkflowWith|TestMulti|TestRunWith|TestListRuns' -v -timeout 30s"
+
+      - summary: "Write failure, retry, and edge case tests"
+        details: |
+          Create tests/failure_test.go with:
+          - TestActivityRetryOnFailure: workflow with "fail" activity (max_retries=2),
+            verify attempts increment, eventually run fails
+          - TestCancelRunningWorkflow: start long-running workflow, cancel mid-execution,
+            verify status=cancelled
+          - TestCancelPendingRun: create run without workers, cancel before execution
+          - TestEventHistory: run a workflow, get events, verify complete event sequence
+            (workflow_started → activity_scheduled → activity_started → activity_completed → ... → workflow_completed)
+          - TestConcurrentRuns: start 3 runs simultaneously, verify all complete independently
+          - TestGetNonexistentRun: verify 404
+        deliverables:
+          - "miniflow/tests/failure_test.go"
+        verify: "cd miniflow && go test ./tests/... -run 'TestActivity|TestCancel|TestEvent|TestConcurrent|TestGetNon' -v -timeout 30s"
+
+      - summary: "Write client library integration tests"
+        details: |
+          Create tests/client_test.go with:
+          - TestClientRegisterWorkflow: client.RegisterWorkflow
+          - TestClientStartAndGetRun: client.StartRun + client.GetRun
+          - TestClientListRuns: seed runs, client.ListRuns with status filter
+          - TestClientGetEvents: run workflow, client.GetEvents, verify timeline
+          - TestClientCancelRun: client.CancelRun
+          - TestClientStats: client.Stats against seeded data
+        deliverables:
+          - "miniflow/tests/client_test.go"
+        verify: "cd miniflow && go test ./tests/... -run 'TestClient' -v -timeout 30s"
+
+      - summary: "Run full test suite and verify everything builds"
+        details: |
+          Run go mod tidy, go test ./... -v, go build ./cmd/server, go build ./cmd/cli.
+          Fix any failures.
+        verify: "cd miniflow && go mod tidy && go test ./... -v -timeout 60s && go build ./cmd/server && go build ./cmd/cli"

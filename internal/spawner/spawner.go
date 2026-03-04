@@ -35,6 +35,12 @@ type streamEvent struct {
 	// system.init
 	SessionID string `json:"session_id"`
 
+	// system.task_progress
+	TaskID        string `json:"task_id,omitempty"`
+	TaskToolUseID string `json:"tool_use_id,omitempty"`
+	Description   string `json:"description,omitempty"`
+	LastToolName  string `json:"last_tool_name,omitempty"`
+
 	// assistant / user — content is nested in message
 	Message struct {
 		Role    string         `json:"role"`
@@ -50,10 +56,12 @@ type streamEvent struct {
 }
 
 type contentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	Name  string          `json:"name,omitempty"`  // tool_use name
-	Input json.RawMessage `json:"input,omitempty"` // tool_use input
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Name      string          `json:"name,omitempty"`  // tool_use name
+	ID        string          `json:"id,omitempty"`    // tool_use id
+	Input     json.RawMessage `json:"input,omitempty"` // tool_use input
+	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result reference
 }
 
 // Spawn runs claude -p with the given prompt, parses stream-json output,
@@ -120,6 +128,9 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 		bashCmds       int
 	)
 
+	// Track teammate names: tool_use_id → description from Agent tool_use events
+	teammateNames := make(map[string]string)
+
 	elapsed := func() string {
 		d := time.Since(startTime).Round(time.Second)
 		m := int(d.Minutes())
@@ -151,6 +162,20 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 					sessionID = evt.SessionID
 				}
 				progress(opts.TeamName, fmt.Sprintf("⏳ session started (%s)", elapsed()))
+			} else if evt.Subtype == "task_progress" && evt.TaskToolUseID != "" {
+				if role, ok := teammateNames[evt.TaskToolUseID]; ok {
+					prefix := fmt.Sprintf("%s:%s", opts.TeamName, role)
+					detail := evt.Description
+					if detail == "" && evt.LastToolName != "" {
+						detail = evt.LastToolName
+					}
+					if detail != "" {
+						if len(detail) > 120 {
+							detail = detail[:120] + "…"
+						}
+						progress(prefix, fmt.Sprintf("   %s", detail))
+					}
+				}
 			}
 
 		case "assistant":
@@ -172,6 +197,15 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 					if c.Name != "" {
 						detail := summarizeToolUse(c.Name, c.Input)
 						progress(opts.TeamName, fmt.Sprintf("🔧 [turn %d | %s] %s", turnCount, elapsed(), detail))
+						// Track teammate names from Agent tool_use
+						if c.Name == "Agent" && c.ID != "" {
+							var agentParams map[string]any
+							if err := json.Unmarshal(c.Input, &agentParams); err == nil {
+								if desc, ok := agentParams["description"].(string); ok && desc != "" {
+									teammateNames[c.ID] = desc
+								}
+							}
+						}
 						// Track stats
 						switch c.Name {
 						case "Write":
@@ -307,6 +341,22 @@ func summarizeToolUse(name string, input json.RawMessage) string {
 	case "TodoWrite", "TaskCreate":
 		if subj, ok := params["subject"].(string); ok {
 			return fmt.Sprintf("%s → %s", name, subj)
+		}
+	case "Agent":
+		if desc, ok := params["description"].(string); ok {
+			bg := ""
+			if b, ok := params["run_in_background"].(bool); ok && b {
+				bg = " (background)"
+			}
+			return fmt.Sprintf("Agent → %s%s", desc, bg)
+		}
+	case "TaskOutput":
+		if taskID, ok := params["task_id"].(string); ok {
+			short := taskID
+			if len(short) > 12 {
+				short = short[:12] + "…"
+			}
+			return fmt.Sprintf("TaskOutput → waiting on %s", short)
 		}
 	}
 
