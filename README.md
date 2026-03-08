@@ -5,7 +5,7 @@ A multi-team autonomous DAG workflow engine for AI agents. Define teams, tasks, 
 What makes it interesting:
 
 - **Parallel team execution** — independent teams run concurrently as separate Claude subprocesses, each with their own role, context, and tasks.
-- **Cross-team message bus** — teams don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time.
+- **[Cross-team message bus](#message-bus)** — teams don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time.
 - **Flexible coordination** — run an autonomous coordinator agent that monitors all teams, relays messages, and resolves conflicts automatically. Or be the coordinator yourself — the message bus is just files on disk, so you can read inboxes and send messages from any Claude Code session (companion skills are included to streamline this).
 - **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later teams build on actual output rather than assumptions.
 
