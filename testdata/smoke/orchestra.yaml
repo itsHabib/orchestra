@@ -1,0 +1,124 @@
+name: "fortune-api"
+
+defaults:
+  model: sonnet
+  max_turns: 30
+  permission_mode: bypassPermissions
+  timeout_minutes: 5
+
+coordinator:
+  enabled: true
+  model: sonnet
+  max_turns: 50
+
+teams:
+  # ── Tier 0 ─────────────────────────────────────────────────────────
+  - name: backend
+    lead:
+      role: "Backend Engineer"
+    context: |
+      PROJECT: fortune-api — a tiny Go HTTP server that serves random fortune cookie quotes.
+      This is a SMALL smoke-test project. Keep it simple. No external dependencies beyond stdlib.
+
+      TECH: Go 1.22, net/http (stdlib only, NO frameworks), embedded fortune data.
+
+      The server should:
+      - Listen on :8080 (configurable via PORT env var)
+      - GET /fortune — returns a random fortune as JSON: {"fortune": "...", "id": 42}
+      - GET /fortune/:id — returns a specific fortune by ID
+      - GET /healthz — returns {"status": "ok"}
+      - Fortunes stored as a Go slice (embedded in code), at least 20 fortunes
+
+      PACKAGE LAYOUT:
+      - cmd/server/main.go — entry point
+      - internal/fortune/store.go — fortune data + random selection
+      - internal/fortune/handler.go — HTTP handlers
+    tasks:
+      - summary: "Build the fortune HTTP server"
+        details: |
+          Create the full server: main.go entry point, fortune store with 20+
+          embedded quotes, HTTP handlers for /fortune, /fortune/:id, /healthz.
+          Use stdlib net/http only. Include a Makefile with build/run/test targets.
+        deliverables:
+          - "cmd/server/main.go"
+          - "internal/fortune/store.go"
+          - "internal/fortune/handler.go"
+          - "Makefile"
+        verify: "go build ./... && go test ./..."
+
+  - name: cli
+    lead:
+      role: "CLI Engineer"
+    context: |
+      PROJECT: fortune-api — a tiny Go project with an HTTP server and CLI client.
+      This is a SMALL smoke-test project. Keep it simple.
+
+      TECH: Go 1.22, stdlib only (net/http for client, flag package for CLI args).
+
+      Build a CLI tool that fetches fortunes from the server:
+      - `fortune-cli` — fetch and display a random fortune
+      - `fortune-cli -id 5` — fetch fortune #5
+      - `fortune-cli -server http://localhost:9090` — custom server URL (default: http://localhost:8080)
+      - Pretty terminal output with the fortune in a box/frame
+
+      PACKAGE LAYOUT:
+      - cmd/cli/main.go — CLI entry point
+      - internal/client/client.go — HTTP client for the fortune API
+    tasks:
+      - summary: "Build the fortune CLI client"
+        details: |
+          Create the CLI tool: flag-based arg parsing, HTTP client that calls
+          GET /fortune or GET /fortune/:id, pretty-printed output. Handle errors
+          gracefully (server down, invalid ID, etc). Stdlib only.
+        deliverables:
+          - "cmd/cli/main.go"
+          - "internal/client/client.go"
+        verify: "go build ./cmd/cli/..."
+
+  # ── Tier 1 ─────────────────────────────────────────────────────────
+  - name: tests
+    depends_on: [backend, cli]
+    lead:
+      role: "QA Engineer"
+    context: |
+      PROJECT: fortune-api — a tiny Go project. You're writing tests for it.
+
+      The project has:
+      - HTTP server at cmd/server/ with handlers in internal/fortune/
+      - CLI client at cmd/cli/ with client in internal/client/
+
+      Write comprehensive tests using Go stdlib testing package + httptest.
+      No external test frameworks needed.
+    tasks:
+      - summary: "Write unit and integration tests"
+        details: |
+          Test the fortune store (random selection, get by ID, out-of-bounds).
+          Test HTTP handlers using httptest (GET /fortune, GET /fortune/:id, GET /healthz).
+          Test the client package against a httptest server.
+          Aim for >80% coverage on internal/ packages.
+        deliverables:
+          - "internal/fortune/store_test.go"
+          - "internal/fortune/handler_test.go"
+          - "internal/client/client_test.go"
+        verify: "go test -race -cover ./..."
+
+  - name: docker
+    depends_on: [backend]
+    lead:
+      role: "DevOps Engineer"
+    context: |
+      PROJECT: fortune-api — a tiny Go HTTP server.
+
+      Dockerize the server with a multi-stage build. Keep it minimal.
+      The server binary is built from cmd/server/main.go.
+    tasks:
+      - summary: "Dockerize the fortune server"
+        details: |
+          Multi-stage Dockerfile: build with golang:1.22-alpine, run on scratch
+          (include ca-certificates). Expose port 8080. Add a docker-compose.yml
+          for easy local running. Add .dockerignore.
+        deliverables:
+          - "Dockerfile"
+          - "docker-compose.yml"
+          - ".dockerignore"
+        verify: "cat Dockerfile && cat docker-compose.yml"
