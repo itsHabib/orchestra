@@ -279,6 +279,78 @@ orchestra run orchestra.yaml
 | `deliverables` | no | Expected output files/directories |
 | `verify` | recommended | Shell command to confirm completion |
 
+### `coordinator`
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Spawn a long-lived coordinator agent alongside tier execution |
+| `model` | defaults.model | Model for the coordinator |
+| `max_turns` | `500` | Max turns for the coordinator session |
+
+When enabled, the coordinator monitors team progress, relays messages between teams, resolves blocking issues, and escalates decisions to `0-human`.
+
+## Message Bus
+
+Orchestra includes a file-based message bus for cross-team communication. Each team gets an inbox at `.orchestra/messages/<N>-<team>/inbox/`. Special inboxes:
+
+- `0-human` — messages directed at the human operator
+- `1-coordinator` — messages for the coordinator agent
+
+### How it works
+
+1. **Inbox polling** — Each team lead starts a `/loop 1m` cron to check their inbox every minute.
+2. **Sending messages** — Teams write JSON files to the recipient's inbox using atomic writes (write `.tmp` then `mv`).
+3. **Bootstrap messages** — When a team starts, the orchestrator seeds its inbox with result summaries from completed dependency teams (message type `bootstrap`).
+4. **Clean exit** — Teams cancel their `/loop` via `CronDelete` when finished so sessions exit cleanly.
+
+### Message types
+
+| Type | When to use |
+|------|-------------|
+| `bootstrap` | Seeded by orchestrator — results from upstream teams |
+| `question` | Need info from a parallel team |
+| `answer` | Reply to a question |
+| `interface-contract` | Sharing an API or interface definition |
+| `status-update` | Major milestone notification |
+| `blocking-issue` | Blocked and need help |
+| `correction` | Course correction from coordinator or human |
+| `gate` | Human-in-the-loop decision required |
+
+### Workspace structure with messaging
+
+```
+.orchestra/
+├── state.json
+├── registry.json
+├── results/<team>.json
+├── logs/<team>.log
+└── messages/
+    ├── 0-human/inbox/
+    ├── 1-coordinator/inbox/
+    ├── 2-<team-a>/inbox/
+    ├── 3-<team-b>/inbox/
+    └── shared/              # Broadcast artifacts (interface contracts, schemas)
+```
+
+### Human-as-Coordinator via Claude Code
+
+You can act as the coordinator yourself from a Claude Code session. Teams send messages to `1-coordinator` and `0-human` — a Claude Code session with the right skills can monitor both inboxes, read messages, and respond in real-time. This is often preferable to enabling the automated coordinator, since you can make judgment calls, answer questions, and course-correct teams as they work.
+
+The workflow:
+
+1. Start the orchestra run (in background or a separate terminal)
+2. In your Claude Code session, run `/loop 3m /orchestra-monitor` to get periodic status updates with team activity, costs, and unread messages
+3. When a message arrives in `1-coordinator` or `0-human`, use `/orchestra-inbox` to read it
+4. Respond with `/orchestra-msg` — answer questions, broadcast decisions, or send corrections to specific teams
+
+Available skills:
+
+| Skill | Description |
+|-------|-------------|
+| `/orchestra-monitor` | Dashboard view — team status, live activity, costs, unread messages. Use with `/loop` for continuous monitoring. |
+| `/orchestra-inbox` | Read messages from any inbox — shows summary table, expands unread messages. |
+| `/orchestra-msg` | Send a message to any team or the coordinator. |
+
 ## Solo vs Team Mode
 
 A team's mode is determined by the presence of `members`:
@@ -309,12 +381,18 @@ Running `orchestra run` creates an `.orchestra/` directory:
 
 ```
 .orchestra/
-├── state.json        # Shared state: per-team status, results, artifacts, cost
-├── registry.json     # Execution metadata: PIDs, session IDs, timestamps
+├── state.json          # Shared state: per-team status, results, artifacts, cost
+├── registry.json       # Execution metadata: PIDs, session IDs, timestamps
+├── coordinator/        # Coordinator decisions log (if enabled)
 ├── results/
-│   └── <team>.json   # Full TeamResult per completed team
-└── logs/
-    └── <team>.log    # Raw NDJSON stream from claude subprocess
+│   └── <team>.json     # Full TeamResult per completed team
+├── logs/
+│   └── <team>.log      # Raw NDJSON stream from claude subprocess
+└── messages/
+    ├── 0-human/inbox/  # Messages for the human operator
+    ├── 1-coordinator/  # Messages for the coordinator agent
+    ├── N-<team>/inbox/ # Per-team inboxes
+    └── shared/         # Broadcast artifacts
 ```
 
 All writes are atomic (write to `.tmp`, then `os.Rename`). Concurrent access within a single `orchestra run` process is protected by a mutex.
