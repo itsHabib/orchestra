@@ -1,6 +1,13 @@
 # Orchestra
 
-A Go CLI that orchestrates large software projects across multiple AI agent teams. Describe your teams, tasks, and dependencies in a single `orchestra.yaml`, then run `orchestra run`. It builds a DAG, executes teams tier-by-tier (parallel within a tier, sequential across tiers), and flows results forward so later teams get full context of what earlier teams built.
+A multi-team autonomous DAG workflow engine for AI agents. Define teams, tasks, and dependencies in a single `orchestra.yaml` — Orchestra builds a dependency graph, executes teams tier-by-tier (parallel within a tier, sequential across tiers), and flows results forward so downstream teams get full context of what upstream teams built.
+
+What makes it interesting:
+
+- **Parallel team execution** — independent teams run concurrently as separate Claude subprocesses, each with their own role, context, and tasks.
+- **Cross-team message bus** — teams don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time.
+- **Flexible coordination** — run an autonomous coordinator agent that monitors all teams, relays messages, and resolves conflicts automatically. Or be the coordinator yourself — the message bus is just files on disk, so you can read inboxes and send messages from any Claude Code session (companion skills are included to streamline this).
+- **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later teams build on actual output rather than assumptions.
 
 ```
 orchestra run project.yaml
@@ -240,6 +247,7 @@ orchestra run orchestra.yaml
 |-------|----------|-------------|
 | `name` | yes | Project name |
 | `defaults` | no | Default settings applied to all teams |
+| `coordinator` | no | Coordinator agent settings (see below) |
 | `teams` | yes | List of team definitions |
 
 ### `defaults`
@@ -291,65 +299,76 @@ When enabled, the coordinator monitors team progress, relays messages between te
 
 ## Message Bus
 
-Orchestra includes a file-based message bus for cross-team communication. Each team gets an inbox at `.orchestra/messages/<N>-<team>/inbox/`. Special inboxes:
+Orchestra includes a file-based message bus for cross-team communication during execution.
 
-- `0-human` — messages directed at the human operator
-- `1-coordinator` — messages for the coordinator agent
+### Inbox conventions
 
-### How it works
+Every participant gets a numbered inbox under `.orchestra/messages/`. The number prefix determines sort order and establishes two reserved slots:
 
-1. **Inbox polling** — Each team lead starts a `/loop 1m` cron to check their inbox every minute.
-2. **Sending messages** — Teams write JSON files to the recipient's inbox using atomic writes (write `.tmp` then `mv`).
-3. **Bootstrap messages** — When a team starts, the orchestrator seeds its inbox with result summaries from completed dependency teams (message type `bootstrap`).
-4. **Clean exit** — Teams cancel their `/loop` via `CronDelete` when finished so sessions exit cleanly.
+| Inbox | Purpose |
+|-------|---------|
+| `0-human/inbox/` | Messages for the human operator. Teams send `gate` or `blocking-issue` messages here when they need a human decision. Nothing reads this inbox automatically today — it's a hook point for future human-in-the-loop workflows (approval gates, escalation policies, etc). |
+| `1-coordinator/inbox/` | Messages for the coordinator agent (if enabled) or for a human acting as coordinator. The coordinator polls this inbox and responds to cross-team questions, blockers, and status updates. |
+| `N-<team>/inbox/` | Per-team inboxes, numbered by tier order (e.g. `2-backend`, `3-frontend`). Teams poll their own inbox and respond to incoming messages. |
+
+The `shared/` directory holds broadcast artifacts like interface contracts and schemas that any team can read.
+
+### Anatomy of a message
+
+Messages are JSON files written to a recipient's inbox. Each message has:
+
+```json
+{
+  "id": "1736941800000-2-backend-interface-contract",
+  "sender": "2-backend",
+  "recipient": "3-frontend",
+  "type": "interface-contract",
+  "subject": "User API endpoints",
+  "content": "GET /api/users, POST /api/users, ...",
+  "reply_to": "",
+  "priority": "normal",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "read": false
+}
+```
+
+`id` is auto-generated from `<timestamp_ms>-<sender>-<type>`. `reply_to` threads a response to a previous message ID. `read` is marked `true` by the recipient after processing. Teams write messages atomically (write `.tmp` then `mv`) to avoid partial reads.
 
 ### Message types
 
 | Type | When to use |
 |------|-------------|
-| `bootstrap` | Seeded by orchestrator — results from upstream teams |
+| `bootstrap` | Seeded by orchestrator — result summaries from upstream teams |
 | `question` | Need info from a parallel team |
 | `answer` | Reply to a question |
 | `interface-contract` | Sharing an API or interface definition |
 | `status-update` | Major milestone notification |
 | `blocking-issue` | Blocked and need help |
 | `correction` | Course correction from coordinator or human |
-| `gate` | Human-in-the-loop decision required |
+| `gate` | Human-in-the-loop decision required (sent to `0-human`) |
 
-### Workspace structure with messaging
+### How it works at runtime
 
-```
-.orchestra/
-├── state.json
-├── registry.json
-├── results/<team>.json
-├── logs/<team>.log
-└── messages/
-    ├── 0-human/inbox/
-    ├── 1-coordinator/inbox/
-    ├── 2-<team-a>/inbox/
-    ├── 3-<team-b>/inbox/
-    └── shared/              # Broadcast artifacts (interface contracts, schemas)
-```
+1. **Bootstrap** — When a team starts, the orchestrator seeds its inbox with result summaries from completed dependency teams.
+2. **Inbox polling** — Each team lead starts a background cron to check their inbox periodically.
+3. **Sending messages** — Teams write JSON files to the recipient's inbox directory.
+4. **Clean exit** — Teams cancel their polling cron when finished so sessions exit cleanly.
 
-### Human-as-Coordinator via Claude Code
+### Coordinating an orchestra run
 
-You can act as the coordinator yourself from a Claude Code session. Teams send messages to `1-coordinator` and `0-human` — a Claude Code session with the right skills can monitor both inboxes, read messages, and respond in real-time. This is often preferable to enabling the automated coordinator, since you can make judgment calls, answer questions, and course-correct teams as they work.
+There are two ways to coordinate:
 
-The workflow:
+**Autonomous coordinator** — Enable `coordinator.enabled: true` in your config. A long-lived coordinator agent spawns alongside the teams, monitors all inboxes, relays messages, resolves blockers, and escalates to `0-human` when needed.
 
-1. Start the orchestra run (in background or a separate terminal)
-2. In your Claude Code session, run `/loop 3m /orchestra-monitor` to get periodic status updates with team activity, costs, and unread messages
-3. When a message arrives in `1-coordinator` or `0-human`, use `/orchestra-inbox` to read it
-4. Respond with `/orchestra-msg` — answer questions, broadcast decisions, or send corrections to specific teams
-
-Available skills:
+**Human-as-coordinator** — Be the coordinator yourself from a Claude Code session. Since the message bus is just files on disk, you can read and write to any inbox directly. Companion skills streamline this:
 
 | Skill | Description |
 |-------|-------------|
-| `/orchestra-monitor` | Dashboard view — team status, live activity, costs, unread messages. Use with `/loop` for continuous monitoring. |
-| `/orchestra-inbox` | Read messages from any inbox — shows summary table, expands unread messages. |
+| `/orchestra-monitor` | Dashboard view — team status, live activity, costs, unread messages. Run with `/loop` for continuous monitoring. |
+| `/orchestra-inbox` | Read messages from any inbox — summary table with expanded unread messages. |
 | `/orchestra-msg` | Send a message to any team or the coordinator. |
+
+This is often preferable to the autonomous coordinator since you can make judgment calls and course-correct in real time.
 
 ## Solo vs Team Mode
 
@@ -416,9 +435,7 @@ go test -race ./...    # With race detector
 go test -v ./e2e_test.go  # End-to-end tests only
 ```
 
-The test suite includes:
-- **46 unit tests** across config, DAG, injection, spawner, and workspace packages
-- **2 end-to-end tests** that build the real binary and use a mock `claude` script emitting valid stream-json
+The test suite covers config, DAG, injection, spawner, and workspace packages with unit tests, plus end-to-end tests that build the real binary and use a mock `claude` script emitting valid stream-json.
 
 The spawner is tested without mocks or interfaces — `SpawnOpts.Command` points at a shell script that emits realistic NDJSON, exercising the real code path.
 
