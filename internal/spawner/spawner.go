@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"strconv"
 	"time"
 
@@ -98,6 +100,15 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 	}
 
 	proc := exec.CommandContext(ctx, cmd, args...)
+
+	// Strip CLAUDECODE env var so child claude processes don't refuse to start
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			env = append(env, e)
+		}
+	}
+	proc.Env = env
 
 	stdout, err := proc.StdoutPipe()
 	if err != nil {

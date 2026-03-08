@@ -112,6 +112,11 @@ func BuildPrompt(team config.Team, projectName string, state *workspace.State, c
 		b.WriteString("## Message Bus (Cross-Team Communication)\n")
 		fmt.Fprintf(&b, "Your inbox: `%s/%s/inbox/`\n\n", messagesPath, inboxFolder)
 
+		b.WriteString("### Bootstrap messages\n")
+		b.WriteString("Before starting work, check your inbox for `bootstrap` messages from the orchestrator.\n")
+		b.WriteString("These contain results and context from teams that ran before you.\n")
+		fmt.Fprintf(&b, "```\nls %s/%s/inbox/ 2>/dev/null && for f in %s/%s/inbox/*.json; do cat \"$f\" 2>/dev/null; done\n```\n\n", messagesPath, inboxFolder, messagesPath, inboxFolder)
+
 		b.WriteString("### Inbox monitoring (team lead only — do NOT pass this to teammates)\n")
 		b.WriteString("Start a `/loop` to check your inbox every 1 minute. Do this early in your session:\n")
 		b.WriteString("```\n")
@@ -163,11 +168,15 @@ func BuildPrompt(team config.Team, projectName string, state *workspace.State, c
 5. As results come back, run each task's verify command yourself to confirm
 6. If a verify fails, send the teammate specific feedback and have them fix it
 7. When all tasks pass verification, provide your summary
+8. IMPORTANT: When you are completely done, cancel your /loop inbox monitor
+   using CronDelete with the job ID from step 1. This allows your session to exit cleanly.
 `)
 	} else {
 		b.WriteString(`Work through your tasks in order. After completing each task, run its
 verify command to confirm it works. When all tasks are done, provide a
 brief summary of what you accomplished and list all files created/modified.
+IMPORTANT: When you are completely done, cancel your /loop inbox monitor
+using CronDelete with the job ID. This allows your session to exit cleanly.
 `)
 	}
 

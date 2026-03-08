@@ -133,6 +133,35 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 
 				logger.TeamMsg(teamName, "Starting %s", team.Lead.Role)
 
+				// Seed inbox with bootstrap messages from completed dependencies
+				if len(team.DependsOn) > 0 {
+					for _, dep := range team.DependsOn {
+						depResult, err := ws.ReadResult(dep)
+						if err != nil || depResult == nil {
+							continue
+						}
+						summary := depResult.Result
+						if summary == "" {
+							if ts, ok := state.Teams[dep]; ok {
+								summary = ts.ResultSummary
+							}
+						}
+						if summary == "" {
+							continue
+						}
+						bus.Send(&messaging.Message{
+							ID:        fmt.Sprintf("bootstrap-%s-to-%s", dep, teamName),
+							Sender:    "orchestrator",
+							Recipient: inboxLookup[teamName],
+							Type:      messaging.MsgBootstrap,
+							Subject:   fmt.Sprintf("Results from %s (completed)", dep),
+							Content:   summary,
+							Timestamp: time.Now(),
+							Read:      false,
+						})
+					}
+				}
+
 				// Compute peer names (other teams in this tier)
 				var peers []string
 				if len(tierNames) > 1 {

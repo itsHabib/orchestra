@@ -14,7 +14,8 @@ const (
 	MsgBlockingIssue    MessageType = "blocking-issue"
 	MsgAck              MessageType = "ack"
 	MsgBroadcast        MessageType = "broadcast"
-	MsgGate             MessageType = "gate" // human-in-the-loop decision required
+	MsgGate             MessageType = "gate"      // human-in-the-loop decision required
+	MsgBootstrap        MessageType = "bootstrap" // seeded by orchestrator before team starts
 )
 
 // Message is the JSON structure for all inter-agent messages.
