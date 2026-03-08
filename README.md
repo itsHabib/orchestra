@@ -166,6 +166,7 @@ defaults:
   max_turns: 200
   permission_mode: acceptEdits
   timeout_minutes: 45
+  inbox_poll_interval: 5m
 
 teams:
   - name: backend
@@ -229,7 +230,7 @@ orchestra run orchestra.yaml
 | `orchestra init <config>` | Validate config and create `.orchestra/` workspace directory. |
 | `orchestra run <config>` | Full orchestration: build DAG, execute all tiers, print summary. |
 | `orchestra spawn <config> --team <name>` | Spawn a single named team. Prints raw `TeamResult` JSON. |
-| `orchestra status [--workspace <path>]` | Print workspace status table (team, status, cost, duration). |
+| `orchestra status [--workspace <path>]` | Print workspace status table (team, status, tokens, duration). Shows summary counts, live duration for running teams, and token totals. |
 | `orchestra plan <config>` | Preview DAG execution order without running anything. |
 
 ### `plan` flags
@@ -258,6 +259,7 @@ orchestra run orchestra.yaml
 | `max_turns` | `200` | Max agentic turns per team |
 | `permission_mode` | `acceptEdits` | Permission mode for claude subprocess |
 | `timeout_minutes` | `30` | Timeout per team spawn |
+| `inbox_poll_interval` | `5m` | How often team leads poll their inbox for messages (Go duration format, e.g. `2m`, `30s`) |
 
 ### `teams[]`
 
@@ -295,7 +297,11 @@ orchestra run orchestra.yaml
 | `model` | defaults.model | Model for the coordinator |
 | `max_turns` | `500` | Max turns for the coordinator session |
 
-When enabled, the coordinator monitors team progress, relays messages between teams, resolves blocking issues, and escalates decisions to `0-human`.
+When enabled, the coordinator monitors team progress, relays messages between teams, resolves blocking issues, and escalates decisions to `0-human`. The coordinator's timeout scales with project size (`timeout_minutes × number_of_tiers`).
+
+### Timeouts and force-kill
+
+Each team has a per-spawn timeout set by `defaults.timeout_minutes`. When a team exceeds its timeout, the process is cancelled. If it doesn't exit within 60 seconds of cancellation, it is force-killed to prevent hung processes from blocking tier progression.
 
 ## Message Bus
 
@@ -400,8 +406,8 @@ Running `orchestra run` creates an `.orchestra/` directory:
 
 ```
 .orchestra/
-├── state.json          # Shared state: per-team status, results, artifacts, cost
-├── registry.json       # Execution metadata: PIDs, session IDs, timestamps
+├── state.json          # Shared state: per-team status, results, token counts, duration
+├── registry.json       # Execution metadata: PIDs, session IDs, timestamps, live status
 ├── coordinator/        # Coordinator decisions log (if enabled)
 ├── results/
 │   └── <team>.json     # Full TeamResult per completed team
