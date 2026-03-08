@@ -55,6 +55,14 @@ type streamEvent struct {
 	CostUSD    float64 `json:"cost_usd"` // fallback for older format
 	NumTurns   int     `json:"num_turns"`
 	DurationMs int64   `json:"duration_ms"`
+
+	// result.usage
+	Usage struct {
+		InputTokens              int64 `json:"input_tokens"`
+		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		OutputTokens             int64 `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 type contentBlock struct {
@@ -249,17 +257,21 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 			if sid == "" {
 				sid = sessionID
 			}
+			inputTokens := evt.Usage.InputTokens + evt.Usage.CacheCreationInputTokens + evt.Usage.CacheReadInputTokens
+			outputTokens := evt.Usage.OutputTokens
 			result = &workspace.TeamResult{
-				Team:       opts.TeamName,
-				Status:     evt.Subtype,
-				Result:     evt.Result,
-				CostUSD:    costUSD,
-				NumTurns:   evt.NumTurns,
-				DurationMs: evt.DurationMs,
-				SessionID:  sid,
+				Team:         opts.TeamName,
+				Status:       evt.Subtype,
+				Result:       evt.Result,
+				CostUSD:      costUSD,
+				NumTurns:     evt.NumTurns,
+				DurationMs:   evt.DurationMs,
+				SessionID:    sid,
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
 			}
-			progress(opts.TeamName, fmt.Sprintf("✅ finished (%s) — %d turns, $%.4f, %d writes, %d edits, %d bash cmds",
-				elapsed(), evt.NumTurns, costUSD, filesWritten, filesEdited, bashCmds))
+			progress(opts.TeamName, fmt.Sprintf("✅ finished (%s) — %d turns, %s in / %s out, %d writes, %d edits, %d bash cmds",
+				elapsed(), evt.NumTurns, formatTokens(inputTokens), formatTokens(outputTokens), filesWritten, filesEdited, bashCmds))
 			// Result received — stop reading stdout. The process should exit on its own,
 			// but if it hangs we'll force-kill it below.
 			break
@@ -374,6 +386,18 @@ func compactText(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// formatTokens formats a token count as a human-readable string (e.g. "284K", "1.2M").
+func formatTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dK", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // summarizeToolUse returns a human-readable summary of a tool invocation.

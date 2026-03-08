@@ -124,7 +124,7 @@ teams:
 		"Bash →",
 		"tool completed",
 		"finished",
-		"Done (cost:",
+		"Done (turns:",
 	}
 	for _, check := range checks {
 		if !strings.Contains(output, check) {

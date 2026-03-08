@@ -13,4 +13,6 @@ type TeamState struct {
 	Artifacts     []string `json:"artifacts"`
 	CostUSD       float64  `json:"cost_usd"`
 	DurationMs    int64    `json:"duration_ms"`
+	InputTokens   int64    `json:"input_tokens"`
+	OutputTokens  int64    `json:"output_tokens"`
 }

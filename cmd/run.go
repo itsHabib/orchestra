@@ -211,7 +211,7 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 				continue
 			}
 
-			logger.TeamMsg(r.name, "Done (cost: $%.2f, turns: %d)", r.res.CostUSD, r.res.NumTurns)
+			logger.TeamMsg(r.name, "Done (turns: %d, %s in / %s out)", r.res.NumTurns, fmtTokens(r.res.InputTokens), fmtTokens(r.res.OutputTokens))
 
 			ws.WriteResult(r.res)
 			ws.UpdateTeamState(r.name, workspace.TeamState{
@@ -219,6 +219,8 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 				ResultSummary: r.res.Result,
 				CostUSD:       r.res.CostUSD,
 				DurationMs:    r.res.DurationMs,
+				InputTokens:   r.res.InputTokens,
+				OutputTokens:  r.res.OutputTokens,
 			})
 			ws.UpdateRegistryEntry(r.name, func(e *workspace.RegistryEntry) {
 				e.Status = "done"
@@ -250,6 +252,18 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 	return nil
 }
 
+// fmtTokens formats a token count as a human-readable string (e.g. "284K", "1.2M").
+func fmtTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dK", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 func printSummary(ws *workspace.Workspace, cfg *config.Config, wallClock time.Duration) {
 	state, err := ws.ReadState()
 	if err != nil {
@@ -267,19 +281,20 @@ func printSummary(ws *workspace.Workspace, cfg *config.Config, wallClock time.Du
 	bold.Println("═══════════════════════════════════════════════════")
 	fmt.Println()
 
-	fmt.Printf("  %-16s │ %-8s │ %-8s │ %-6s │ %-10s\n", "Team", "Status", "Cost", "Turns", "Duration")
-	fmt.Printf("  ────────────────┼──────────┼──────────┼────────┼────────────\n")
+	fmt.Printf("  %-16s │ %-8s │ %-12s │ %-6s │ %-10s\n", "Team", "Status", "Tokens", "Turns", "Duration")
+	fmt.Printf("  ────────────────┼──────────┼──────────────┼────────┼────────────\n")
 
-	var totalCost float64
+	var totalIn, totalOut int64
 	var totalTurns int
 	for _, entry := range reg.Teams {
 		ts := state.Teams[entry.Name]
-		cost := ""
+		tokens := ""
 		turns := ""
 		dur := ""
-		if ts.CostUSD > 0 {
-			cost = fmt.Sprintf("$%.2f", ts.CostUSD)
-			totalCost += ts.CostUSD
+		if ts.InputTokens > 0 || ts.OutputTokens > 0 {
+			tokens = fmt.Sprintf("%s→%s", fmtTokens(ts.InputTokens), fmtTokens(ts.OutputTokens))
+			totalIn += ts.InputTokens
+			totalOut += ts.OutputTokens
 		}
 		// Read result for turns
 		if res, err := ws.ReadResult(entry.Name); err == nil {
@@ -290,11 +305,11 @@ func printSummary(ws *workspace.Workspace, cfg *config.Config, wallClock time.Du
 			d := time.Duration(ts.DurationMs) * time.Millisecond
 			dur = fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
 		}
-		fmt.Printf("  %-16s │ %-8s │ %-8s │ %-6s │ %s\n", entry.Name, ts.Status, cost, turns, dur)
+		fmt.Printf("  %-16s │ %-8s │ %-12s │ %-6s │ %s\n", entry.Name, ts.Status, tokens, turns, dur)
 	}
 
-	fmt.Printf("  ────────────────┼──────────┼──────────┼────────┼────────────\n")
-	fmt.Printf("  %-16s │          │ $%-7.2f │ %-6d │\n", "Total", totalCost, totalTurns)
+	fmt.Printf("  ────────────────┼──────────┼──────────────┼────────┼────────────\n")
+	fmt.Printf("  %-16s │          │ %s→%-7s │ %-6d │\n", "Total", fmtTokens(totalIn), fmtTokens(totalOut), totalTurns)
 	fmt.Println()
 
 	wc := wallClock.Round(time.Second)

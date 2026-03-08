@@ -91,10 +91,11 @@ func TestSmoke_RealClaude(t *testing.T) {
 	var state struct {
 		Project string `json:"project"`
 		Teams   map[string]struct {
-			Status        string  `json:"status"`
-			ResultSummary string  `json:"result_summary"`
-			CostUSD       float64 `json:"cost_usd"`
-			DurationMs    int64   `json:"duration_ms"`
+			Status        string `json:"status"`
+			ResultSummary string `json:"result_summary"`
+			DurationMs    int64  `json:"duration_ms"`
+			InputTokens   int64  `json:"input_tokens"`
+			OutputTokens  int64  `json:"output_tokens"`
 		} `json:"teams"`
 	}
 	if err := json.Unmarshal(stateData, &state); err != nil {
@@ -195,11 +196,12 @@ func TestSmoke_RealClaude(t *testing.T) {
 		t.Errorf("go test failed: %v\n%s", err, string(out))
 	}
 
-	// Print cost summary
-	var totalCost float64
+	// Print token summary
+	var totalIn, totalOut int64
 	for name, ts := range state.Teams {
-		totalCost += ts.CostUSD
-		t.Logf("  %s: $%.4f (%dms)", name, ts.CostUSD, ts.DurationMs)
+		totalIn += ts.InputTokens
+		totalOut += ts.OutputTokens
+		t.Logf("  %s: %dK in / %dK out (%dms)", name, ts.InputTokens/1000, ts.OutputTokens/1000, ts.DurationMs)
 	}
-	t.Logf("  TOTAL: $%.4f", totalCost)
+	t.Logf("  TOTAL: %dK in / %dK out", totalIn/1000, totalOut/1000)
 }

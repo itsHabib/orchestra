@@ -78,21 +78,22 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("  Teams: %d total — %s\n\n", total, strings.Join(parts, " | "))
 
 		// Table
-		fmt.Printf("  %-16s │ %-8s │ %-8s │ %-10s\n", "Team", "Status", "Cost", "Duration")
-		fmt.Printf("  ────────────────┼──────────┼──────────┼────────────\n")
+		fmt.Printf("  %-16s │ %-8s │ %-12s │ %-10s\n", "Team", "Status", "Tokens", "Duration")
+		fmt.Printf("  ────────────────┼──────────┼──────────────┼────────────\n")
 
 		now := time.Now()
-		var totalCost float64
+		var totalIn, totalOut int64
 		for _, entry := range reg.Teams {
 			ts := state.Teams[entry.Name]
 			st := statusMap[entry.Name]
 
-			cost := ""
+			tokens := ""
 			dur := ""
 
-			if ts.CostUSD > 0 {
-				cost = fmt.Sprintf("$%.2f", ts.CostUSD)
-				totalCost += ts.CostUSD
+			if ts.InputTokens > 0 || ts.OutputTokens > 0 {
+				tokens = fmt.Sprintf("%s→%s", fmtTokens(ts.InputTokens), fmtTokens(ts.OutputTokens))
+				totalIn += ts.InputTokens
+				totalOut += ts.OutputTokens
 			}
 
 			switch {
@@ -115,12 +116,12 @@ var statusCmd = &cobra.Command{
 				stStr = color.RedString(st)
 			}
 
-			fmt.Printf("  %-16s │ %-17s │ %-8s │ %s\n", entry.Name, stStr, cost, dur)
+			fmt.Printf("  %-16s │ %-17s │ %-12s │ %s\n", entry.Name, stStr, tokens, dur)
 		}
 
-		fmt.Printf("  ────────────────┼──────────┼──────────┼────────────\n")
-		if totalCost > 0 {
-			fmt.Printf("  %-16s │          │ $%-7.2f │\n", "Total", totalCost)
+		fmt.Printf("  ────────────────┼──────────┼──────────────┼────────────\n")
+		if totalIn > 0 || totalOut > 0 {
+			fmt.Printf("  %-16s │          │ %s→%-7s │\n", "Total", fmtTokens(totalIn), fmtTokens(totalOut))
 		}
 		fmt.Println()
 	},
