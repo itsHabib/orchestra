@@ -125,7 +125,7 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("```\n\n")
 	b.WriteString("Then start the monitoring loop:\n")
 	b.WriteString("```\n")
-	b.WriteString("/loop 1m /coordinator-check\n")
+	fmt.Fprintf(&b, "/loop %s /coordinator-check\n", cfg.Defaults.InboxPollInterval)
 	b.WriteString("```\n\n")
 
 	b.WriteString("### What to do on each check\n")
@@ -156,7 +156,7 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("\n## Instructions\n")
 	b.WriteString("1. Create the decisions log directory and file\n")
 	b.WriteString("2. Do an initial state check (read state.json, check all inboxes)\n")
-	b.WriteString("3. Start `/loop 1m` to monitor state and inbox on a 1-minute interval\n")
+	fmt.Fprintf(&b, "3. Start `/loop %s` to monitor state and inbox on a recurring interval\n", cfg.Defaults.InboxPollInterval)
 	b.WriteString("4. Between loop ticks, process any messages that need immediate action\n")
 	b.WriteString("5. Continue until all teams are done, then provide a final summary\n")
 

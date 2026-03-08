@@ -22,10 +22,11 @@ type Coordinator struct {
 
 // Defaults holds default values applied to all teams unless overridden.
 type Defaults struct {
-	Model          string `yaml:"model" json:"model"`
-	MaxTurns       int    `yaml:"max_turns" json:"max_turns"`
-	PermissionMode string `yaml:"permission_mode" json:"permission_mode"`
-	TimeoutMinutes int    `yaml:"timeout_minutes" json:"timeout_minutes"`
+	Model             string `yaml:"model" json:"model"`
+	MaxTurns          int    `yaml:"max_turns" json:"max_turns"`
+	PermissionMode    string `yaml:"permission_mode" json:"permission_mode"`
+	TimeoutMinutes    int    `yaml:"timeout_minutes" json:"timeout_minutes"`
+	InboxPollInterval string `yaml:"inbox_poll_interval" json:"inbox_poll_interval"`
 }
 
 // Team represents a single team or solo agent in the orchestration.
@@ -86,6 +87,9 @@ func (c *Config) ResolveDefaults() {
 	}
 	if c.Defaults.TimeoutMinutes == 0 {
 		c.Defaults.TimeoutMinutes = 30
+	}
+	if c.Defaults.InboxPollInterval == "" {
+		c.Defaults.InboxPollInterval = "5m"
 	}
 	for i := range c.Teams {
 		if c.Teams[i].Lead.Model == "" {

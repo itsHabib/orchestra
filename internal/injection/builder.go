@@ -118,9 +118,9 @@ func BuildPrompt(team config.Team, projectName string, state *workspace.State, c
 		fmt.Fprintf(&b, "```\nls %s/%s/inbox/ 2>/dev/null && for f in %s/%s/inbox/*.json; do cat \"$f\" 2>/dev/null; done\n```\n\n", messagesPath, inboxFolder, messagesPath, inboxFolder)
 
 		b.WriteString("### Inbox monitoring (team lead only — do NOT pass this to teammates)\n")
-		b.WriteString("Start a `/loop` to check your inbox every 1 minute. Do this early in your session:\n")
+		fmt.Fprintf(&b, "Start a `/loop` to check your inbox every %s. Do this early in your session:\n", cfg.Defaults.InboxPollInterval)
 		b.WriteString("```\n")
-		fmt.Fprintf(&b, "/loop 1m check inbox: ls %s/%s/inbox/ 2>/dev/null && for f in %s/%s/inbox/*.json; do cat \"$f\" 2>/dev/null; done\n", messagesPath, inboxFolder, messagesPath, inboxFolder)
+		fmt.Fprintf(&b, "/loop %s check inbox: ls %s/%s/inbox/ 2>/dev/null && for f in %s/%s/inbox/*.json; do cat \"$f\" 2>/dev/null; done\n", cfg.Defaults.InboxPollInterval, messagesPath, inboxFolder, messagesPath, inboxFolder)
 		b.WriteString("```\n")
 		b.WriteString("When a message arrives, read it and act accordingly — answer questions, adopt\n")
 		b.WriteString("interface contracts, adjust work based on corrections, or acknowledge status updates.\n\n")

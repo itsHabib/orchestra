@@ -260,10 +260,33 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 			}
 			progress(opts.TeamName, fmt.Sprintf("✅ finished (%s) — %d turns, $%.4f, %d writes, %d edits, %d bash cmds",
 				elapsed(), evt.NumTurns, costUSD, filesWritten, filesEdited, bashCmds))
+			// Result received — stop reading stdout. The process should exit on its own,
+			// but if it hangs we'll force-kill it below.
+			break
+		}
+
+		// Break outer loop when result is received
+		if result != nil {
+			break
 		}
 	}
 
-	err = proc.Wait()
+	// If we got a result, give the process a grace period to exit cleanly,
+	// then force-kill it to avoid zombie hangs.
+	if result != nil {
+		done := make(chan error, 1)
+		go func() { done <- proc.Wait() }()
+		select {
+		case err = <-done:
+			// Exited cleanly within grace period
+		case <-time.After(60 * time.Second):
+			progress(opts.TeamName, "⚠️  process didn't exit 60s after result — force killing")
+			proc.Process.Kill()
+			err = <-done // reap after kill
+		}
+	} else {
+		err = proc.Wait()
+	}
 
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("timeout after %d minutes", opts.TimeoutMinutes)
