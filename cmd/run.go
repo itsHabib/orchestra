@@ -12,6 +12,7 @@ import (
 	"github.com/michaelhabib/orchestra/internal/dag"
 	"github.com/michaelhabib/orchestra/internal/injection"
 	olog "github.com/michaelhabib/orchestra/internal/log"
+	"github.com/michaelhabib/orchestra/internal/messaging"
 	"github.com/michaelhabib/orchestra/internal/spawner"
 	"github.com/michaelhabib/orchestra/internal/workspace"
 	"github.com/spf13/cobra"
@@ -57,7 +58,51 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 	}
 	logger.Info("DAG: %d tiers", len(tiers))
 
-	// 3. Execute tier by tier
+	// 3. Init message bus
+	teamNames := make([]string, len(cfg.Teams))
+	for i, t := range cfg.Teams {
+		teamNames[i] = t.Name
+	}
+	bus := messaging.NewBus(ws.MessagesPath())
+	if err := bus.InitInboxes(teamNames); err != nil {
+		return fmt.Errorf("init message bus: %w", err)
+	}
+	participants := messaging.BuildParticipants(teamNames)
+
+	// Build lookup: team name → inbox folder name
+	inboxLookup := make(map[string]string)
+	for _, p := range participants {
+		inboxLookup[p.Name] = p.FolderName()
+	}
+	logger.Success("Message bus initialized at %s", bus.Path())
+
+	// Create coordinator decisions directory
+	os.MkdirAll(fmt.Sprintf("%s/coordinator", ws.Path), 0o755)
+
+	// 4. Spawn coordinator in background (if enabled)
+	var coordHandle *spawner.CoordinatorHandle
+	if cfg.Coordinator.Enabled {
+		coordPrompt := injection.BuildCoordinatorPrompt(cfg, tiers, bus.Path(), participants)
+		coordLogWriter, _ := ws.LogWriter("coordinator")
+
+		coordHandle, err = spawner.SpawnBackground(ctx, spawner.SpawnOpts{
+			TeamName:       "coordinator",
+			Prompt:         coordPrompt,
+			Model:          cfg.Coordinator.Model,
+			MaxTurns:       cfg.Coordinator.MaxTurns,
+			PermissionMode: cfg.Defaults.PermissionMode,
+			TimeoutMinutes: cfg.Defaults.TimeoutMinutes * len(tiers),
+			LogWriter:      coordLogWriter,
+			ProgressFunc:   func(team, msg string) { logger.TeamMsg(team, msg) },
+		})
+		if err != nil {
+			logger.Warn("Coordinator spawn failed (continuing without): %s", err)
+		} else {
+			logger.Success("Coordinator agent spawned")
+		}
+	}
+
+	// 5. Execute tier by tier
 	for tierIdx, tierNames := range tiers {
 		logger.TierStart(tierIdx, tierNames)
 
@@ -94,7 +139,10 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 					peers = tierNames
 				}
 
-				prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg, peers)
+				// Resolve this team's inbox folder
+				teamInbox := inboxLookup[teamName]
+
+				prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg, peers, teamInbox, bus.Path())
 				logWriter, _ := ws.LogWriter(teamName)
 				defer logWriter.Close()
 
@@ -111,7 +159,7 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 					PermissionMode: cfg.Defaults.PermissionMode,
 					TimeoutMinutes: cfg.Defaults.TimeoutMinutes,
 					LogWriter:      logWriter,
-				ProgressFunc:   func(team, msg string) { logger.TeamMsg(team, msg) },
+					ProgressFunc:   func(team, msg string) { logger.TeamMsg(team, msg) },
 				})
 
 				results <- tierResult{teamName, res, err}
@@ -155,7 +203,20 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 		}
 	}
 
-	// 4. Print summary
+	// 6. Stop coordinator
+	if coordHandle != nil {
+		logger.Info("Signaling coordinator to stop...")
+		coordHandle.Cancel()
+		coordResult, coordErr := coordHandle.Wait()
+		if coordErr != nil {
+			logger.Warn("Coordinator exited with error: %s", coordErr)
+		} else if coordResult != nil {
+			logger.TeamMsg("coordinator", "Done (cost: $%.2f, turns: %d)", coordResult.CostUSD, coordResult.NumTurns)
+			ws.WriteResult(coordResult)
+		}
+	}
+
+	// 7. Print summary
 	printSummary(ws, cfg, time.Since(wallStart))
 	return nil
 }

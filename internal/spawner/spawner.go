@@ -276,6 +276,54 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 	return nil, fmt.Errorf("process exited with error: %w; stderr: %s", err, stderr.String())
 }
 
+// CoordinatorHandle provides a non-blocking handle to a background claude -p process.
+type CoordinatorHandle struct {
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
+	done   chan struct{}
+	result *workspace.TeamResult
+	err    error
+}
+
+// Wait blocks until the coordinator exits and returns its result.
+func (h *CoordinatorHandle) Wait() (*workspace.TeamResult, error) {
+	<-h.done
+	return h.result, h.err
+}
+
+// Cancel signals the coordinator to stop.
+func (h *CoordinatorHandle) Cancel() {
+	h.cancel()
+}
+
+// Done returns a channel that is closed when the coordinator exits.
+func (h *CoordinatorHandle) Done() <-chan struct{} {
+	return h.done
+}
+
+// SpawnBackground starts a claude -p process in the background and returns immediately.
+// The process runs until completion, timeout, or cancellation.
+func SpawnBackground(ctx context.Context, opts SpawnOpts) (*CoordinatorHandle, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	if opts.TimeoutMinutes > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMinutes)*time.Minute)
+	}
+
+	handle := &CoordinatorHandle{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+
+	go func() {
+		defer close(handle.done)
+		result, err := Spawn(ctx, opts)
+		handle.result = result
+		handle.err = err
+	}()
+
+	return handle, nil
+}
+
 // compactText replaces newlines and excess whitespace with single spaces.
 func compactText(s string) string {
 	out := make([]byte, 0, len(s))

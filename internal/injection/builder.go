@@ -10,7 +10,9 @@ import (
 
 // BuildPrompt constructs the full prompt for a team's claude -p session.
 // tierPeers is the list of all team names in the same tier (including self); pass nil for single-team spawns.
-func BuildPrompt(team config.Team, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string) string {
+// inboxFolder is this team's message bus folder name (e.g., "2-data-engine"); empty disables messaging.
+// messagesPath is the base path to the messages directory.
+func BuildPrompt(team config.Team, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string, inboxFolder, messagesPath string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are: %s\n", team.Lead.Role)
@@ -105,18 +107,62 @@ func BuildPrompt(team config.Team, projectName string, state *workspace.State, c
 		}
 	}
 
+	// Message bus
+	if inboxFolder != "" && messagesPath != "" {
+		b.WriteString("## Message Bus (Cross-Team Communication)\n")
+		fmt.Fprintf(&b, "Your inbox: `%s/%s/inbox/`\n\n", messagesPath, inboxFolder)
+
+		b.WriteString("### Inbox monitoring (team lead only — do NOT pass this to teammates)\n")
+		b.WriteString("Start a `/loop` to check your inbox every 1 minute. Do this early in your session:\n")
+		b.WriteString("```\n")
+		fmt.Fprintf(&b, "/loop 1m check inbox: ls %s/%s/inbox/ 2>/dev/null && for f in %s/%s/inbox/*.json; do cat \"$f\" 2>/dev/null; done\n", messagesPath, inboxFolder, messagesPath, inboxFolder)
+		b.WriteString("```\n")
+		b.WriteString("When a message arrives, read it and act accordingly — answer questions, adopt\n")
+		b.WriteString("interface contracts, adjust work based on corrections, or acknowledge status updates.\n\n")
+
+		b.WriteString("### Sending a message\n")
+		b.WriteString("Write JSON to the recipient's inbox using atomic writes (write .tmp then mv):\n")
+		b.WriteString("```bash\n")
+		fmt.Fprintf(&b, "cat > %s/<recipient-folder>/inbox/<id>.json.tmp << 'MSGEOF'\n", messagesPath)
+		b.WriteString("{\n")
+		fmt.Fprintf(&b, "  \"id\": \"<unix_ms>-%s-<type>\",\n", inboxFolder)
+		fmt.Fprintf(&b, "  \"sender\": \"%s\",\n", inboxFolder)
+		b.WriteString("  \"recipient\": \"<recipient-folder>\",\n")
+		b.WriteString("  \"type\": \"<question|answer|interface-contract|status-update|blocking-issue>\",\n")
+		b.WriteString("  \"subject\": \"...\",\n")
+		b.WriteString("  \"content\": \"...\",\n")
+		b.WriteString("  \"timestamp\": \"<ISO8601>\",\n")
+		b.WriteString("  \"read\": false\n")
+		b.WriteString("}\n")
+		b.WriteString("MSGEOF\n")
+		fmt.Fprintf(&b, "mv %s/<recipient-folder>/inbox/<id>.json.tmp %s/<recipient-folder>/inbox/<id>.json\n", messagesPath, messagesPath)
+		b.WriteString("```\n\n")
+
+		b.WriteString("### When to send messages\n")
+		b.WriteString("- Need info from a parallel team → `question` to their inbox\n")
+		b.WriteString("- Blocked on something → `blocking-issue` to `1-coordinator`\n")
+		b.WriteString("- Defined an API or interface → `interface-contract` to `1-coordinator` (it will broadcast)\n")
+		b.WriteString("- Major milestone → `status-update` to `1-coordinator`\n\n")
+
+		b.WriteString("### Shared artifacts\n")
+		fmt.Fprintf(&b, "Check for shared interface contracts: `ls %s/shared/ 2>/dev/null`\n\n", messagesPath)
+	}
+
 	// Instructions
 	b.WriteString("## Instructions\n")
 	if team.HasMembers() {
-		b.WriteString(`1. Use TeamCreate to create your team
-2. Assign tasks to teammates based on their focus areas. Give each teammate
+		b.WriteString(`1. Start your /loop inbox monitor (see Message Bus section above)
+2. Use TeamCreate to create your team
+3. Assign tasks to teammates based on their focus areas. Give each teammate
    a detailed spawn prompt — include technical context, specific tasks with
    verify commands, and relevant upstream results. They cannot see your
    conversation, so the prompt is ALL they get.
-3. Spawn teammates in parallel using the Task tool
-4. As results come back, run each task's verify command yourself to confirm
-5. If a verify fails, send the teammate specific feedback and have them fix it
-6. When all tasks pass verification, provide your summary
+   IMPORTANT: Do NOT include Message Bus or /loop instructions in teammate prompts.
+   Only YOU (the team lead) communicate via the message bus.
+4. Spawn teammates in parallel using the Task tool
+5. As results come back, run each task's verify command yourself to confirm
+6. If a verify fails, send the teammate specific feedback and have them fix it
+7. When all tasks pass verification, provide your summary
 `)
 	} else {
 		b.WriteString(`Work through your tasks in order. After completing each task, run its

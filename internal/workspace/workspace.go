@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/michaelhabib/orchestra/internal/config"
+	"github.com/michaelhabib/orchestra/internal/fsutil"
 )
 
 // Workspace manages the .orchestra/ directory for a run.
@@ -76,13 +77,14 @@ func (w *Workspace) logPath(name string) string {
 	return filepath.Join(w.Path, "logs", name+".log")
 }
 
+// MessagesPath returns the path to the messages directory.
+func (w *Workspace) MessagesPath() string {
+	return filepath.Join(w.Path, "messages")
+}
+
 // atomicWrite writes data to a temp file then renames it to the target path.
 func atomicWrite(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.AtomicWrite(path, data)
 }
 
 func (w *Workspace) ReadState() (*State, error) {

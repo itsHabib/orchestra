@@ -42,7 +42,7 @@ var spawnCmd = &cobra.Command{
 			state, _ = ws.ReadState()
 		}
 
-		prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg, nil)
+		prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg, nil, "", "")
 
 		model := team.Lead.Model
 		if model == "" {

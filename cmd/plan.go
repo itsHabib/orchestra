@@ -157,7 +157,7 @@ var planCmd = &cobra.Command{
 
 			bold.Println("  ═══ Prompts ═══")
 			for _, team := range cfg.Teams {
-				prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, tierPeersMap[team.Name])
+				prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, tierPeersMap[team.Name], "", "")
 				fmt.Println()
 				bold.Printf("  ─── %s ───\n", team.Name)
 				fmt.Println(prompt)

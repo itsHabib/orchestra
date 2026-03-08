@@ -1,0 +1,9 @@
+{
+  "team": "engine",
+  "status": "success",
+  "result": "## Summary\n\nAll tasks complete. **39 tests pass, server binary builds successfully.**\n\n### What was built\n\n| Package | Files | Tests |\n|---------|-------|-------|\n| `internal/model` | `workflow.go`, `run.go`, `event.go` | — (type definitions) |\n| `internal/store` | `store.go`, `errors.go`, `store_test.go` | 13 tests |\n| `internal/executor` | `executor.go`, `scheduler.go`, `executor_test.go` | 6 tests (11 sub-tests) |\n| `internal/activity` | `registry.go`, `builtin.go`, `worker.go`, `worker_test.go` | 8 tests |\n| `internal/handler` | `handler.go`, `types.go`, `handler_test.go` | 12 tests |\n| `internal/config` | `config.go` | — |\n| `cmd/server` | `main.go` | — (entrypoint) |\n\n### Team assignments \u0026 results\n- **Store \u0026 State Engineer** → SQLite store with all CRUD operations, `ClaimNextActivity` with mutex-guarded transactions, and concurrency tests\n- **Scheduler \u0026 Executor Engineer** → Workflow executor with input expression resolution (`$.input`, `$.steps[N].output`), scheduler polling loop\n- **Activity Runtime Engineer** → Activity registry, 5 built-in handlers (noop, sleep, http-call, log, fail), worker pool with heartbeating and retry logic\n- **Me (Workflow Engine Lead)** → Model types, HTTP handlers with chi routing, config, server entrypoint with graceful shutdown",
+  "cost_usd": 2.7421187500000004,
+  "num_turns": 38,
+  "duration_ms": 394214,
+  "session_id": "60911857-bac5-4e5c-815c-3e677cf891bd"
+}

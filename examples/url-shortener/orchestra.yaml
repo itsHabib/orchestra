@@ -1,0 +1,348 @@
+name: "url-shortener"
+
+defaults:
+  model: opus
+  max_turns: 200
+  permission_mode: bypassPermissions
+  timeout_minutes: 30
+
+teams:
+  - name: core-api
+    lead:
+      role: "Backend Tech Lead — coordinates store, handler, and middleware work"
+    members:
+      - role: "Database Engineer"
+        focus: "SQLite store layer — schema, migrations, CRUD operations, store tests"
+      - role: "API Handler Engineer"
+        focus: "HTTP handlers, request/response types, routing, handler tests"
+      - role: "Middleware & Server Engineer"
+        focus: "Server entrypoint, middleware (logging, CORS, rate limiting), config"
+    context: |
+      You are building a URL shortener REST API in Go.
+
+      Tech stack:
+      - Go 1.22+, standard library net/http
+      - go-chi/chi/v5 for routing
+      - modernc.org/sqlite (pure Go, no CGO)
+      - google/uuid for short code generation
+
+      Project layout:
+        url-shortener/
+        ├── cmd/server/main.go
+        ├── internal/
+        │   ├── store/
+        │   │   ├── store.go          # SQLite repository
+        │   │   ├── store_test.go
+        │   │   └── errors.go
+        │   ├── handler/
+        │   │   ├── handler.go        # HTTP handlers
+        │   │   ├── handler_test.go
+        │   │   └── types.go          # request/response structs
+        │   ├── middleware/
+        │   │   ├── logging.go
+        │   │   ├── ratelimit.go
+        │   │   └── cors.go
+        │   └── config/
+        │       └── config.go         # env-based configuration
+        ├── go.mod
+        └── go.sum
+
+      API design:
+        POST /shorten        — body: {"url": "https://example.com"} → {"short_code": "abc123", "short_url": "http://localhost:8080/abc123"}
+        GET  /{code}         — 302 redirect to original URL (or 404)
+        GET  /api/urls       — list all shortened URLs as JSON array, supports ?limit=N&offset=N
+        GET  /api/urls/{code} — get details for a specific short URL
+        DELETE /api/urls/{code} — delete a short URL
+        GET  /health         — {"status": "ok", "version": "1.0.0"}
+
+      Database schema:
+        CREATE TABLE urls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          short_code TEXT UNIQUE NOT NULL,
+          original_url TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          click_count INTEGER DEFAULT 0
+        );
+
+      Conventions:
+      - Use first 8 chars of UUID as short code
+      - Increment click_count on every redirect
+      - All errors return JSON: {"error": "message"}
+      - Store constructor takes a DSN string, auto-creates table
+      - Server port configurable via PORT env var (default 8080)
+      - Base URL configurable via BASE_URL env var (default http://localhost:8080)
+
+      IMPORTANT: Run `go mod init url-shortener` first, then `go mod tidy` after
+      writing all Go files to resolve dependencies.
+    tasks:
+      - summary: "Initialize Go module and project structure"
+        details: |
+          Run `go mod init url-shortener` in the url-shortener/ directory.
+          Create the directory structure for all packages.
+        deliverables:
+          - "url-shortener/go.mod"
+        verify: "cd url-shortener && test -f go.mod"
+
+      - summary: "Implement SQLite store with full CRUD operations"
+        details: |
+          Create internal/store/store.go with:
+          - NewStore(dsn string) — opens SQLite, auto-creates urls table
+          - Create(originalURL string) (URL, error) — generates short code, inserts
+          - Get(shortCode string) (URL, error) — fetches by code, increments click_count
+          - GetWithoutClick(shortCode string) (URL, error) — fetches without incrementing
+          - List(limit, offset int) ([]URL, error) — paginated list, ordered by created_at desc
+          - Delete(shortCode string) error
+          Create internal/store/errors.go with ErrNotFound sentinel.
+          Write thorough unit tests in store_test.go using :memory: SQLite.
+        deliverables:
+          - "url-shortener/internal/store/store.go"
+          - "url-shortener/internal/store/errors.go"
+          - "url-shortener/internal/store/store_test.go"
+        verify: "cd url-shortener && go test ./internal/store/... -v"
+
+      - summary: "Implement HTTP handlers with request/response types"
+        details: |
+          Create internal/handler/types.go with request/response structs.
+          Create internal/handler/handler.go with:
+          - Handler struct taking a Store interface
+          - POST /shorten — parse JSON, validate URL, call store.Create
+          - GET /{code} — redirect or 404
+          - GET /api/urls — paginated list with limit/offset query params
+          - GET /api/urls/{code} — single URL details
+          - DELETE /api/urls/{code} — delete URL
+          - GET /health — status + version
+          Write handler tests using httptest with in-memory store.
+        deliverables:
+          - "url-shortener/internal/handler/handler.go"
+          - "url-shortener/internal/handler/types.go"
+          - "url-shortener/internal/handler/handler_test.go"
+        verify: "cd url-shortener && go test ./internal/handler/... -v"
+
+      - summary: "Implement middleware (logging, CORS, rate limiting)"
+        details: |
+          Create internal/middleware/logging.go — logs method, path, status, duration.
+          Create internal/middleware/cors.go — permissive CORS for local dev.
+          Create internal/middleware/ratelimit.go — simple in-memory token bucket per IP,
+          configurable rate via config. Return 429 when exceeded.
+        deliverables:
+          - "url-shortener/internal/middleware/logging.go"
+          - "url-shortener/internal/middleware/cors.go"
+          - "url-shortener/internal/middleware/ratelimit.go"
+        verify: "cd url-shortener && go build ./internal/middleware/..."
+
+      - summary: "Implement config package and server entrypoint"
+        details: |
+          Create internal/config/config.go — reads PORT, BASE_URL, DB_PATH, RATE_LIMIT from env
+          with sensible defaults.
+          Create cmd/server/main.go — wires store, handlers, middleware, starts server.
+        deliverables:
+          - "url-shortener/internal/config/config.go"
+          - "url-shortener/cmd/server/main.go"
+        verify: "cd url-shortener && go build ./cmd/server"
+
+      - summary: "Run go mod tidy and verify full build + all tests pass"
+        details: |
+          Run `go mod tidy` to resolve all dependencies.
+          Run `go test ./...` to verify all unit tests pass.
+          Run `go build ./cmd/server` to verify the binary builds.
+        deliverables:
+          - "url-shortener/go.sum"
+        verify: "cd url-shortener && go mod tidy && go test ./... && go build ./cmd/server"
+
+  - name: cli-client
+    lead:
+      role: "CLI Tech Lead — coordinates client library, CLI UX, and output formatting"
+    depends_on:
+      - core-api
+    members:
+      - role: "HTTP Client Engineer"
+        focus: "Client library — HTTP calls, error handling, response parsing"
+      - role: "CLI UX Engineer"
+        focus: "CLI entrypoint, subcommand parsing, output formatting, help text"
+    context: |
+      You are building a CLI client for the URL shortener API built by the core-api team.
+
+      Tech stack:
+      - Go 1.22+, standard library only (no CLI frameworks)
+      - net/http for API communication
+
+      Project layout — add to the existing url-shortener/ directory:
+        url-shortener/
+        ├── cmd/cli/main.go
+        ├── internal/
+        │   └── client/
+        │       ├── client.go
+        │       └── client_test.go
+
+      CLI commands:
+        shortener shorten <url>           → POST /shorten, print short URL
+        shortener get <code>              → GET /api/urls/{code}, print details
+        shortener list [--limit N]        → GET /api/urls, print formatted table
+        shortener delete <code>           → DELETE /api/urls/{code}, confirm deletion
+        shortener help                    → print usage
+
+      The API (built by core-api):
+        POST   /shorten          — {"url": "..."} → {"short_code": "...", "short_url": "..."}
+        GET    /api/urls         — JSON array, supports ?limit=N&offset=N
+        GET    /api/urls/{code}  — single URL details
+        DELETE /api/urls/{code}  — deletes URL
+
+      Conventions:
+      - Client struct takes baseURL string (default http://localhost:8080)
+      - Configurable via URL_SHORTENER_API env var
+      - Human-readable output with aligned columns
+      - Exit code 1 on errors, print error to stderr
+      - Colors via ANSI codes (respect NO_COLOR env var)
+    tasks:
+      - summary: "Implement HTTP client library with full API coverage"
+        details: |
+          Create internal/client/client.go with:
+          - NewClient(baseURL string) *Client
+          - Shorten(url string) (ShortenResponse, error)
+          - Get(code string) (URLDetails, error)
+          - List(limit, offset int) ([]URLEntry, error)
+          - Delete(code string) error
+          - Health() error
+          Handle HTTP errors, timeouts, connection refused gracefully.
+        deliverables:
+          - "url-shortener/internal/client/client.go"
+        verify: "cd url-shortener && go build ./internal/client/..."
+
+      - summary: "Write comprehensive client tests"
+        details: |
+          Create internal/client/client_test.go with tests using httptest.NewServer:
+          - TestShorten — mock server returns short URL
+          - TestGet — mock server returns URL details
+          - TestList — mock server returns array
+          - TestDelete — mock server returns 204
+          - TestShortenServerError — mock 500, verify error handling
+          - TestConnectionRefused — verify graceful error
+        deliverables:
+          - "url-shortener/internal/client/client_test.go"
+        verify: "cd url-shortener && go test ./internal/client/... -v"
+
+      - summary: "Implement CLI entrypoint with subcommand routing"
+        details: |
+          Create cmd/cli/main.go with:
+          - Subcommand dispatch via os.Args
+          - shorten, get, list, delete, help commands
+          - --limit flag for list command
+          - Reads URL_SHORTENER_API env var for base URL
+          - Prints errors to stderr, exits 1 on failure
+        deliverables:
+          - "url-shortener/cmd/cli/main.go"
+        verify: "cd url-shortener && go build ./cmd/cli"
+
+      - summary: "Implement formatted table output"
+        details: |
+          Add output formatting to the CLI:
+          - Aligned columns for list output (code, URL, clicks, created)
+          - Truncate long URLs with ellipsis
+          - Human-friendly timestamps (e.g., "2 hours ago")
+          - Respect NO_COLOR env var for ANSI codes
+        deliverables:
+          - "url-shortener/cmd/cli/main.go"
+        verify: "cd url-shortener && go build ./cmd/cli"
+
+      - summary: "Verify full CLI build and client tests pass"
+        details: |
+          Run go mod tidy, go test ./internal/client/..., and go build ./cmd/cli.
+          Ensure everything compiles and tests pass together.
+        verify: "cd url-shortener && go mod tidy && go test ./internal/client/... -v && go build ./cmd/cli"
+
+  - name: integration-tests
+    lead:
+      role: "QA Lead — designs test strategy, coordinates test coverage across all components"
+    depends_on:
+      - core-api
+      - cli-client
+    members:
+      - role: "API Integration Tester"
+        focus: "End-to-end API tests — HTTP roundtrips, edge cases, error scenarios"
+      - role: "Client Integration Tester"
+        focus: "Client library tests against real server, CLI smoke tests"
+    context: |
+      You are writing integration tests for the URL shortener built by core-api and cli-client teams.
+
+      Tech stack:
+      - Go 1.22+ testing package
+      - httptest.NewServer for in-process server
+      - No external test dependencies
+
+      Project layout — add to the existing url-shortener/ directory:
+        url-shortener/
+        └── tests/
+            ├── api_test.go             # API-level integration tests
+            ├── client_test.go          # Client library integration tests
+            └── helpers_test.go         # Shared test helpers
+
+      The existing codebase has:
+      - internal/store — SQLite store (Create, Get, GetWithoutClick, List, Delete)
+      - internal/handler — HTTP handlers (shorten, redirect, list, get, delete, health)
+      - internal/middleware — logging, CORS, rate limiting
+      - internal/client — HTTP client (Shorten, Get, List, Delete, Health)
+      - internal/config — environment-based configuration
+      - cmd/server/main.go — server entrypoint
+      - cmd/cli/main.go — CLI entrypoint
+
+      Conventions:
+      - Use t.TempDir() for SQLite database files
+      - Each test gets its own server + store (no shared state)
+      - Use httptest.NewServer wrapping the real handler
+      - Test the client package against the real httptest server
+    tasks:
+      - summary: "Create shared test helpers"
+        details: |
+          Create tests/helpers_test.go with:
+          - newTestServer(t) (*httptest.Server, *store.Store) — creates temp DB, store, handler, httptest server
+          - Cleanup registered via t.Cleanup
+          - Helper to seed N URLs into a store
+        deliverables:
+          - "url-shortener/tests/helpers_test.go"
+        verify: "cd url-shortener && go build ./tests/..."
+
+      - summary: "Write API integration tests for happy paths"
+        details: |
+          Create tests/api_test.go with:
+          - TestShortenAndRedirect: POST /shorten, GET /{code}, verify 302 + Location
+          - TestListURLs: shorten 3 URLs, GET /api/urls, verify all returned
+          - TestGetURLDetails: shorten URL, GET /api/urls/{code}, verify JSON response
+          - TestDeleteURL: shorten URL, DELETE /api/urls/{code}, verify 204, then GET returns 404
+          - TestHealth: GET /health, verify 200 + status ok
+        deliverables:
+          - "url-shortener/tests/api_test.go"
+        verify: "cd url-shortener && go test ./tests/... -run 'TestShorten|TestList|TestGet|TestDelete|TestHealth' -v"
+
+      - summary: "Write API edge case and error tests"
+        details: |
+          Add to tests/api_test.go:
+          - TestClickCountIncrements: redirect 3 times, verify click_count == 3
+          - TestShortenEmptyURL: POST with empty URL, verify 400
+          - TestShortenInvalidJSON: POST with bad body, verify 400
+          - TestNotFoundRedirect: GET /nonexistent, verify 404 JSON
+          - TestListPagination: seed 10 URLs, test ?limit=3&offset=2
+          - TestDeleteNonexistent: DELETE unknown code, verify 404
+        deliverables:
+          - "url-shortener/tests/api_test.go"
+        verify: "cd url-shortener && go test ./tests/... -run 'TestClick|TestShortenEmpty|TestShortenInvalid|TestNotFound|TestListPag|TestDeleteNon' -v"
+
+      - summary: "Write client library integration tests"
+        details: |
+          Create tests/client_test.go with:
+          - TestClientShorten: client.Shorten against real server
+          - TestClientGet: client.Get against real server
+          - TestClientList: seed URLs, client.List, verify count
+          - TestClientDelete: client.Delete, verify removed
+          - TestClientHealth: client.Health against real server
+          - TestClientServerDown: verify graceful error when server unreachable
+        deliverables:
+          - "url-shortener/tests/client_test.go"
+        verify: "cd url-shortener && go test ./tests/... -run 'TestClient' -v"
+
+      - summary: "Run full test suite and verify everything passes"
+        details: |
+          Run the complete test suite:
+          - go test ./... -v to run all unit + integration tests
+          - go build ./cmd/server && go build ./cmd/cli to verify both binaries
+          - Report any failures
+        verify: "cd url-shortener && go test ./... -v && go build ./cmd/server && go build ./cmd/cli"

@@ -1,0 +1,9 @@
+{
+  "team": "integration",
+  "status": "success",
+  "result": "## Summary\n\nAll tasks complete. **18 integration tests pass, 57 total tests across the project, both binaries build.**\n\n### What was built\n\n| File | Tests | Coverage |\n|------|-------|----------|\n| `tests/helpers_test.go` | — (shared infra) | `newTestEnv`, `newTestEnvWithWorkers`, `registerTestWorkflow`, `waitForRunStatus`, `sampleWorkflow` |\n| `tests/workflow_test.go` | 6 tests | Register/list, simple execution, data passing, multi-step, run input, filtered listing |\n| `tests/failure_test.go` | 6 tests | Retry on failure, cancel running, cancel pending, event history, concurrent runs, 404 handling |\n| `tests/client_test.go` | 6 tests | Client register, start+get, list, events, cancel, stats |\n\n### Team assignments \u0026 results\n\n- **Workflow Lifecycle Tester** → helpers_test.go + workflow_test.go + client_test.go — 12 tests covering full workflow lifecycle and client API surface\n- **Failure \u0026 Edge Case Tester** → failure_test.go — 6 tests covering retry logic, cancellation, event timeline, concurrency, and error responses\n\n### Key findings\n- SQLite BUSY errors occur under concurrent worker contention but are handled gracefully (workers retry on next poll)\n- The \"fail\" activity with `max_retries=2` confirms retry behavior — `Attempts \u003e 1` before marking failed\n- All activity types (noop, sleep, log, fail) exercised across the test suite\n\n### Verification results\n- `go mod tidy` — clean\n- `go test ./...` — 57/57 PASS\n- `go build ./cmd/server` — success\n- `go build ./cmd/cli` — success",
+  "cost_usd": 3.2862615,
+  "num_turns": 12,
+  "duration_ms": 556058,
+  "session_id": "701e3a6a-36af-4762-8d76-051700988d74"
+}

@@ -7,9 +7,17 @@ import (
 
 // Config is the top-level orchestra configuration.
 type Config struct {
-	Name     string   `yaml:"name"`
-	Defaults Defaults `yaml:"defaults"`
-	Teams    []Team   `yaml:"teams"`
+	Name        string      `yaml:"name"`
+	Defaults    Defaults    `yaml:"defaults"`
+	Coordinator Coordinator `yaml:"coordinator,omitempty"`
+	Teams       []Team      `yaml:"teams"`
+}
+
+// Coordinator configures the top-level coordinator agent.
+type Coordinator struct {
+	Enabled  bool   `yaml:"enabled"`
+	Model    string `yaml:"model,omitempty"`
+	MaxTurns int    `yaml:"max_turns,omitempty"`
 }
 
 // Defaults holds default values applied to all teams unless overridden.
@@ -83,6 +91,13 @@ func (c *Config) ResolveDefaults() {
 		if c.Teams[i].Lead.Model == "" {
 			c.Teams[i].Lead.Model = c.Defaults.Model
 		}
+	}
+	// Coordinator defaults
+	if c.Coordinator.Model == "" {
+		c.Coordinator.Model = c.Defaults.Model
+	}
+	if c.Coordinator.MaxTurns == 0 {
+		c.Coordinator.MaxTurns = 500
 	}
 }
 
