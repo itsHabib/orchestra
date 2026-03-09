@@ -2,3 +2,7 @@
 orchestra
 examples/miniflow/cli
 examples/miniflow/server
+
+# Claude Code local config
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

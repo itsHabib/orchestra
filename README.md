@@ -376,6 +376,18 @@ There are two ways to coordinate:
 
 This is often preferable to the autonomous coordinator since you can make judgment calls and course-correct in real time.
 
+## Claude Code Skills
+
+Orchestra ships with companion [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code) in `.claude/skills/` that are automatically available when you open the project in Claude Code. These are especially useful when acting as a human coordinator during a run.
+
+| Skill | Description |
+|-------|-------------|
+| `/orchestra-coord` | Bootstrap a Claude Code session as the human coordinator — reads config, shows status, starts a monitor loop, and primes the session for interventions. |
+| `/orchestra-init` | Interactively generate an `orchestra.yaml` from a short conversation about your project. |
+| `/orchestra-monitor` | Single-pass status dashboard — team progress, costs, live activity, unread messages. Designed to run with `/loop` for continuous monitoring. |
+| `/orchestra-inbox` | Read messages from any inbox — summary table with expanded unread messages. |
+| `/orchestra-msg` | Send a message to any team, the coordinator, or broadcast to all teams. |
+
 ## Solo vs Team Mode
 
 A team's mode is determined by the presence of `members`:
