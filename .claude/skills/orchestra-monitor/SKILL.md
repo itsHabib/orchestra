@@ -57,7 +57,7 @@ For each running team, provide a SHORT activity snapshot. Use these methods (in 
   hydra-ideation (4m): "Evaluating swarm consensus patterns for multi-agent coor..."
 ```
 
-**c) Teammate count** — Check if the team has spawned subagents by looking for TeamCreate/Task tool calls in the log:
+**c) Teammate count** — Check if the team has spawned subagents by looking for TeamCreate/SendMessage tool calls in the log:
 ```
   cipher-ideation (4m): 3 teammates spawned, waiting on results
 ```

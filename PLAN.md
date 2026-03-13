@@ -44,7 +44,7 @@ Tier 2: [integration]          ← waits for tier 1, gets ALL prior results
 
 Each config entry can be either:
 
-- **A team** (has `members`) — CLI spawns a `claude -p` session for the lead. The lead's prompt tells it to call `TeamCreate`, spawn its members as Task subagents, coordinate their work, verify, and return a result. The lead is a top-level `claude -p` session so it CAN call `TeamCreate`.
+- **A team** (has `members`) — CLI spawns a `claude -p` session for the lead. The lead's prompt tells it to call `TeamCreate`, assign work to teammates via `SendMessage`, coordinate their work, verify, and return a result. The lead is a top-level `claude -p` session so it CAN call `TeamCreate`.
 
 - **A solo agent** (no `members`) — CLI spawns a single `claude -p` session that just does the work directly. No `TeamCreate` needed.
 
@@ -462,15 +462,15 @@ Artifacts: {artifact_list}
 {end}
 
 ## Instructions
-1. Use TeamCreate to create your team
-2. Assign tasks to teammates based on their focus areas. Give each teammate
-   a detailed spawn prompt — include technical context, specific tasks with
-   verify commands, and relevant upstream results. They cannot see your
-   conversation, so the prompt is ALL they get.
-3. Spawn teammates in parallel using the Task tool
-4. As results come back, run each task's verify command yourself to confirm
-5. If a verify fails, send the teammate specific feedback and have them fix it
-6. When all tasks pass verification, provide your summary
+1. Use TeamCreate to create your team and assign tasks to teammates based on
+   their focus areas. Give each teammate a detailed prompt — include technical
+   context, specific tasks with verify commands, and relevant upstream results.
+   They cannot see your conversation, so the prompt is ALL they get.
+2. Use SendMessage to coordinate with teammates and relay relevant messages
+   from the message bus. Only the team lead polls the message bus.
+3. As results come back, run each task's verify command yourself to confirm
+4. If a verify fails, use SendMessage to give the teammate specific feedback
+5. When all tasks pass verification, provide your summary
 ```
 
 ### Function signatures

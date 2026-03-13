@@ -103,8 +103,8 @@ func TestBuildPrompt_TeamLeadWithMembers(t *testing.T) {
 	if !strings.Contains(prompt, "TeamCreate") {
 		t.Error("missing TeamCreate instruction")
 	}
-	if !strings.Contains(prompt, "Spawn teammates in parallel") {
-		t.Error("missing spawn instruction")
+	if !strings.Contains(prompt, "SendMessage") {
+		t.Error("missing SendMessage instruction")
 	}
 }
 

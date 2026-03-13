@@ -157,18 +157,22 @@ func BuildPrompt(team config.Team, projectName string, state *workspace.State, c
 	b.WriteString("## Instructions\n")
 	if team.HasMembers() {
 		b.WriteString(`1. Start your /loop inbox monitor (see Message Bus section above)
-2. Use TeamCreate to create your team
-3. Assign tasks to teammates based on their focus areas. Give each teammate
-   a detailed spawn prompt — include technical context, specific tasks with
-   verify commands, and relevant upstream results. They cannot see your
-   conversation, so the prompt is ALL they get.
-   IMPORTANT: Do NOT include Message Bus or /loop instructions in teammate prompts.
-   Only YOU (the team lead) communicate via the message bus.
-4. Spawn teammates in parallel using the Task tool
-5. As results come back, run each task's verify command yourself to confirm
-6. If a verify fails, send the teammate specific feedback and have them fix it
-7. When all tasks pass verification, provide your summary
-8. IMPORTANT: When you are completely done, cancel your /loop inbox monitor
+2. Use TeamCreate to create your team and assign tasks to teammates based on
+   their focus areas. Give each teammate a detailed prompt — include technical
+   context, specific tasks with verify commands, and relevant upstream results.
+   They cannot see your conversation, so the prompt is ALL they get.
+   IMPORTANT: Do NOT include Message Bus, inbox, or /loop instructions in teammate
+   prompts. Teammates must NOT poll the message bus. Only YOU (the team lead)
+   communicate via the message bus.
+3. When your inbox monitor finds messages relevant to a teammate's work (questions,
+   corrections, interface contracts), relay that information to the teammate via
+   SendMessage. You are the single point of contact between your team and the
+   message bus.
+4. As results come back, run each task's verify command yourself to confirm
+5. If a verify fails, use SendMessage to give the teammate specific feedback and
+   have them fix it
+6. When all tasks pass verification, provide your summary
+7. IMPORTANT: When you are completely done, cancel your /loop inbox monitor
    using CronDelete with the job ID from step 1. This allows your session to exit cleanly.
 `)
 	} else {
