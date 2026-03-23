@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	"github.com/michaelhabib/orchestra/internal/messaging"
+	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/messaging"
 )
 
 // BuildCoordinatorPrompt constructs the prompt for the long-lived coordinator agent.

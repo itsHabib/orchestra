@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/michaelhabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
 // SpawnOpts configures a claude -p spawn.

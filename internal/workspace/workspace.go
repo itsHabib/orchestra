@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	"github.com/michaelhabib/orchestra/internal/fsutil"
+	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/fsutil"
 )
 
 // Workspace manages the .orchestra/ directory for a run.

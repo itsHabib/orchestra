@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	"github.com/michaelhabib/orchestra/internal/injection"
-	olog "github.com/michaelhabib/orchestra/internal/log"
-	"github.com/michaelhabib/orchestra/internal/spawner"
-	"github.com/michaelhabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/injection"
+	olog "github.com/itsHabib/orchestra/internal/log"
+	"github.com/itsHabib/orchestra/internal/spawner"
+	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

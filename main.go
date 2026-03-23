@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/michaelhabib/orchestra/cmd"
+	"github.com/itsHabib/orchestra/cmd"
 )
 
 func main() {

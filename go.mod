@@ -1,4 +1,4 @@
-module github.com/michaelhabib/orchestra
+module github.com/itsHabib/orchestra
 
 go 1.22
 

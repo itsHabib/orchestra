@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/michaelhabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/config"
 )
 
 func testConfig() *config.Config {

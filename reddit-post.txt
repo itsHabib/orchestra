@@ -1,0 +1,11 @@
+Title: I built a Go CLI that orchestrates multiple Claude Code sessions as parallel teams with a message bus between them
+
+Description:
+
+I've been working on a Go CLI called Orchestra that runs multiple Claude Code sessions in parallel as a DAG. You define teams, tasks, and dependencies in a YAML file — teams in the same tier run concurrently, and results from earlier tiers get injected into downstream prompts so later work builds on actual output.
+
+Teams aren't siloed — there's a file-based message bus so they can ask each other questions, share interface contracts, and flag blockers. Under the hood each team lead uses Claude Code's built-in teams feature to spawn subagents, and inbox polling runs on the new /loop slash command.
+
+Single binary, no dependencies beyond the Claude CLI. Write an orchestra.yaml, run orchestra run, that's it.
+
+Still early — no strict human-in-the-loop gates or proper error recovery yet. Mostly a learning experience, iterating and tweaking as I go. Sharing in case anyone finds it interesting or has ideas.

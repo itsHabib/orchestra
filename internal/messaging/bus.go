@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/michaelhabib/orchestra/internal/fsutil"
+	"github.com/itsHabib/orchestra/internal/fsutil"
 )
 
 // Bus provides filesystem-based message operations.

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	olog "github.com/michaelhabib/orchestra/internal/log"
+	"github.com/itsHabib/orchestra/internal/config"
+	olog "github.com/itsHabib/orchestra/internal/log"
 	"github.com/spf13/cobra"
 )
 

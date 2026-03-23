@@ -3,9 +3,9 @@ package cmd
 import (
 	"os"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	olog "github.com/michaelhabib/orchestra/internal/log"
-	"github.com/michaelhabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/internal/config"
+	olog "github.com/itsHabib/orchestra/internal/log"
+	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

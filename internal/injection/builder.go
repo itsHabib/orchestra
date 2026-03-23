@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	"github.com/michaelhabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
 // BuildPrompt constructs the full prompt for a team's claude -p session.

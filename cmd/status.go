@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/fatih/color"
-	olog "github.com/michaelhabib/orchestra/internal/log"
-	"github.com/michaelhabib/orchestra/internal/workspace"
+	olog "github.com/itsHabib/orchestra/internal/log"
+	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

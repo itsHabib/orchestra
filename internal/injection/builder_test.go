@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/michaelhabib/orchestra/internal/config"
-	"github.com/michaelhabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
 func TestBuildPrompt_SoloNoDeps(t *testing.T) {

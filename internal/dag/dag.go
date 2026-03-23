@@ -3,7 +3,7 @@ package dag
 import (
 	"fmt"
 
-	"github.com/michaelhabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/config"
 )
 
 // BuildTiers takes teams and returns execution tiers using Kahn's algorithm.

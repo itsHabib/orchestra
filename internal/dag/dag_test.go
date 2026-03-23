@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/michaelhabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/config"
 )
 
 func TestBuildTiers_LinearChain(t *testing.T) {
