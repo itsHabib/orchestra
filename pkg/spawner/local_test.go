@@ -2,27 +2,73 @@ package spawner
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-func writeMockScript(t *testing.T, name, content string) string {
+func goCommand() string {
+	name := "go"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if goroot := runtime.GOROOT(); goroot != "" {
+		path := filepath.Join(goroot, "bin", name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "go"
+}
+
+func writeMockCommand(t *testing.T, name string, stdout, stderr []string, exitCode, sleepMillis int) string {
 	t.Helper()
 	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	srcPath := filepath.Join(dir, "main.go")
+	src := fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+)
+
+func main() {
+	if %d > 0 {
+		time.Sleep(time.Duration(%d) * time.Millisecond)
+	}
+	for _, line := range %#v {
+		fmt.Println(line)
+	}
+	for _, line := range %#v {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	os.Exit(%d)
+}
+`, sleepMillis, sleepMillis, stdout, stderr, exitCode)
+	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	build := exec.Command(goCommand(), "build", "-o", path, srcPath)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building mock command: %v\n%s", err, out)
 	}
 	return path
 }
 
 func TestSpawn_SuccessResult(t *testing.T) {
-	script := writeMockScript(t, "mock-claude", `#!/bin/bash
-echo '{"type":"system","subtype":"init","session_id":"sess-123"}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working on it..."}]}}'
-echo '{"type":"result","subtype":"success","result":"All done!","total_cost_usd":0.42,"num_turns":5,"duration_ms":3000,"session_id":"sess-123"}'
-`)
+	script := writeMockCommand(t, "mock-claude", []string{
+		`{"type":"system","subtype":"init","session_id":"sess-123"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working on it..."}]}}`,
+		`{"type":"result","subtype":"success","result":"All done!","total_cost_usd":0.42,"num_turns":5,"duration_ms":3000,"session_id":"sess-123"}`,
+	}, nil, 0, 0)
 
 	result, err := Spawn(context.Background(), SpawnOpts{
 		TeamName: "test-team",
@@ -53,9 +99,9 @@ echo '{"type":"result","subtype":"success","result":"All done!","total_cost_usd"
 }
 
 func TestSpawn_FallbackToAssistantText(t *testing.T) {
-	script := writeMockScript(t, "mock-claude", `#!/bin/bash
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Final answer here"}]}}'
-`)
+	script := writeMockCommand(t, "mock-claude", []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Final answer here"}]}}`,
+	}, nil, 0, 0)
 
 	result, err := Spawn(context.Background(), SpawnOpts{
 		TeamName: "test-team",
@@ -74,10 +120,7 @@ echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text
 }
 
 func TestSpawn_ErrorExit(t *testing.T) {
-	script := writeMockScript(t, "mock-claude", `#!/bin/bash
-echo "something went wrong" >&2
-exit 1
-`)
+	script := writeMockCommand(t, "mock-claude", nil, []string{"something went wrong"}, 1, 0)
 
 	_, err := Spawn(context.Background(), SpawnOpts{
 		TeamName: "test-team",
@@ -90,9 +133,7 @@ exit 1
 }
 
 func TestSpawn_Timeout(t *testing.T) {
-	script := writeMockScript(t, "mock-claude", `#!/bin/bash
-sleep 30
-`)
+	script := writeMockCommand(t, "mock-claude", nil, nil, 0, 30000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1)
 	defer cancel()
@@ -108,9 +149,9 @@ sleep 30
 }
 
 func TestSpawn_LogWriter(t *testing.T) {
-	script := writeMockScript(t, "mock-claude", `#!/bin/bash
-echo '{"type":"result","subtype":"success","result":"done","total_cost_usd":0.1,"num_turns":1,"duration_ms":100}'
-`)
+	script := writeMockCommand(t, "mock-claude", []string{
+		`{"type":"result","subtype":"success","result":"done","total_cost_usd":0.1,"num_turns":1,"duration_ms":100}`,
+	}, nil, 0, 0)
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
@@ -137,14 +178,14 @@ echo '{"type":"result","subtype":"success","result":"done","total_cost_usd":0.1,
 }
 
 func TestSpawn_ProgressFunc(t *testing.T) {
-	script := writeMockScript(t, "mock-claude", `#!/bin/bash
-echo '{"type":"system","subtype":"init","session_id":"sess-1"}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"}]}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/foo.go"}}]}}'
-echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done writing file"}]}}'
-echo '{"type":"result","subtype":"success","result":"ok","total_cost_usd":0.5,"num_turns":3,"duration_ms":2000,"session_id":"sess-1"}'
-`)
+	script := writeMockCommand(t, "mock-claude", []string{
+		`{"type":"system","subtype":"init","session_id":"sess-1"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/foo.go"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done writing file"}]}}`,
+		`{"type":"result","subtype":"success","result":"ok","total_cost_usd":0.5,"num_turns":3,"duration_ms":2000,"session_id":"sess-1"}`,
+	}, nil, 0, 0)
 
 	var messages []string
 	_, err := Spawn(context.Background(), SpawnOpts{

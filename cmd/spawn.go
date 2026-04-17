@@ -9,8 +9,8 @@ import (
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/injection"
 	olog "github.com/itsHabib/orchestra/internal/log"
-	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/pkg/spawner"
 	"github.com/spf13/cobra"
 )
 

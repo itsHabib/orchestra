@@ -9,8 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/workspace"
@@ -27,6 +27,32 @@ type SpawnOpts struct {
 	LogWriter      io.Writer
 	ProgressFunc   func(teamName, msg string) // called with progress updates for terminal display
 	Command        string                     // defaults to "claude"
+}
+
+// LocalSubprocessSpawner adapts the existing claude -p subprocess backend.
+type LocalSubprocessSpawner struct {
+	Command string
+}
+
+// NewLocalSubprocessSpawner returns a local subprocess backend.
+func NewLocalSubprocessSpawner() *LocalSubprocessSpawner {
+	return &LocalSubprocessSpawner{}
+}
+
+// Spawn runs a local claude -p subprocess.
+func (s *LocalSubprocessSpawner) Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
+	if opts.Command == "" {
+		opts.Command = s.Command
+	}
+	return Spawn(ctx, opts)
+}
+
+// SpawnBackground starts a local claude -p subprocess in the background.
+func (s *LocalSubprocessSpawner) SpawnBackground(ctx context.Context, opts SpawnOpts) (*CoordinatorHandle, error) {
+	if opts.Command == "" {
+		opts.Command = s.Command
+	}
+	return SpawnBackground(ctx, opts)
 }
 
 // streamEvent represents a top-level line from claude -p --output-format stream-json --verbose.
@@ -68,9 +94,9 @@ type streamEvent struct {
 type contentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
-	Name      string          `json:"name,omitempty"`  // tool_use name
-	ID        string          `json:"id,omitempty"`    // tool_use id
-	Input     json.RawMessage `json:"input,omitempty"` // tool_use input
+	Name      string          `json:"name,omitempty"`        // tool_use name
+	ID        string          `json:"id,omitempty"`          // tool_use id
+	Input     json.RawMessage `json:"input,omitempty"`       // tool_use input
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result reference
 }
 

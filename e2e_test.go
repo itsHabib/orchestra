@@ -1,12 +1,85 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func goCommand() string {
+	name := "go"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if goroot := runtime.GOROOT(); goroot != "" {
+		path := filepath.Join(goroot, "bin", name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "go"
+}
+
+func testExecutableName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+func buildOrchestraBinary(t *testing.T, binDir string) string {
+	t.Helper()
+	binPath := filepath.Join(binDir, testExecutableName("orchestra"))
+	build := exec.Command(goCommand(), "build", "-o", binPath, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build orchestra: %v\n%s", err, out)
+	}
+	return binPath
+}
+
+func writeMockClaudeCommand(t *testing.T, dir string, stdout, stderr []string, exitCode, sleepMillis int) string {
+	t.Helper()
+	path := filepath.Join(dir, testExecutableName("claude"))
+	srcPath := filepath.Join(dir, "mock_claude.go")
+	src := fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+)
+
+func main() {
+	if %d > 0 {
+		time.Sleep(time.Duration(%d) * time.Millisecond)
+	}
+	for _, line := range %#v {
+		fmt.Println(line)
+	}
+	for _, line := range %#v {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	os.Exit(%d)
+}
+`, sleepMillis, sleepMillis, stdout, stderr, exitCode)
+	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command(goCommand(), "build", "-o", path, srcPath)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building mock claude: %v\n%s", err, out)
+	}
+	return path
+}
+
+func pathWithPrepended(dir string) string {
+	return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
+}
 
 // TestE2E_OrchestraRun runs a full orchestra run with a mock claude script.
 // It validates: config parsing, DAG ordering, spawner with progress output,
@@ -14,31 +87,20 @@ import (
 func TestE2E_OrchestraRun(t *testing.T) {
 	// Build the orchestra binary
 	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "orchestra")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = "."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("failed to build orchestra: %v\n%s", err, out)
-	}
+	binPath := buildOrchestraBinary(t, binDir)
 
 	// Create a mock claude script that emits stream-json
-	mockClaude := filepath.Join(binDir, "claude")
-	mockScript := `#!/bin/bash
-# Ignore all flags, just emit stream-json in the real claude format
-sleep 0.1
-echo '{"type":"system","subtype":"init","session_id":"sess-'$$'"}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"planning..."}]}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Starting work on the task..."}]}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/test.go"}}]}}'
-echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"go build ./..."}}]}}'
-echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All tasks completed successfully."}]}}'
-echo '{"type":"result","subtype":"success","result":"Completed all tasks.","total_cost_usd":0.25,"num_turns":3,"duration_ms":1500,"session_id":"sess-'$$'"}'
-`
-	if err := os.WriteFile(mockClaude, []byte(mockScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeMockClaudeCommand(t, binDir, []string{
+		`{"type":"system","subtype":"init","session_id":"sess-e2e"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"planning..."}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Starting work on the task..."}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/test.go"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"go build ./..."}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All tasks completed successfully."}]}}`,
+		`{"type":"result","subtype":"success","result":"Completed all tasks.","total_cost_usd":0.25,"num_turns":3,"duration_ms":1500,"session_id":"sess-e2e"}`,
+	}, nil, 0, 100)
 
 	// Create a minimal orchestra.yaml with a 2-tier DAG
 	workDir := t.TempDir()
@@ -96,7 +158,7 @@ teams:
 	// Run orchestra with the mock claude in PATH
 	cmd := exec.Command(binPath, "run", configPath)
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), pathWithPrepended(binDir))
 
 	out, err := cmd.CombinedOutput()
 	output := string(out)
@@ -176,22 +238,10 @@ teams:
 // and reports the error.
 func TestE2E_OrchestraRun_TeamFailure(t *testing.T) {
 	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "orchestra")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = "."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("failed to build orchestra: %v\n%s", err, out)
-	}
+	binPath := buildOrchestraBinary(t, binDir)
 
 	// Mock claude that fails
-	mockClaude := filepath.Join(binDir, "claude")
-	mockScript := `#!/bin/bash
-echo "something broke" >&2
-exit 1
-`
-	if err := os.WriteFile(mockClaude, []byte(mockScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeMockClaudeCommand(t, binDir, nil, []string{"something broke"}, 1, 0)
 
 	workDir := t.TempDir()
 	configYAML := `name: "fail-test"
@@ -233,7 +283,7 @@ teams:
 
 	cmd := exec.Command(binPath, "run", configPath)
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), pathWithPrepended(binDir))
 
 	out, err := cmd.CombinedOutput()
 	output := string(out)
