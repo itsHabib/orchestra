@@ -1,0 +1,128 @@
+version: "2"
+
+linters:
+  enable:
+    # Correctness
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - bodyclose
+    - durationcheck
+    - nilerr
+    - reassign
+    - rowserrcheck
+    - sqlclosecheck
+    - contextcheck
+    - noctx
+    - errorlint
+    - forcetypeassert
+    - musttag
+
+    # Style - Dave Cheney: clear names, simple control flow, happy path not indented
+    - revive
+    - misspell
+    - unconvert
+    - unparam
+    - predeclared
+    - errname
+    - copyloopvar
+    - godoclint
+    - nakedret
+    - nonamedreturns
+
+    # Complexity - Dave Cheney: functions should do one thing, be short
+    - gocyclo
+    - gocognit
+    - funlen
+    - nestif
+
+    # Code quality
+    - gocritic
+    - unused
+    - wastedassign
+    - usestdlibvars
+    - exhaustive
+    - perfsprint
+
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+          disabled: false
+        - name: exported
+          disabled: false
+        - name: unexported-return
+          disabled: false
+        - name: blank-imports
+          disabled: false
+        - name: context-as-argument
+          disabled: false
+        - name: context-keys-type
+          disabled: false
+        - name: error-return
+          disabled: false
+        - name: error-strings
+          disabled: false
+        - name: error-naming
+          disabled: false
+        - name: increment-decrement
+          disabled: false
+        - name: range
+          disabled: false
+        - name: receiver-naming
+          disabled: false
+        # Dave Cheney: the happy path is not indented
+        - name: indent-error-flow
+          disabled: false
+        - name: superfluous-else
+          disabled: false
+        - name: unreachable-code
+          disabled: false
+        - name: unused-parameter
+          disabled: false
+        - name: unnecessary-stmt
+          disabled: false
+        - name: empty-block
+          disabled: false
+
+    gocyclo:
+      min-complexity: 15
+
+    gocognit:
+      min-complexity: 20
+
+    funlen:
+      lines: 80
+      statements: 50
+
+    nestif:
+      min-complexity: 4
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+
+    misspell:
+      locale: US
+
+    errcheck:
+      check-type-assertions: true
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    nakedret:
+      max-func-lines: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  exclude-dirs:
+    - docs
+    - testdata

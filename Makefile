@@ -4,7 +4,7 @@ ifeq ($(GOBIN),)
   GOBIN = $(shell go env GOPATH)/bin
 endif
 
-.PHONY: build install uninstall test vet clean
+.PHONY: build install uninstall test vet lint check clean
 
 build:
 	go build -o $(BINARY) .
@@ -22,6 +22,12 @@ test:
 
 vet:
 	go vet ./...
+
+lint:
+	go vet ./...
+	go tool golangci-lint run ./...
+
+check: lint test build
 
 clean:
 	rm -f $(BINARY)
