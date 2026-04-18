@@ -20,7 +20,7 @@ var spawnCmd = &cobra.Command{
 	Use:   "spawn <config.yaml>",
 	Short: "Spawn a single team",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
 		cfg, _, err := config.Load(args[0])
@@ -42,7 +42,7 @@ var spawnCmd = &cobra.Command{
 			state, _ = ws.ReadState()
 		}
 
-		prompt := injection.BuildPrompt(*team, cfg.Name, state, cfg, nil, "", "")
+		prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, nil, "", "")
 
 		model := team.Lead.Model
 		if model == "" {
@@ -51,7 +51,7 @@ var spawnCmd = &cobra.Command{
 
 		logger.TeamMsg(team.Name, "Spawning %s (model: %s)", team.Lead.Role, model)
 
-		result, err := spawner.Spawn(context.Background(), spawner.SpawnOpts{
+		result, err := spawner.Spawn(context.Background(), &spawner.SpawnOpts{
 			TeamName:       team.Name,
 			Prompt:         prompt,
 			Model:          model,
@@ -71,5 +71,7 @@ var spawnCmd = &cobra.Command{
 
 func init() {
 	spawnCmd.Flags().StringVar(&teamFlag, "team", "", "Team name to spawn (required)")
-	spawnCmd.MarkFlagRequired("team")
+	if err := spawnCmd.MarkFlagRequired("team"); err != nil {
+		panic(err)
+	}
 }

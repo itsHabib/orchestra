@@ -19,13 +19,13 @@ const smokeHistoryFile = "testdata/smoke/history.jsonl"
 
 // smokeRun is a single smoke test result appended to history.
 type smokeRun struct {
-	Timestamp    string          `json:"ts"`
-	WallClockMs  int64           `json:"wall_ms"`
-	TotalIn      int64           `json:"total_in"`
-	TotalOut     int64           `json:"total_out"`
-	TotalTurns   int             `json:"total_turns"`
-	Passed       bool            `json:"passed"`
-	Teams        map[string]smokeTeam `json:"teams"`
+	Timestamp   string               `json:"ts"`
+	WallClockMs int64                `json:"wall_ms"`
+	TotalIn     int64                `json:"total_in"`
+	TotalOut    int64                `json:"total_out"`
+	TotalTurns  int                  `json:"total_turns"`
+	Passed      bool                 `json:"passed"`
+	Teams       map[string]smokeTeam `json:"teams"`
 }
 
 type smokeTeam struct {

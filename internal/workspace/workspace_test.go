@@ -19,11 +19,25 @@ func testConfig() *config.Config {
 	}
 }
 
-func TestInit_CreatesStructure(t *testing.T) {
-	origDir, _ := os.Getwd()
+func chdirTemp(t *testing.T) {
+	t.Helper()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestInit_CreatesStructure(t *testing.T) {
+	chdirTemp(t)
 
 	ws, err := Init(testConfig())
 	if err != nil {
@@ -68,12 +82,12 @@ func TestInit_CreatesStructure(t *testing.T) {
 }
 
 func TestState_RoundTrip(t *testing.T) {
-	origDir, _ := os.Getwd()
-	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	chdirTemp(t)
 
-	ws, _ := Init(testConfig())
+	ws, err := Init(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 	state := &State{
 		Project: "rtt",
 		Teams: map[string]TeamState{
@@ -93,12 +107,12 @@ func TestState_RoundTrip(t *testing.T) {
 }
 
 func TestResult_RoundTrip(t *testing.T) {
-	origDir, _ := os.Getwd()
-	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	chdirTemp(t)
 
-	ws, _ := Init(testConfig())
+	ws, err := Init(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := &TeamResult{
 		Team:    "alpha",
 		Status:  "success",
@@ -118,12 +132,12 @@ func TestResult_RoundTrip(t *testing.T) {
 }
 
 func TestUpdateTeamState_Concurrent(t *testing.T) {
-	origDir, _ := os.Getwd()
-	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	chdirTemp(t)
 
-	ws, _ := Init(testConfig())
+	ws, err := Init(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -134,7 +148,11 @@ func TestUpdateTeamState_Concurrent(t *testing.T) {
 			if n%2 == 0 {
 				name = "beta"
 			}
-			ws.UpdateTeamState(name, TeamState{Status: "done", CostUSD: float64(n)})
+			if err := ws.UpdateTeamState(name, func(ts *TeamState) {
+				*ts = TeamState{Status: "done", CostUSD: float64(n)}
+			}); err != nil {
+				t.Errorf("UpdateTeamState failed: %v", err)
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -149,14 +167,14 @@ func TestUpdateTeamState_Concurrent(t *testing.T) {
 }
 
 func TestUpdateRegistryEntry(t *testing.T) {
-	origDir, _ := os.Getwd()
-	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	chdirTemp(t)
 
-	ws, _ := Init(testConfig())
+	ws, err := Init(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	err := ws.UpdateRegistryEntry("alpha", func(e *RegistryEntry) {
+	err = ws.UpdateRegistryEntry("alpha", func(e *RegistryEntry) {
 		e.Status = "running"
 		e.SessionID = "abc-123"
 	})
@@ -164,7 +182,10 @@ func TestUpdateRegistryEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg, _ := ws.ReadRegistry()
+	reg, err := ws.ReadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, entry := range reg.Teams {
 		if entry.Name == "alpha" {
 			if entry.Status != "running" || entry.SessionID != "abc-123" {
@@ -177,13 +198,13 @@ func TestUpdateRegistryEntry(t *testing.T) {
 }
 
 func TestUpdateRegistryEntry_NotFound(t *testing.T) {
-	origDir, _ := os.Getwd()
-	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	chdirTemp(t)
 
-	ws, _ := Init(testConfig())
-	err := ws.UpdateRegistryEntry("nonexistent", func(e *RegistryEntry) {})
+	ws, err := Init(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ws.UpdateRegistryEntry("nonexistent", func(_ *RegistryEntry) {})
 	if err == nil {
 		t.Fatal("expected error for unknown team")
 	}
@@ -197,18 +218,22 @@ func TestOpen_NonExistent(t *testing.T) {
 }
 
 func TestLogWriter(t *testing.T) {
-	origDir, _ := os.Getwd()
-	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	chdirTemp(t)
 
-	ws, _ := Init(testConfig())
+	ws, err := Init(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 	w, err := ws.LogWriter("alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Write([]byte("test log"))
-	w.Close()
+	if _, err := w.Write([]byte("test log")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	data, err := os.ReadFile(filepath.Join(ws.Path, "logs", "alpha.log"))
 	if err != nil {

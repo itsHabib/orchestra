@@ -17,7 +17,7 @@ var workspaceFlag string
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Print team status from a workspace",
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		logger := olog.New()
 
 		ws, err := workspace.Open(workspaceFlag)
@@ -60,7 +60,7 @@ var statusCmd = &cobra.Command{
 		// Summary line
 		bold := color.New(color.Bold)
 		fmt.Println()
-		bold.Printf("  %s\n", state.Project)
+		_, _ = bold.Printf("  %s\n", state.Project)
 
 		var parts []string
 		if n := counts["done"]; n > 0 {

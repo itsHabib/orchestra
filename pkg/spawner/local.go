@@ -40,19 +40,28 @@ func NewLocalSubprocessSpawner() *LocalSubprocessSpawner {
 }
 
 // Spawn runs a local claude -p subprocess.
-func (s *LocalSubprocessSpawner) Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
-	if opts.Command == "" {
-		opts.Command = s.Command
+func (s *LocalSubprocessSpawner) Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.TeamResult, error) {
+	localOpts := cloneSpawnOpts(opts)
+	if localOpts.Command == "" {
+		localOpts.Command = s.Command
 	}
-	return Spawn(ctx, opts)
+	return Spawn(ctx, &localOpts)
 }
 
 // SpawnBackground starts a local claude -p subprocess in the background.
-func (s *LocalSubprocessSpawner) SpawnBackground(ctx context.Context, opts SpawnOpts) (*CoordinatorHandle, error) {
-	if opts.Command == "" {
-		opts.Command = s.Command
+func (s *LocalSubprocessSpawner) SpawnBackground(ctx context.Context, opts *SpawnOpts) (*CoordinatorHandle, error) {
+	localOpts := cloneSpawnOpts(opts)
+	if localOpts.Command == "" {
+		localOpts.Command = s.Command
 	}
-	return SpawnBackground(ctx, opts)
+	return SpawnBackground(ctx, &localOpts)
+}
+
+func cloneSpawnOpts(opts *SpawnOpts) SpawnOpts {
+	if opts == nil {
+		return SpawnOpts{}
+	}
+	return *opts
 }
 
 // streamEvent represents a top-level line from claude -p --output-format stream-json --verbose.
@@ -102,12 +111,78 @@ type contentBlock struct {
 
 // Spawn runs claude -p with the given prompt, parses stream-json output,
 // and returns the structured result. Blocks until the process exits or times out.
-func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
-	cmd := opts.Command
-	if cmd == "" {
-		cmd = "claude"
+func Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.TeamResult, error) {
+	localOpts := cloneSpawnOpts(opts)
+	ctx, cancel := withSpawnTimeout(ctx, localOpts.TimeoutMinutes)
+	if cancel != nil {
+		defer cancel()
 	}
 
+	proc, stdout, stderr, err := startLocalProcess(ctx, &localOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	parser := newStreamParser(&localOpts)
+	result, err := parser.read(stdout)
+	if err != nil {
+		return nil, err
+	}
+	err = waitForLocalProcess(proc, result != nil, parser.progress, localOpts.TeamName)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("timeout after %d minutes", localOpts.TimeoutMinutes)
+	}
+
+	if result != nil {
+		return result, nil
+	}
+
+	// Process exited without a result message
+	if err == nil {
+		// Exit code 0 but no result — use last assistant text
+		return &workspace.TeamResult{
+			Team:      localOpts.TeamName,
+			Status:    "success",
+			Result:    parser.lastAssistText,
+			SessionID: parser.sessionID,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("process exited with error: %w; stderr: %s", err, stderr.String())
+}
+
+func withSpawnTimeout(ctx context.Context, timeoutMinutes int) (context.Context, context.CancelFunc) {
+	if timeoutMinutes <= 0 {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, time.Duration(timeoutMinutes)*time.Minute)
+}
+
+func startLocalProcess(ctx context.Context, opts *SpawnOpts) (*exec.Cmd, io.Reader, *bytes.Buffer, error) {
+	cmdName := opts.Command
+	if cmdName == "" {
+		cmdName = "claude"
+	}
+
+	proc := exec.CommandContext(ctx, cmdName, buildClaudeArgs(opts)...)
+	proc.Env = claudeEnv()
+
+	stdout, err := proc.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
+	stderr := &bytes.Buffer{}
+	proc.Stderr = stderr
+
+	if err := proc.Start(); err != nil {
+		return nil, nil, nil, fmt.Errorf("starting process: %w", err)
+	}
+	return proc, stdout, stderr, nil
+}
+
+func buildClaudeArgs(opts *SpawnOpts) []string {
 	args := []string{
 		"-p", opts.Prompt,
 		"--output-format", "stream-json",
@@ -119,238 +194,279 @@ func Spawn(ctx context.Context, opts SpawnOpts) (*workspace.TeamResult, error) {
 	if opts.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(opts.MaxTurns))
 	}
-	if opts.PermissionMode != "" {
-		args = append(args, "--permission-mode", opts.PermissionMode)
-		if opts.PermissionMode == "bypassPermissions" {
-			args = append(args, "--dangerously-skip-permissions")
-		}
+	if opts.PermissionMode == "" {
+		return args
 	}
-
-	// Apply timeout via context
-	if opts.TimeoutMinutes > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMinutes)*time.Minute)
-		defer cancel()
+	args = append(args, "--permission-mode", opts.PermissionMode)
+	if opts.PermissionMode == "bypassPermissions" {
+		args = append(args, "--dangerously-skip-permissions")
 	}
+	return args
+}
 
-	proc := exec.CommandContext(ctx, cmd, args...)
-
-	// Strip CLAUDECODE env var so child claude processes don't refuse to start
+func claudeEnv() []string {
 	var env []string
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "CLAUDECODE=") {
 			env = append(env, e)
 		}
 	}
-	proc.Env = env
+	return env
+}
 
-	stdout, err := proc.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("creating stdout pipe: %w", err)
-	}
+type streamParser struct {
+	teamName       string
+	logWriter      io.Writer
+	progress       func(teamName, msg string)
+	startTime      time.Time
+	result         *workspace.TeamResult
+	sessionID      string
+	lastAssistText string
+	turnCount      int
+	filesWritten   int
+	filesEdited    int
+	bashCmds       int
+	teammateNames  map[string]string
+}
 
-	var stderr bytes.Buffer
-	proc.Stderr = &stderr
-
-	if err := proc.Start(); err != nil {
-		return nil, fmt.Errorf("starting process: %w", err)
-	}
-
+func newStreamParser(opts *SpawnOpts) *streamParser {
 	progress := opts.ProgressFunc
 	if progress == nil {
-		progress = func(string, string) {} // no-op
+		progress = func(string, string) {}
 	}
-
-	startTime := time.Now()
-
-	var (
-		result         *workspace.TeamResult
-		sessionID      string
-		lastAssistText string
-		turnCount      int
-		filesWritten   int
-		filesEdited    int
-		bashCmds       int
-	)
-
-	// Track teammate names: tool_use_id → description from Agent tool_use events
-	teammateNames := make(map[string]string)
-
-	elapsed := func() string {
-		d := time.Since(startTime).Round(time.Second)
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%02ds", m, s)
+	return &streamParser{
+		teamName:      opts.TeamName,
+		logWriter:     opts.LogWriter,
+		progress:      progress,
+		startTime:     time.Now(),
+		teammateNames: make(map[string]string),
 	}
+}
 
+func (p *streamParser) read(stdout io.Reader) (*workspace.TeamResult, error) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for long lines
-
 	for scanner.Scan() {
-		line := scanner.Bytes()
-
-		// Tee to log writer
-		if opts.LogWriter != nil {
-			opts.LogWriter.Write(line)
-			opts.LogWriter.Write([]byte("\n"))
+		if err := p.handleLine(scanner.Bytes()); err != nil {
+			return nil, err
 		}
-
-		var evt streamEvent
-		if err := json.Unmarshal(line, &evt); err != nil {
-			continue // skip non-JSON lines
-		}
-
-		switch evt.Type {
-		case "system":
-			if evt.Subtype == "init" {
-				if evt.SessionID != "" {
-					sessionID = evt.SessionID
-				}
-				progress(opts.TeamName, fmt.Sprintf("⏳ session started (%s)", elapsed()))
-			} else if evt.Subtype == "task_progress" && evt.TaskToolUseID != "" {
-				if role, ok := teammateNames[evt.TaskToolUseID]; ok {
-					prefix := fmt.Sprintf("%s:%s", opts.TeamName, role)
-					detail := evt.Description
-					if detail == "" && evt.LastToolName != "" {
-						detail = evt.LastToolName
-					}
-					if detail != "" {
-						if len(detail) > 120 {
-							detail = detail[:120] + "…"
-						}
-						progress(prefix, fmt.Sprintf("   %s", detail))
-					}
-				}
-			}
-
-		case "assistant":
-			turnCount++
-			for _, c := range evt.Message.Content {
-				switch c.Type {
-				case "text":
-					if c.Text != "" {
-						lastAssistText = c.Text
-						preview := c.Text
-						// Replace newlines with spaces for single-line display
-						preview = compactText(preview)
-						if len(preview) > 140 {
-							preview = preview[:140] + "…"
-						}
-						progress(opts.TeamName, fmt.Sprintf("💬 [turn %d | %s] %s", turnCount, elapsed(), preview))
-					}
-				case "tool_use":
-					if c.Name != "" {
-						detail := summarizeToolUse(c.Name, c.Input)
-						progress(opts.TeamName, fmt.Sprintf("🔧 [turn %d | %s] %s", turnCount, elapsed(), detail))
-						// Track teammate names from Agent tool_use
-						if c.Name == "Agent" && c.ID != "" {
-							var agentParams map[string]any
-							if err := json.Unmarshal(c.Input, &agentParams); err == nil {
-								if desc, ok := agentParams["description"].(string); ok && desc != "" {
-									teammateNames[c.ID] = desc
-								}
-							}
-						}
-						// Track stats
-						switch c.Name {
-						case "Write":
-							filesWritten++
-						case "Edit":
-							filesEdited++
-						case "Bash":
-							bashCmds++
-						}
-					}
-				case "thinking":
-					progress(opts.TeamName, fmt.Sprintf("🧠 [turn %d | %s] thinking...", turnCount, elapsed()))
-				}
-			}
-
-		case "user":
-			// Tool results come back as user messages — show completion
-			for _, c := range evt.Message.Content {
-				if c.Type == "tool_result" {
-					progress(opts.TeamName, fmt.Sprintf("   [turn %d | %s] ✓ tool completed", turnCount, elapsed()))
-				}
-			}
-
-		case "result":
-			costUSD := evt.TotalCost
-			if costUSD == 0 {
-				costUSD = evt.CostUSD
-			}
-			sid := evt.SessionID
-			if sid == "" {
-				sid = sessionID
-			}
-			inputTokens := evt.Usage.InputTokens + evt.Usage.CacheCreationInputTokens + evt.Usage.CacheReadInputTokens
-			outputTokens := evt.Usage.OutputTokens
-			result = &workspace.TeamResult{
-				Team:         opts.TeamName,
-				Status:       evt.Subtype,
-				Result:       evt.Result,
-				CostUSD:      costUSD,
-				NumTurns:     evt.NumTurns,
-				DurationMs:   evt.DurationMs,
-				SessionID:    sid,
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-			}
-			progress(opts.TeamName, fmt.Sprintf("✅ finished (%s) — %d turns, %s in / %s out, %d writes, %d edits, %d bash cmds",
-				elapsed(), evt.NumTurns, formatTokens(inputTokens), formatTokens(outputTokens), filesWritten, filesEdited, bashCmds))
-			// Result received — stop reading stdout. The process should exit on its own,
-			// but if it hangs we'll force-kill it below.
-			break
-		}
-
-		// Break outer loop when result is received
-		if result != nil {
+		if p.result != nil {
 			break
 		}
 	}
+	return p.result, nil
+}
 
-	// If we got a result, give the process a grace period to exit cleanly,
-	// then force-kill it to avoid zombie hangs.
-	if result != nil {
-		done := make(chan error, 1)
-		go func() { done <- proc.Wait() }()
-		select {
-		case err = <-done:
-			// Exited cleanly within grace period
-		case <-time.After(60 * time.Second):
-			progress(opts.TeamName, "⚠️  process didn't exit 60s after result — force killing")
-			proc.Process.Kill()
-			err = <-done // reap after kill
+func (p *streamParser) handleLine(line []byte) error {
+	if err := p.writeLogLine(line); err != nil {
+		return err
+	}
+
+	var evt streamEvent
+	if !decodeStreamEvent(line, &evt) {
+		return nil
+	}
+	p.handleEvent(&evt)
+	return nil
+}
+
+func decodeStreamEvent(line []byte, evt *streamEvent) bool {
+	return json.Unmarshal(line, evt) == nil
+}
+
+func (p *streamParser) writeLogLine(line []byte) error {
+	if p.logWriter == nil {
+		return nil
+	}
+	if _, err := p.logWriter.Write(line); err != nil {
+		return fmt.Errorf("writing log line: %w", err)
+	}
+	if _, err := p.logWriter.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("writing log newline: %w", err)
+	}
+	return nil
+}
+
+func (p *streamParser) handleEvent(evt *streamEvent) {
+	switch evt.Type {
+	case "system":
+		p.handleSystem(evt)
+	case "assistant":
+		p.handleAssistant(evt)
+	case "user":
+		p.handleUser(evt)
+	case "result":
+		p.handleResult(evt)
+	}
+}
+
+func (p *streamParser) handleSystem(evt *streamEvent) {
+	switch evt.Subtype {
+	case "init":
+		p.handleInit(evt.SessionID)
+	case "task_progress":
+		p.handleTaskProgress(evt)
+	}
+}
+
+func (p *streamParser) handleInit(sessionID string) {
+	if sessionID != "" {
+		p.sessionID = sessionID
+	}
+	p.progress(p.teamName, fmt.Sprintf("⏳ session started (%s)", p.elapsed()))
+}
+
+func (p *streamParser) handleTaskProgress(evt *streamEvent) {
+	if evt.TaskToolUseID == "" {
+		return
+	}
+	role, ok := p.teammateNames[evt.TaskToolUseID]
+	if !ok {
+		return
+	}
+	detail := taskProgressDetail(evt)
+	if detail == "" {
+		return
+	}
+	p.progress(p.teamName+":"+role, "   "+truncateText(detail, 120))
+}
+
+func taskProgressDetail(evt *streamEvent) string {
+	if evt.Description != "" {
+		return evt.Description
+	}
+	return evt.LastToolName
+}
+
+func (p *streamParser) handleAssistant(evt *streamEvent) {
+	p.turnCount++
+	for i := range evt.Message.Content {
+		p.handleContentBlock(&evt.Message.Content[i])
+	}
+}
+
+func (p *streamParser) handleContentBlock(c *contentBlock) {
+	switch c.Type {
+	case "text":
+		p.handleText(c.Text)
+	case "tool_use":
+		p.handleToolUse(c)
+	case "thinking":
+		p.progress(p.teamName, fmt.Sprintf("🧠 [turn %d | %s] thinking...", p.turnCount, p.elapsed()))
+	}
+}
+
+func (p *streamParser) handleText(text string) {
+	if text == "" {
+		return
+	}
+	p.lastAssistText = text
+	preview := truncateText(compactText(text), 140)
+	p.progress(p.teamName, fmt.Sprintf("💬 [turn %d | %s] %s", p.turnCount, p.elapsed(), preview))
+}
+
+func (p *streamParser) handleToolUse(c *contentBlock) {
+	if c.Name == "" {
+		return
+	}
+	detail := summarizeToolUse(c.Name, c.Input)
+	p.progress(p.teamName, fmt.Sprintf("🔧 [turn %d | %s] %s", p.turnCount, p.elapsed(), detail))
+	p.trackAgentToolUse(c)
+	p.trackToolStats(c.Name)
+}
+
+func (p *streamParser) trackAgentToolUse(c *contentBlock) {
+	if c.Name != "Agent" || c.ID == "" {
+		return
+	}
+	var agentParams map[string]any
+	if err := json.Unmarshal(c.Input, &agentParams); err != nil {
+		return
+	}
+	if desc, ok := agentParams["description"].(string); ok && desc != "" {
+		p.teammateNames[c.ID] = desc
+	}
+}
+
+func (p *streamParser) trackToolStats(name string) {
+	switch name {
+	case "Write":
+		p.filesWritten++
+	case "Edit":
+		p.filesEdited++
+	case "Bash":
+		p.bashCmds++
+	}
+}
+
+func (p *streamParser) handleUser(evt *streamEvent) {
+	for i := range evt.Message.Content {
+		if evt.Message.Content[i].Type == "tool_result" {
+			p.progress(p.teamName, fmt.Sprintf("   [turn %d | %s] ✓ tool completed", p.turnCount, p.elapsed()))
 		}
-	} else {
-		err = proc.Wait()
+	}
+}
+
+func (p *streamParser) handleResult(evt *streamEvent) {
+	inputTokens := evt.Usage.InputTokens + evt.Usage.CacheCreationInputTokens + evt.Usage.CacheReadInputTokens
+	outputTokens := evt.Usage.OutputTokens
+	p.result = &workspace.TeamResult{
+		Team:         p.teamName,
+		Status:       evt.Subtype,
+		Result:       evt.Result,
+		CostUSD:      eventCost(evt),
+		NumTurns:     evt.NumTurns,
+		DurationMs:   evt.DurationMs,
+		SessionID:    p.eventSessionID(evt.SessionID),
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+	}
+	p.progress(p.teamName, fmt.Sprintf("✅ finished (%s) — %d turns, %s in / %s out, %d writes, %d edits, %d bash cmds",
+		p.elapsed(), evt.NumTurns, formatTokens(inputTokens), formatTokens(outputTokens), p.filesWritten, p.filesEdited, p.bashCmds))
+}
+
+func (p *streamParser) eventSessionID(sessionID string) string {
+	if sessionID != "" {
+		return sessionID
+	}
+	return p.sessionID
+}
+
+func (p *streamParser) elapsed() string {
+	d := time.Since(p.startTime).Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+func eventCost(evt *streamEvent) float64 {
+	if evt.TotalCost != 0 {
+		return evt.TotalCost
+	}
+	return evt.CostUSD
+}
+
+func waitForLocalProcess(proc *exec.Cmd, gotResult bool, progress func(string, string), teamName string) error {
+	if !gotResult {
+		return proc.Wait()
 	}
 
-	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("timeout after %d minutes", opts.TimeoutMinutes)
+	done := make(chan error, 1)
+	go func() { done <- proc.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(60 * time.Second):
+		progress(teamName, "⚠️  process didn't exit 60s after result — force killing")
+		if killErr := proc.Process.Kill(); killErr != nil {
+			progress(teamName, "failed to force kill process: "+killErr.Error())
+		}
+		return <-done
 	}
-
-	if result != nil {
-		return result, nil
-	}
-
-	// Process exited without a result message
-	if err == nil {
-		// Exit code 0 but no result — use last assistant text
-		return &workspace.TeamResult{
-			Team:      opts.TeamName,
-			Status:    "success",
-			Result:    lastAssistText,
-			SessionID: sessionID,
-		}, nil
-	}
-
-	return nil, fmt.Errorf("process exited with error: %w; stderr: %s", err, stderr.String())
 }
 
 // CoordinatorHandle provides a non-blocking handle to a background claude -p process.
 type CoordinatorHandle struct {
-	cmd    *exec.Cmd
 	cancel context.CancelFunc
 	done   chan struct{}
 	result *workspace.TeamResult
@@ -375,10 +491,12 @@ func (h *CoordinatorHandle) Done() <-chan struct{} {
 
 // SpawnBackground starts a claude -p process in the background and returns immediately.
 // The process runs until completion, timeout, or cancellation.
-func SpawnBackground(ctx context.Context, opts SpawnOpts) (*CoordinatorHandle, error) {
+func SpawnBackground(ctx context.Context, opts *SpawnOpts) (*CoordinatorHandle, error) {
+	localOpts := cloneSpawnOpts(opts)
+
 	ctx, cancel := context.WithCancel(ctx)
-	if opts.TimeoutMinutes > 0 {
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMinutes)*time.Minute)
+	if localOpts.TimeoutMinutes > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(localOpts.TimeoutMinutes)*time.Minute)
 	}
 
 	handle := &CoordinatorHandle{
@@ -388,7 +506,7 @@ func SpawnBackground(ctx context.Context, opts SpawnOpts) (*CoordinatorHandle, e
 
 	go func() {
 		defer close(handle.done)
-		result, err := Spawn(ctx, opts)
+		result, err := Spawn(ctx, &localOpts)
 		handle.result = result
 		handle.err = err
 	}()
@@ -414,6 +532,13 @@ func compactText(s string) string {
 	return string(out)
 }
 
+func truncateText(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
+}
+
 // formatTokens formats a token count as a human-readable string (e.g. "284K", "1.2M").
 func formatTokens(n int64) string {
 	switch {
@@ -422,75 +547,97 @@ func formatTokens(n int64) string {
 	case n >= 1_000:
 		return fmt.Sprintf("%dK", n/1_000)
 	default:
-		return fmt.Sprintf("%d", n)
+		return strconv.FormatInt(n, 10)
 	}
 }
 
 // summarizeToolUse returns a human-readable summary of a tool invocation.
 func summarizeToolUse(name string, input json.RawMessage) string {
-	var params map[string]any
-	if err := json.Unmarshal(input, &params); err != nil {
+	params, ok := toolParams(input)
+	if !ok {
 		return name
 	}
 
 	switch name {
-	case "Write":
-		if fp, ok := params["file_path"].(string); ok {
-			return fmt.Sprintf("Write → %s", fp)
-		}
-	case "Edit":
-		if fp, ok := params["file_path"].(string); ok {
-			return fmt.Sprintf("Edit → %s", fp)
-		}
-	case "Read":
-		if fp, ok := params["file_path"].(string); ok {
-			return fmt.Sprintf("Read → %s", fp)
-		}
+	case "Write", "Edit", "Read":
+		return summarizeFileTool(name, params)
 	case "Bash":
-		if cmd, ok := params["command"].(string); ok {
-			cmd = compactText(cmd)
-			if len(cmd) > 100 {
-				cmd = cmd[:100] + "…"
-			}
-			return fmt.Sprintf("Bash → %s", cmd)
-		}
+		return summarizeBashTool(params)
 	case "Glob":
-		if pat, ok := params["pattern"].(string); ok {
-			return fmt.Sprintf("Glob → %s", pat)
-		}
+		return summarizePatternTool("Glob", params)
 	case "Grep":
-		if pat, ok := params["pattern"].(string); ok {
-			path := ""
-			if p, ok := params["path"].(string); ok {
-				path = " in " + p
-			}
-			return fmt.Sprintf("Grep → %s%s", pat, path)
-		}
+		return summarizeGrepTool(params)
 	case "Task":
-		if desc, ok := params["description"].(string); ok {
-			return fmt.Sprintf("Task → %s", desc)
-		}
+		return summarizeStringParam("Task", "description", params)
 	case "TodoWrite", "TaskCreate":
-		if subj, ok := params["subject"].(string); ok {
-			return fmt.Sprintf("%s → %s", name, subj)
-		}
+		return summarizeStringParam(name, "subject", params)
 	case "Agent":
-		if desc, ok := params["description"].(string); ok {
-			bg := ""
-			if b, ok := params["run_in_background"].(bool); ok && b {
-				bg = " (background)"
-			}
-			return fmt.Sprintf("Agent → %s%s", desc, bg)
-		}
+		return summarizeAgentTool(params)
 	case "TaskOutput":
-		if taskID, ok := params["task_id"].(string); ok {
-			short := taskID
-			if len(short) > 12 {
-				short = short[:12] + "…"
-			}
-			return fmt.Sprintf("TaskOutput → waiting on %s", short)
-		}
+		return summarizeTaskOutput(params)
 	}
 
 	return name
+}
+
+func toolParams(input json.RawMessage) (map[string]any, bool) {
+	var params map[string]any
+	if err := json.Unmarshal(input, &params); err != nil {
+		return nil, false
+	}
+	return params, true
+}
+
+func summarizeFileTool(name string, params map[string]any) string {
+	return summarizeStringParam(name, "file_path", params)
+}
+
+func summarizeBashTool(params map[string]any) string {
+	if cmd, ok := params["command"].(string); ok {
+		return "Bash → " + truncateText(compactText(cmd), 100)
+	}
+	return "Bash"
+}
+
+func summarizePatternTool(name string, params map[string]any) string {
+	return summarizeStringParam(name, "pattern", params)
+}
+
+func summarizeGrepTool(params map[string]any) string {
+	pattern, ok := params["pattern"].(string)
+	if !ok {
+		return "Grep"
+	}
+	path, ok := params["path"].(string)
+	if !ok {
+		return "Grep → " + pattern
+	}
+	return "Grep → " + pattern + " in " + path
+}
+
+func summarizeStringParam(name, key string, params map[string]any) string {
+	value, ok := params[key].(string)
+	if !ok {
+		return name
+	}
+	return name + " → " + value
+}
+
+func summarizeAgentTool(params map[string]any) string {
+	desc, ok := params["description"].(string)
+	if !ok {
+		return "Agent"
+	}
+	if bg, ok := params["run_in_background"].(bool); ok && bg {
+		return "Agent → " + desc + " (background)"
+	}
+	return "Agent → " + desc
+}
+
+func summarizeTaskOutput(params map[string]any) string {
+	taskID, ok := params["task_id"].(string)
+	if !ok {
+		return "TaskOutput"
+	}
+	return "TaskOutput → waiting on " + truncateText(taskID, 12)
 }

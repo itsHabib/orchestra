@@ -18,21 +18,21 @@ func BuildTiers(teams []config.Team) ([][]string, error) {
 	inDegree := make(map[string]int)
 	dependents := make(map[string][]string) // dep -> teams that depend on it
 
-	for _, t := range teams {
-		if _, ok := inDegree[t.Name]; !ok {
-			inDegree[t.Name] = 0
+	for i := range teams {
+		if _, ok := inDegree[teams[i].Name]; !ok {
+			inDegree[teams[i].Name] = 0
 		}
-		for _, dep := range t.DependsOn {
-			inDegree[t.Name]++
-			dependents[dep] = append(dependents[dep], t.Name)
+		for _, dep := range teams[i].DependsOn {
+			inDegree[teams[i].Name]++
+			dependents[dep] = append(dependents[dep], teams[i].Name)
 		}
 	}
 
 	// Seed queue with zero in-degree nodes
 	var queue []string
-	for _, t := range teams {
-		if inDegree[t.Name] == 0 {
-			queue = append(queue, t.Name)
+	for i := range teams {
+		if inDegree[teams[i].Name] == 0 {
+			queue = append(queue, teams[i].Name)
 		}
 	}
 

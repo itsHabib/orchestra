@@ -11,10 +11,31 @@ import (
 // BuildCoordinatorPrompt constructs the prompt for the long-lived coordinator agent.
 func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath string, participants []messaging.Participant) string {
 	var b strings.Builder
+	folders := participantFolders(participants)
 
 	b.WriteString("You are: Orchestra Coordinator\n")
 	fmt.Fprintf(&b, "Project: %s\n", cfg.Name)
 
+	writeCoordinatorRole(&b)
+	writeCoordinatorProjectStructure(&b, cfg, tiers, messagesPath, folders)
+	writeCoordinatorMessageBus(&b, messagesPath, participants)
+	writeCoordinatorProtocol(&b, messagesPath)
+	writeCoordinatorMonitoring(&b, messagesPath, cfg.Defaults.InboxPollInterval)
+	writeCoordinatorRules(&b, messagesPath)
+	writeCoordinatorInstructions(&b, cfg.Defaults.InboxPollInterval)
+
+	return b.String()
+}
+
+func participantFolders(participants []messaging.Participant) map[string]string {
+	folders := make(map[string]string, len(participants))
+	for _, p := range participants {
+		folders[p.Name] = p.FolderName()
+	}
+	return folders
+}
+
+func writeCoordinatorRole(b *strings.Builder) {
 	b.WriteString("\n## Your Role\n")
 	b.WriteString("You are the top-level coordinator for this multi-team orchestration. Your job is to:\n")
 	b.WriteString("1. Monitor team progress by reading .orchestra/state.json and .orchestra/registry.json\n")
@@ -24,66 +45,87 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("5. Broadcast interface contracts and coordination notes to relevant teams\n")
 	b.WriteString("6. Escalate decisions that require human judgment to 0-human\n")
 	b.WriteString("7. Log all decisions to .orchestra/coordinator/decisions.log\n")
+}
 
-	// Project structure
+func writeCoordinatorProjectStructure(b *strings.Builder, cfg *config.Config, tiers [][]string, messagesPath string, folders map[string]string) {
 	b.WriteString("\n## Project Structure\n")
 	for tierIdx, tierNames := range tiers {
-		fmt.Fprintf(&b, "### Tier %d", tierIdx)
-		if tierIdx == 0 {
-			b.WriteString(" (runs first)")
-		}
-		b.WriteString("\n")
-		for _, name := range tierNames {
-			team := cfg.TeamByName(name)
-			if team != nil {
-				// Find participant folder name
-				folder := name
-				for _, p := range participants {
-					if p.Name == name {
-						folder = p.FolderName()
-						break
-					}
-				}
-				fmt.Fprintf(&b, "- **%s** (inbox: `%s/%s/inbox/`) — %s\n", name, messagesPath, folder, team.Lead.Role)
-				if len(team.Members) > 0 {
-					fmt.Fprintf(&b, "  Members: %d | ", len(team.Members))
-					var roles []string
-					for _, m := range team.Members {
-						roles = append(roles, m.Role)
-					}
-					b.WriteString(strings.Join(roles, ", "))
-					b.WriteString("\n")
-				}
-			}
-		}
+		writeCoordinatorTier(b, cfg, tierIdx, tierNames, messagesPath, folders)
 	}
+}
 
-	// Message bus layout
+func writeCoordinatorTier(b *strings.Builder, cfg *config.Config, tierIdx int, tierNames []string, messagesPath string, folders map[string]string) {
+	fmt.Fprintf(b, "### Tier %d", tierIdx)
+	if tierIdx == 0 {
+		b.WriteString(" (runs first)")
+	}
+	b.WriteString("\n")
+	for _, name := range tierNames {
+		team := cfg.TeamByName(name)
+		if team == nil {
+			continue
+		}
+		folder := folderForParticipant(name, folders)
+		fmt.Fprintf(b, "- **%s** (inbox: `%s/%s/inbox/`) — %s\n", name, messagesPath, folder, team.Lead.Role)
+		writeCoordinatorTeamMembers(b, team)
+	}
+}
+
+func folderForParticipant(name string, folders map[string]string) string {
+	if folder := folders[name]; folder != "" {
+		return folder
+	}
+	return name
+}
+
+func writeCoordinatorTeamMembers(b *strings.Builder, team *config.Team) {
+	if len(team.Members) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "  Members: %d | ", len(team.Members))
+	var roles []string
+	for _, m := range team.Members {
+		roles = append(roles, m.Role)
+	}
+	b.WriteString(strings.Join(roles, ", "))
+	b.WriteString("\n")
+}
+
+func writeCoordinatorMessageBus(b *strings.Builder, messagesPath string, participants []messaging.Participant) {
 	b.WriteString("\n## Message Bus\n")
 	b.WriteString("All inboxes are under: `" + messagesPath + "/`\n\n")
 	b.WriteString("| Folder | Owner |\n")
 	b.WriteString("|--------|-------|\n")
 	for _, p := range participants {
-		desc := p.Name
-		switch p.Name {
-		case "human":
-			desc = "Human operator (escalation target for decisions requiring human judgment)"
-		case "coordinator":
-			desc = "You (this agent)"
-		}
-		fmt.Fprintf(&b, "| `%s/inbox/` | %s |\n", p.FolderName(), desc)
+		fmt.Fprintf(b, "| `%s/inbox/` | %s |\n", p.FolderName(), participantDescription(p.Name))
 	}
-	fmt.Fprintf(&b, "| `shared/` | Broadcast artifacts (contracts, schemas) |\n")
+	fmt.Fprintf(b, "| `shared/` | Broadcast artifacts (contracts, schemas) |\n")
+}
 
-	// Message protocol
+func participantDescription(name string) string {
+	switch name {
+	case "human":
+		return "Human operator (escalation target for decisions requiring human judgment)"
+	case "coordinator":
+		return "You (this agent)"
+	default:
+		return name
+	}
+}
+
+func writeCoordinatorProtocol(b *strings.Builder, messagesPath string) {
 	b.WriteString("\n## Message Protocol\n")
 	b.WriteString("Messages are JSON files in each participant's `inbox/` directory.\n\n")
 	b.WriteString("### Reading your inbox\n")
 	b.WriteString("```bash\n")
-	fmt.Fprintf(&b, "ls %s/1-coordinator/inbox/ 2>/dev/null\n", messagesPath)
-	fmt.Fprintf(&b, "cat %s/1-coordinator/inbox/<filename>\n", messagesPath)
+	fmt.Fprintf(b, "ls %s/1-coordinator/inbox/ 2>/dev/null\n", messagesPath)
+	fmt.Fprintf(b, "cat %s/1-coordinator/inbox/<filename>\n", messagesPath)
 	b.WriteString("```\n\n")
+	writeCoordinatorSendExample(b)
+	writeCoordinatorMessageTypes(b)
+}
 
+func writeCoordinatorSendExample(b *strings.Builder) {
 	b.WriteString("### Sending a message\n")
 	b.WriteString("Write a JSON file to the recipient's inbox using atomic writes (write .tmp then rename):\n")
 	b.WriteString("```bash\n")
@@ -101,7 +143,9 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("MSGEOF\n")
 	b.WriteString("mv <recipient-folder>/inbox/<id>.json.tmp <recipient-folder>/inbox/<id>.json\n")
 	b.WriteString("```\n\n")
+}
 
+func writeCoordinatorMessageTypes(b *strings.Builder) {
 	b.WriteString("### Message types\n")
 	b.WriteString("| Type | When to use |\n")
 	b.WriteString("|------|-------------|\n")
@@ -113,8 +157,9 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("| `blocking-issue` | Escalate to human when you can't resolve |\n")
 	b.WriteString("| `gate` | Escalate to 0-human for decisions requiring human judgment |\n")
 	b.WriteString("| `broadcast` | Send to all teams (write to each inbox) |\n")
+}
 
-	// Monitoring via /loop
+func writeCoordinatorMonitoring(b *strings.Builder, messagesPath, pollInterval string) {
 	b.WriteString("\n## Monitoring with /loop\n")
 	b.WriteString("Use the `/loop` slash command to poll state and inbox on a recurring interval.\n\n")
 	b.WriteString("### Setup\n")
@@ -125,9 +170,12 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("```\n\n")
 	b.WriteString("Then start the monitoring loop:\n")
 	b.WriteString("```\n")
-	fmt.Fprintf(&b, "/loop %s /coordinator-check\n", cfg.Defaults.InboxPollInterval)
+	fmt.Fprintf(b, "/loop %s /coordinator-check\n", pollInterval)
 	b.WriteString("```\n\n")
+	writeCoordinatorCheckSteps(b, messagesPath)
+}
 
+func writeCoordinatorCheckSteps(b *strings.Builder, messagesPath string) {
 	b.WriteString("### What to do on each check\n")
 	b.WriteString("Each time the loop fires, perform these steps:\n\n")
 	b.WriteString("1. **Check state**: `cat .orchestra/state.json` — look for newly completed or failed teams\n")
@@ -141,8 +189,9 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("   - `status-update` → log it, no action needed\n")
 	b.WriteString("5. **Log decisions**: Append to `.orchestra/coordinator/decisions.log`\n")
 	b.WriteString("6. If all teams show status `\"done\"` in state.json, provide a final summary and stop\n")
+}
 
-	// Rules
+func writeCoordinatorRules(b *strings.Builder, messagesPath string) {
 	b.WriteString("\n## Important Rules\n")
 	b.WriteString("- Use atomic writes: write to `<file>.tmp` then `mv` to `<file>`\n")
 	b.WriteString("- NEVER modify `state.json` or `registry.json` — those are owned by the Go CLI\n")
@@ -151,14 +200,13 @@ func BuildCoordinatorPrompt(cfg *config.Config, tiers [][]string, messagesPath s
 	b.WriteString("- Mark processed messages as read (rewrite with `\"read\": true`)\n")
 	b.WriteString("- When escalating to 0-human, use type `gate` with clear context on what decision is needed\n")
 	b.WriteString("- Keep your decision log concise: timestamp + one-line summary per decision\n")
+}
 
-	// Start instruction
+func writeCoordinatorInstructions(b *strings.Builder, pollInterval string) {
 	b.WriteString("\n## Instructions\n")
 	b.WriteString("1. Create the decisions log directory and file\n")
 	b.WriteString("2. Do an initial state check (read state.json, check all inboxes)\n")
-	fmt.Fprintf(&b, "3. Start `/loop %s` to monitor state and inbox on a recurring interval\n", cfg.Defaults.InboxPollInterval)
+	fmt.Fprintf(b, "3. Start `/loop %s` to monitor state and inbox on a recurring interval\n", pollInterval)
 	b.WriteString("4. Between loop ticks, process any messages that need immediate action\n")
 	b.WriteString("5. Continue until all teams are done, then provide a final summary\n")
-
-	return b.String()
 }

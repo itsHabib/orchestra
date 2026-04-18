@@ -159,10 +159,14 @@ type Session interface {
 type SessionState string
 
 const (
-	SessionStateIdle         SessionState = "idle"
-	SessionStateRunning      SessionState = "running"
+	// SessionStateIdle indicates the session is waiting for input or finished a turn.
+	SessionStateIdle SessionState = "idle"
+	// SessionStateRunning indicates the session is processing work.
+	SessionStateRunning SessionState = "running"
+	// SessionStateRescheduling indicates the backend is moving the session.
 	SessionStateRescheduling SessionState = "rescheduling"
-	SessionStateTerminated   SessionState = "terminated"
+	// SessionStateTerminated indicates the session has ended.
+	SessionStateTerminated SessionState = "terminated"
 )
 
 // StopReason explains why a session became idle or terminated.

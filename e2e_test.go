@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,11 +16,18 @@ func goCommand() string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	if goroot := runtime.GOROOT(); goroot != "" {
-		path := filepath.Join(goroot, "bin", name)
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	if runtime.GOOS == "windows" {
+		path := `C:\Program Files\Go\bin\` + name
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
+	}
+	path := "/usr/local/go/bin/" + name
+	if _, err := os.Stat(path); err == nil {
+		return path
 	}
 	return "go"
 }
@@ -34,7 +42,7 @@ func testExecutableName(name string) string {
 func buildOrchestraBinary(t *testing.T, binDir string) string {
 	t.Helper()
 	binPath := filepath.Join(binDir, testExecutableName("orchestra"))
-	build := exec.Command(goCommand(), "build", "-o", binPath, ".")
+	build := exec.CommandContext(context.Background(), goCommand(), "build", "-o", binPath, ".")
 	build.Dir = "."
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build orchestra: %v\n%s", err, out)
@@ -42,7 +50,7 @@ func buildOrchestraBinary(t *testing.T, binDir string) string {
 	return binPath
 }
 
-func writeMockClaudeCommand(t *testing.T, dir string, stdout, stderr []string, exitCode, sleepMillis int) string {
+func writeMockClaudeCommand(t *testing.T, dir string, stdout, stderr []string, exitCode, sleepMillis int) {
 	t.Helper()
 	path := filepath.Join(dir, testExecutableName("claude"))
 	srcPath := filepath.Join(dir, "mock_claude.go")
@@ -70,11 +78,10 @@ func main() {
 	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command(goCommand(), "build", "-o", path, srcPath)
+	build := exec.CommandContext(context.Background(), goCommand(), "build", "-o", path, srcPath)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building mock claude: %v\n%s", err, out)
 	}
-	return path
 }
 
 func pathWithPrepended(dir string) string {
@@ -85,12 +92,27 @@ func pathWithPrepended(dir string) string {
 // It validates: config parsing, DAG ordering, spawner with progress output,
 // workspace state, results, and logs are all written correctly.
 func TestE2E_OrchestraRun(t *testing.T) {
-	// Build the orchestra binary
 	binDir := t.TempDir()
 	binPath := buildOrchestraBinary(t, binDir)
+	writeMockClaudeCommand(t, binDir, e2eSuccessStream(), nil, 0, 100)
 
-	// Create a mock claude script that emits stream-json
-	writeMockClaudeCommand(t, binDir, []string{
+	workDir := t.TempDir()
+	configPath := writeE2EConfig(t, workDir)
+	output, err := runOrchestra(t, binPath, workDir, binDir, configPath)
+	t.Logf("orchestra output:\n%s", output)
+	if err != nil {
+		t.Fatalf("orchestra run failed: %v\n%s", err, output)
+	}
+
+	wsDir := filepath.Join(workDir, ".orchestra")
+	assertE2EOutput(t, output)
+	assertWorkspaceFiles(t, wsDir)
+	assertStateDone(t, wsDir)
+	assertLogsNonEmpty(t, wsDir)
+}
+
+func e2eSuccessStream() []string {
+	return []string{
 		`{"type":"system","subtype":"init","session_id":"sess-e2e"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"planning..."}]}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Starting work on the task..."}]}}`,
@@ -100,10 +122,11 @@ func TestE2E_OrchestraRun(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All tasks completed successfully."}]}}`,
 		`{"type":"result","subtype":"success","result":"Completed all tasks.","total_cost_usd":0.25,"num_turns":3,"duration_ms":1500,"session_id":"sess-e2e"}`,
-	}, nil, 0, 100)
+	}
+}
 
-	// Create a minimal orchestra.yaml with a 2-tier DAG
-	workDir := t.TempDir()
+func writeE2EConfig(t *testing.T, workDir string) string {
+	t.Helper()
 	configYAML := `name: "e2e-test"
 
 defaults:
@@ -154,21 +177,21 @@ teams:
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return configPath
+}
 
-	// Run orchestra with the mock claude in PATH
-	cmd := exec.Command(binPath, "run", configPath)
+func runOrchestra(t *testing.T, binPath, workDir, binDir, configPath string) (string, error) {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), binPath, "run", configPath)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), pathWithPrepended(binDir))
 
 	out, err := cmd.CombinedOutput()
-	output := string(out)
-	t.Logf("orchestra output:\n%s", output)
+	return string(out), err
+}
 
-	if err != nil {
-		t.Fatalf("orchestra run failed: %v\n%s", err, output)
-	}
-
-	// ── Verify output contains expected progress messages ──
+func assertE2EOutput(t *testing.T, output string) {
+	t.Helper()
 	checks := []string{
 		"Workspace initialized",
 		"DAG: 2 tiers",
@@ -193,9 +216,10 @@ teams:
 			t.Errorf("output missing expected string: %q", check)
 		}
 	}
+}
 
-	// ── Verify workspace files were created ──
-	wsDir := filepath.Join(workDir, ".orchestra")
+func assertWorkspaceFiles(t *testing.T, wsDir string) {
+	t.Helper()
 	for _, f := range []string{
 		"state.json",
 		"registry.json",
@@ -211,8 +235,10 @@ teams:
 			t.Errorf("expected workspace file missing: %s", f)
 		}
 	}
+}
 
-	// ── Verify state.json shows all teams done ──
+func assertStateDone(t *testing.T, wsDir string) {
+	t.Helper()
 	stateData, err := os.ReadFile(filepath.Join(wsDir, "state.json"))
 	if err != nil {
 		t.Fatalf("reading state.json: %v", err)
@@ -221,8 +247,10 @@ teams:
 	if strings.Count(stateStr, `"done"`) != 3 {
 		t.Errorf("expected 3 teams with status done, got:\n%s", stateStr)
 	}
+}
 
-	// ── Verify log files are non-empty ──
+func assertLogsNonEmpty(t *testing.T, wsDir string) {
+	t.Helper()
 	for _, team := range []string{"backend", "frontend", "integration"} {
 		logData, err := os.ReadFile(filepath.Join(wsDir, "logs", team+".log"))
 		if err != nil {
@@ -281,7 +309,7 @@ teams:
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(binPath, "run", configPath)
+	cmd := exec.CommandContext(context.Background(), binPath, "run", configPath)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), pathWithPrepended(binDir))
 

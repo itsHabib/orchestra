@@ -51,7 +51,7 @@ func (l *Logger) TeamMsg(team, format string, args ...any) {
 // TierStart prints a tier header.
 func (l *Logger) TierStart(tierIdx int, teams []string) {
 	bold := color.New(color.Bold)
-	bold.Printf("\n━━━ Tier %d: %v ━━━\n", tierIdx, teams)
+	_, _ = bold.Printf("\n━━━ Tier %d: %v ━━━\n", tierIdx, teams)
 }
 
 // Info prints a general info message.
@@ -62,17 +62,17 @@ func (l *Logger) Info(format string, args ...any) {
 // Warn prints a warning message.
 func (l *Logger) Warn(format string, args ...any) {
 	yellow := color.New(color.FgYellow)
-	yellow.Printf("  ⚠ %s\n", fmt.Sprintf(format, args...))
+	_, _ = yellow.Printf("  ⚠ %s\n", fmt.Sprintf(format, args...))
 }
 
 // Error prints an error message.
 func (l *Logger) Error(format string, args ...any) {
 	red := color.New(color.FgRed)
-	red.Printf("  ✗ %s\n", fmt.Sprintf(format, args...))
+	_, _ = red.Printf("  ✗ %s\n", fmt.Sprintf(format, args...))
 }
 
 // Success prints a success message.
 func (l *Logger) Success(format string, args ...any) {
 	green := color.New(color.FgGreen)
-	green.Printf("  ✓ %s\n", fmt.Sprintf(format, args...))
+	_, _ = green.Printf("  ✓ %s\n", fmt.Sprintf(format, args...))
 }

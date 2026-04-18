@@ -9,22 +9,38 @@ type EventID string
 type EventType string
 
 const (
-	EventTypeAgentMessage                EventType = "agent.message"
-	EventTypeAgentThinking               EventType = "agent.thinking"
-	EventTypeAgentToolUse                EventType = "agent.tool_use"
-	EventTypeAgentToolResult             EventType = "agent.tool_result"
-	EventTypeAgentMCPToolUse             EventType = "agent.mcp_tool_use"
-	EventTypeAgentMCPToolResult          EventType = "agent.mcp_tool_result"
-	EventTypeAgentCustomToolUse          EventType = "agent.custom_tool_use"
+	// EventTypeAgentMessage is emitted when the agent sends message content.
+	EventTypeAgentMessage EventType = "agent.message"
+	// EventTypeAgentThinking is emitted when the agent sends thinking content.
+	EventTypeAgentThinking EventType = "agent.thinking"
+	// EventTypeAgentToolUse is emitted when the agent invokes a tool.
+	EventTypeAgentToolUse EventType = "agent.tool_use"
+	// EventTypeAgentToolResult is emitted when a tool result is available.
+	EventTypeAgentToolResult EventType = "agent.tool_result"
+	// EventTypeAgentMCPToolUse is emitted when the agent invokes an MCP tool.
+	EventTypeAgentMCPToolUse EventType = "agent.mcp_tool_use"
+	// EventTypeAgentMCPToolResult is emitted when an MCP tool result is available.
+	EventTypeAgentMCPToolResult EventType = "agent.mcp_tool_result"
+	// EventTypeAgentCustomToolUse is emitted when the agent invokes a custom tool.
+	EventTypeAgentCustomToolUse EventType = "agent.custom_tool_use"
+	// EventTypeAgentThreadContextCompacted is emitted after context compaction.
 	EventTypeAgentThreadContextCompacted EventType = "agent.thread_context_compacted"
-	EventTypeSessionStatusRunning        EventType = "session.status_running"
-	EventTypeSessionStatusIdle           EventType = "session.status_idle"
-	EventTypeSessionStatusRescheduled    EventType = "session.status_rescheduled"
-	EventTypeSessionStatusTerminated     EventType = "session.status_terminated"
-	EventTypeSessionError                EventType = "session.error"
-	EventTypeSpanModelRequestStart       EventType = "span.model_request_start"
-	EventTypeSpanModelRequestEnd         EventType = "span.model_request_end"
-	EventTypeUnknown                     EventType = "unknown"
+	// EventTypeSessionStatusRunning reports a running session.
+	EventTypeSessionStatusRunning EventType = "session.status_running"
+	// EventTypeSessionStatusIdle reports an idle session.
+	EventTypeSessionStatusIdle EventType = "session.status_idle"
+	// EventTypeSessionStatusRescheduled reports a rescheduled session.
+	EventTypeSessionStatusRescheduled EventType = "session.status_rescheduled"
+	// EventTypeSessionStatusTerminated reports a terminated session.
+	EventTypeSessionStatusTerminated EventType = "session.status_terminated"
+	// EventTypeSessionError reports a session error.
+	EventTypeSessionError EventType = "session.error"
+	// EventTypeSpanModelRequestStart reports the start of a model request span.
+	EventTypeSpanModelRequestStart EventType = "span.model_request_start"
+	// EventTypeSpanModelRequestEnd reports the end of a model request span.
+	EventTypeSpanModelRequestEnd EventType = "span.model_request_end"
+	// EventTypeUnknown preserves events the orchestrator does not yet understand.
+	EventTypeUnknown EventType = "unknown"
 )
 
 // Event is the tagged event union shared by spawner backends.
@@ -181,11 +197,16 @@ type UnknownEvent struct {
 type UserEventType string
 
 const (
-	UserEventTypeMessage          UserEventType = "user.message"
-	UserEventTypeInterrupt        UserEventType = "user.interrupt"
+	// UserEventTypeMessage sends user text into a session.
+	UserEventTypeMessage UserEventType = "user.message"
+	// UserEventTypeInterrupt interrupts a running session.
+	UserEventTypeInterrupt UserEventType = "user.interrupt"
+	// UserEventTypeToolConfirmation answers a pending tool confirmation.
 	UserEventTypeToolConfirmation UserEventType = "user.tool_confirmation"
+	// UserEventTypeCustomToolResult answers a custom tool use.
 	UserEventTypeCustomToolResult UserEventType = "user.custom_tool_result"
-	UserEventTypeDefineOutcome    UserEventType = "user.define_outcome"
+	// UserEventTypeDefineOutcome defines a user outcome.
+	UserEventTypeDefineOutcome UserEventType = "user.define_outcome"
 )
 
 // UserEvent is an event sent into a session.

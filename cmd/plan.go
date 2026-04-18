@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fatih/color"
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/injection"
 	olog "github.com/itsHabib/orchestra/internal/log"
 	"github.com/itsHabib/orchestra/internal/workspace"
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +21,7 @@ var planCmd = &cobra.Command{
 	Use:   "plan <config.yaml>",
 	Short: "Show the execution plan without running anything",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
 		cfg, warnings, err := config.Load(args[0])
@@ -41,12 +41,12 @@ var planCmd = &cobra.Command{
 
 		if jsonOutput {
 			type jsonTeam struct {
-				Name      string        `json:"name"`
-				Lead      config.Lead   `json:"lead"`
+				Name      string          `json:"name"`
+				Lead      config.Lead     `json:"lead"`
 				Members   []config.Member `json:"members,omitempty"`
-				Tasks     []config.Task `json:"tasks"`
-				DependsOn []string      `json:"depends_on,omitempty"`
-				Context   string        `json:"context,omitempty"`
+				Tasks     []config.Task   `json:"tasks"`
+				DependsOn []string        `json:"depends_on,omitempty"`
+				Context   string          `json:"context,omitempty"`
 			}
 			type jsonTier struct {
 				Tier  int        `json:"tier"`
@@ -90,7 +90,7 @@ var planCmd = &cobra.Command{
 		dim := color.New(color.Faint)
 
 		fmt.Println()
-		bold.Printf("  Project: %s\n", cfg.Name)
+		_, _ = bold.Printf("  Project: %s\n", cfg.Name)
 		fmt.Printf("  Defaults: model=%s, max_turns=%d, timeout=%dm, permission=%s\n",
 			cfg.Defaults.Model, cfg.Defaults.MaxTurns, cfg.Defaults.TimeoutMinutes, cfg.Defaults.PermissionMode)
 		fmt.Println()
@@ -101,7 +101,7 @@ var planCmd = &cobra.Command{
 			if len(tierNames) > 1 {
 				parallel = "  (parallel)"
 			}
-			bold.Printf("  Tier %d:%s\n", tierIdx, parallel)
+			_, _ = bold.Printf("  Tier %d:%s\n", tierIdx, parallel)
 
 			for _, name := range tierNames {
 				team := cfg.TeamByName(name)
@@ -117,18 +117,18 @@ var planCmd = &cobra.Command{
 
 				if team.HasMembers() {
 					for _, m := range team.Members {
-						dim.Printf("      → %s: %s\n", m.Role, m.Focus)
+						_, _ = dim.Printf("      → %s: %s\n", m.Role, m.Focus)
 					}
 				}
 
 				if len(team.DependsOn) > 0 {
-					dim.Printf("      depends on: %v\n", team.DependsOn)
+					_, _ = dim.Printf("      depends on: %v\n", team.DependsOn)
 				}
 
 				for _, task := range team.Tasks {
-					dim.Printf("      • %s", task.Summary)
+					_, _ = dim.Printf("      • %s", task.Summary)
 					if task.Verify != "" {
-						dim.Printf("  [verify: %s]", task.Verify)
+						_, _ = dim.Printf("  [verify: %s]", task.Verify)
 					}
 					fmt.Println()
 				}
@@ -155,11 +155,12 @@ var planCmd = &cobra.Command{
 				}
 			}
 
-			bold.Println("  ═══ Prompts ═══")
-			for _, team := range cfg.Teams {
+			_, _ = bold.Println("  ═══ Prompts ═══")
+			for i := range cfg.Teams {
+				team := &cfg.Teams[i]
 				prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, tierPeersMap[team.Name], "", "")
 				fmt.Println()
-				bold.Printf("  ─── %s ───\n", team.Name)
+				_, _ = bold.Printf("  ─── %s ───\n", team.Name)
 				fmt.Println(prompt)
 			}
 		}

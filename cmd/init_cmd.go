@@ -13,7 +13,7 @@ var initCmd = &cobra.Command{
 	Use:   "init <config.yaml>",
 	Short: "Initialize a .orchestra/ workspace from config",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
 		cfg, warnings, err := config.Load(args[0])

@@ -15,18 +15,26 @@ func goCommand() string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	if goroot := runtime.GOROOT(); goroot != "" {
-		path := filepath.Join(goroot, "bin", name)
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	if runtime.GOOS == "windows" {
+		path := `C:\Program Files\Go\bin\` + name
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
+	path := "/usr/local/go/bin/" + name
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
 	return "go"
 }
 
-func writeMockCommand(t *testing.T, name string, stdout, stderr []string, exitCode, sleepMillis int) string {
+func writeMockCommand(t *testing.T, stdout, stderr []string, exitCode, sleepMillis int) string {
 	t.Helper()
 	dir := t.TempDir()
+	name := "mock-claude"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -56,7 +64,7 @@ func main() {
 	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command(goCommand(), "build", "-o", path, srcPath)
+	build := exec.CommandContext(context.Background(), goCommand(), "build", "-o", path, srcPath)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building mock command: %v\n%s", err, out)
 	}
@@ -64,13 +72,13 @@ func main() {
 }
 
 func TestSpawn_SuccessResult(t *testing.T) {
-	script := writeMockCommand(t, "mock-claude", []string{
+	script := writeMockCommand(t, []string{
 		`{"type":"system","subtype":"init","session_id":"sess-123"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working on it..."}]}}`,
 		`{"type":"result","subtype":"success","result":"All done!","total_cost_usd":0.42,"num_turns":5,"duration_ms":3000,"session_id":"sess-123"}`,
 	}, nil, 0, 0)
 
-	result, err := Spawn(context.Background(), SpawnOpts{
+	result, err := Spawn(context.Background(), &SpawnOpts{
 		TeamName: "test-team",
 		Prompt:   "do something",
 		Command:  script,
@@ -99,11 +107,11 @@ func TestSpawn_SuccessResult(t *testing.T) {
 }
 
 func TestSpawn_FallbackToAssistantText(t *testing.T) {
-	script := writeMockCommand(t, "mock-claude", []string{
+	script := writeMockCommand(t, []string{
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Final answer here"}]}}`,
 	}, nil, 0, 0)
 
-	result, err := Spawn(context.Background(), SpawnOpts{
+	result, err := Spawn(context.Background(), &SpawnOpts{
 		TeamName: "test-team",
 		Prompt:   "do something",
 		Command:  script,
@@ -120,9 +128,9 @@ func TestSpawn_FallbackToAssistantText(t *testing.T) {
 }
 
 func TestSpawn_ErrorExit(t *testing.T) {
-	script := writeMockCommand(t, "mock-claude", nil, []string{"something went wrong"}, 1, 0)
+	script := writeMockCommand(t, nil, []string{"something went wrong"}, 1, 0)
 
-	_, err := Spawn(context.Background(), SpawnOpts{
+	_, err := Spawn(context.Background(), &SpawnOpts{
 		TeamName: "test-team",
 		Prompt:   "do something",
 		Command:  script,
@@ -133,12 +141,12 @@ func TestSpawn_ErrorExit(t *testing.T) {
 }
 
 func TestSpawn_Timeout(t *testing.T) {
-	script := writeMockCommand(t, "mock-claude", nil, nil, 0, 30000)
+	script := writeMockCommand(t, nil, nil, 0, 30000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1)
 	defer cancel()
 
-	_, err := Spawn(ctx, SpawnOpts{
+	_, err := Spawn(ctx, &SpawnOpts{
 		TeamName: "test-team",
 		Prompt:   "do something",
 		Command:  script,
@@ -149,7 +157,7 @@ func TestSpawn_Timeout(t *testing.T) {
 }
 
 func TestSpawn_LogWriter(t *testing.T) {
-	script := writeMockCommand(t, "mock-claude", []string{
+	script := writeMockCommand(t, []string{
 		`{"type":"result","subtype":"success","result":"done","total_cost_usd":0.1,"num_turns":1,"duration_ms":100}`,
 	}, nil, 0, 0)
 
@@ -160,13 +168,15 @@ func TestSpawn_LogWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Spawn(context.Background(), SpawnOpts{
+	_, err = Spawn(context.Background(), &SpawnOpts{
 		TeamName:  "test-team",
 		Prompt:    "do something",
 		Command:   script,
 		LogWriter: logFile,
 	})
-	logFile.Close()
+	if err := logFile.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +188,7 @@ func TestSpawn_LogWriter(t *testing.T) {
 }
 
 func TestSpawn_ProgressFunc(t *testing.T) {
-	script := writeMockCommand(t, "mock-claude", []string{
+	script := writeMockCommand(t, []string{
 		`{"type":"system","subtype":"init","session_id":"sess-1"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"}]}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/foo.go"}}]}}`,
@@ -188,11 +198,11 @@ func TestSpawn_ProgressFunc(t *testing.T) {
 	}, nil, 0, 0)
 
 	var messages []string
-	_, err := Spawn(context.Background(), SpawnOpts{
+	_, err := Spawn(context.Background(), &SpawnOpts{
 		TeamName: "test-team",
 		Prompt:   "do something",
 		Command:  script,
-		ProgressFunc: func(team, msg string) {
+		ProgressFunc: func(_ string, msg string) {
 			messages = append(messages, msg)
 		},
 	})
@@ -232,7 +242,7 @@ func TestSpawn_ProgressFunc(t *testing.T) {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
+	return len(s) >= len(substr) && (s == substr || s != "" && containsStr(s, substr))
 }
 
 func containsStr(s, sub string) bool {

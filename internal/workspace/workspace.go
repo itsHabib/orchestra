@@ -34,8 +34,8 @@ func Init(cfg *config.Config) (*Workspace, error) {
 		Project: cfg.Name,
 		Teams:   make(map[string]TeamState),
 	}
-	for _, t := range cfg.Teams {
-		state.Teams[t.Name] = TeamState{Status: "pending"}
+	for i := range cfg.Teams {
+		state.Teams[cfg.Teams[i].Name] = TeamState{Status: "pending"}
 	}
 	if err := ws.WriteState(state); err != nil {
 		return nil, fmt.Errorf("seeding state: %w", err)
@@ -43,9 +43,9 @@ func Init(cfg *config.Config) (*Workspace, error) {
 
 	// Seed registry
 	reg := &Registry{Project: cfg.Name}
-	for _, t := range cfg.Teams {
+	for i := range cfg.Teams {
 		reg.Teams = append(reg.Teams, RegistryEntry{
-			Name:   t.Name,
+			Name:   cfg.Teams[i].Name,
 			Status: "pending",
 		})
 	}
@@ -87,6 +87,7 @@ func atomicWrite(path string, data []byte) error {
 	return fsutil.AtomicWrite(path, data)
 }
 
+// ReadState reads state.json from the workspace.
 func (w *Workspace) ReadState() (*State, error) {
 	data, err := os.ReadFile(w.statePath())
 	if err != nil {
@@ -99,6 +100,7 @@ func (w *Workspace) ReadState() (*State, error) {
 	return &s, nil
 }
 
+// WriteState writes state.json atomically.
 func (w *Workspace) WriteState(s *State) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -108,7 +110,7 @@ func (w *Workspace) WriteState(s *State) error {
 }
 
 // UpdateTeamState performs a read-modify-write on the state for a single team.
-func (w *Workspace) UpdateTeamState(name string, ts TeamState) error {
+func (w *Workspace) UpdateTeamState(name string, fn func(*TeamState)) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -116,10 +118,13 @@ func (w *Workspace) UpdateTeamState(name string, ts TeamState) error {
 	if err != nil {
 		return err
 	}
+	ts := state.Teams[name]
+	fn(&ts)
 	state.Teams[name] = ts
 	return w.WriteState(state)
 }
 
+// ReadRegistry reads registry.json from the workspace.
 func (w *Workspace) ReadRegistry() (*Registry, error) {
 	data, err := os.ReadFile(w.registryPath())
 	if err != nil {
@@ -132,6 +137,7 @@ func (w *Workspace) ReadRegistry() (*Registry, error) {
 	return &r, nil
 }
 
+// WriteRegistry writes registry.json atomically.
 func (w *Workspace) WriteRegistry(r *Registry) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -158,6 +164,7 @@ func (w *Workspace) UpdateRegistryEntry(name string, fn func(*RegistryEntry)) er
 	return fmt.Errorf("team %q not found in registry", name)
 }
 
+// WriteResult writes a team result atomically.
 func (w *Workspace) WriteResult(r *TeamResult) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -166,6 +173,7 @@ func (w *Workspace) WriteResult(r *TeamResult) error {
 	return atomicWrite(w.resultPath(r.Team), data)
 }
 
+// ReadResult reads a team result by team name.
 func (w *Workspace) ReadResult(name string) (*TeamResult, error) {
 	data, err := os.ReadFile(w.resultPath(name))
 	if err != nil {

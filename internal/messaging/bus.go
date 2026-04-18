@@ -78,33 +78,32 @@ func (b *Bus) Send(msg *Message) error {
 		return fmt.Errorf("marshaling message: %w", err)
 	}
 
-	filename := fmt.Sprintf("%s.json", msg.ID)
+	filename := msg.ID + ".json"
 
 	if msg.Recipient == "all" {
-		// Broadcast: write to every inbox except sender
-		entries, err := os.ReadDir(b.basePath)
-		if err != nil {
-			return fmt.Errorf("reading message bus dir: %w", err)
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() || entry.Name() == "shared" {
-				continue
-			}
-			// Skip sender's own inbox
-			if entry.Name() == msg.Sender {
-				continue
-			}
-			path := filepath.Join(b.basePath, entry.Name(), "inbox", filename)
-			if err := fsutil.AtomicWrite(path, data); err != nil {
-				return fmt.Errorf("broadcasting to %s: %w", entry.Name(), err)
-			}
-		}
-		return nil
+		return b.sendBroadcast(msg.Sender, filename, data)
 	}
 
 	// Direct message: write to recipient's inbox
 	path := filepath.Join(b.basePath, msg.Recipient, "inbox", filename)
 	return fsutil.AtomicWrite(path, data)
+}
+
+func (b *Bus) sendBroadcast(sender, filename string, data []byte) error {
+	entries, err := os.ReadDir(b.basePath)
+	if err != nil {
+		return fmt.Errorf("reading message bus dir: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == "shared" || entry.Name() == sender {
+			continue
+		}
+		path := filepath.Join(b.basePath, entry.Name(), "inbox", filename)
+		if err := fsutil.AtomicWrite(path, data); err != nil {
+			return fmt.Errorf("broadcasting to %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 // ReadInbox returns all messages for a recipient, sorted by timestamp (filename prefix).

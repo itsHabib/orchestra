@@ -122,79 +122,14 @@ func (w Warning) String() string {
 // Hard errors prevent execution. Warnings are returned separately.
 func (c *Config) Validate() ([]Warning, error) {
 	var warnings []Warning
-	var errs []string
+	errs := c.validateTopLevel()
 
-	if c.Name == "" {
-		errs = append(errs, "project name is required")
-	}
-	if len(c.Teams) == 0 {
-		errs = append(errs, "at least one team is required")
-	}
+	nameValidation := c.validateTeamNames()
+	errs = append(errs, nameValidation.errs...)
 
-	// Check unique team names
-	seen := make(map[string]bool)
-	for _, t := range c.Teams {
-		if t.Name == "" {
-			errs = append(errs, "team name cannot be empty")
-			continue
-		}
-		if seen[t.Name] {
-			errs = append(errs, fmt.Sprintf("duplicate team name: %q", t.Name))
-		}
-		seen[t.Name] = true
-	}
-
-	// Check each team
-	for _, t := range c.Teams {
-		if t.Name == "" {
-			continue
-		}
-		if len(t.Tasks) == 0 {
-			errs = append(errs, fmt.Sprintf("team %q: at least one task is required", t.Name))
-		}
-		for i, task := range t.Tasks {
-			if task.Summary == "" {
-				errs = append(errs, fmt.Sprintf("team %q: task %d has empty summary", t.Name, i+1))
-			}
-			if task.Details == "" {
-				warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary)})
-			}
-			if task.Verify == "" {
-				warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary)})
-			}
-		}
-
-		// Check depends_on references
-		for _, dep := range t.DependsOn {
-			if dep == t.Name {
-				errs = append(errs, fmt.Sprintf("team %q: cannot depend on itself", t.Name))
-			}
-			if !seen[dep] {
-				errs = append(errs, fmt.Sprintf("team %q: depends on unknown team %q", t.Name, dep))
-			}
-		}
-
-		// Team size warning
-		if len(t.Members) > 5 {
-			warnings = append(warnings, Warning{
-				Team:    t.Name,
-				Message: fmt.Sprintf("has %d members (recommended: 3-5); consider splitting into smaller teams", len(t.Members)),
-			})
-		}
-
-		// Task ratio warning
-		divisor := len(t.Members)
-		if divisor == 0 {
-			divisor = 1
-		}
-		ratio := len(t.Tasks) / divisor
-		if len(t.Tasks) > 0 && (ratio < 2 || ratio > 8) {
-			warnings = append(warnings, Warning{
-				Team:    t.Name,
-				Message: fmt.Sprintf("task/member ratio is %d (recommended: 2-8)", ratio),
-			})
-		}
-	}
+	teamValidation := c.validateTeams(nameValidation.seen)
+	warnings = append(warnings, teamValidation.warnings...)
+	errs = append(errs, teamValidation.errs...)
 
 	// Check for cycles using DFS
 	if err := detectCycles(c.Teams); err != nil {
@@ -207,6 +142,120 @@ func (c *Config) Validate() ([]Warning, error) {
 	return warnings, nil
 }
 
+func (c *Config) validateTopLevel() []string {
+	var errs []string
+	if c.Name == "" {
+		errs = append(errs, "project name is required")
+	}
+	if len(c.Teams) == 0 {
+		errs = append(errs, "at least one team is required")
+	}
+	return errs
+}
+
+type teamNameValidation struct {
+	seen map[string]bool
+	errs []string
+}
+
+type validationResult struct {
+	warnings []Warning
+	errs     []string
+}
+
+func (c *Config) validateTeamNames() teamNameValidation {
+	seen := make(map[string]bool)
+	var errs []string
+	for i := range c.Teams {
+		t := &c.Teams[i]
+		if t.Name == "" {
+			errs = append(errs, "team name cannot be empty")
+			continue
+		}
+		if seen[t.Name] {
+			errs = append(errs, fmt.Sprintf("duplicate team name: %q", t.Name))
+		}
+		seen[t.Name] = true
+	}
+	return teamNameValidation{seen: seen, errs: errs}
+}
+
+func (c *Config) validateTeams(seen map[string]bool) validationResult {
+	var warnings []Warning
+	var errs []string
+	for i := range c.Teams {
+		t := &c.Teams[i]
+		if t.Name == "" {
+			continue
+		}
+		taskValidation := validateTasks(t)
+		warnings = append(warnings, taskValidation.warnings...)
+		errs = append(errs, taskValidation.errs...)
+		errs = append(errs, validateDependencies(t, seen)...)
+		warnings = append(warnings, validateTeamSize(t)...)
+		warnings = append(warnings, validateTaskRatio(t)...)
+	}
+	return validationResult{warnings: warnings, errs: errs}
+}
+
+func validateTasks(t *Team) validationResult {
+	var warnings []Warning
+	var errs []string
+	if len(t.Tasks) == 0 {
+		errs = append(errs, fmt.Sprintf("team %q: at least one task is required", t.Name))
+	}
+	for i, task := range t.Tasks {
+		if task.Summary == "" {
+			errs = append(errs, fmt.Sprintf("team %q: task %d has empty summary", t.Name, i+1))
+		}
+		if task.Details == "" {
+			warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary)})
+		}
+		if task.Verify == "" {
+			warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary)})
+		}
+	}
+	return validationResult{warnings: warnings, errs: errs}
+}
+
+func validateDependencies(t *Team, seen map[string]bool) []string {
+	var errs []string
+	for _, dep := range t.DependsOn {
+		if dep == t.Name {
+			errs = append(errs, fmt.Sprintf("team %q: cannot depend on itself", t.Name))
+		}
+		if !seen[dep] {
+			errs = append(errs, fmt.Sprintf("team %q: depends on unknown team %q", t.Name, dep))
+		}
+	}
+	return errs
+}
+
+func validateTeamSize(t *Team) []Warning {
+	if len(t.Members) <= 5 {
+		return nil
+	}
+	return []Warning{{
+		Team:    t.Name,
+		Message: fmt.Sprintf("has %d members (recommended: 3-5); consider splitting into smaller teams", len(t.Members)),
+	}}
+}
+
+func validateTaskRatio(t *Team) []Warning {
+	divisor := len(t.Members)
+	if divisor == 0 {
+		divisor = 1
+	}
+	ratio := len(t.Tasks) / divisor
+	if len(t.Tasks) == 0 || (ratio >= 2 && ratio <= 8) {
+		return nil
+	}
+	return []Warning{{
+		Team:    t.Name,
+		Message: fmt.Sprintf("task/member ratio is %d (recommended: 2-8)", ratio),
+	}}
+}
+
 func detectCycles(teams []Team) error {
 	const (
 		white = iota
@@ -214,13 +263,13 @@ func detectCycles(teams []Team) error {
 		black
 	)
 	color := make(map[string]int)
-	for _, t := range teams {
-		color[t.Name] = white
+	for i := range teams {
+		color[teams[i].Name] = white
 	}
 
 	deps := make(map[string][]string)
-	for _, t := range teams {
-		deps[t.Name] = t.DependsOn
+	for i := range teams {
+		deps[teams[i].Name] = teams[i].DependsOn
 	}
 
 	var visit func(name string) error
@@ -240,9 +289,9 @@ func detectCycles(teams []Team) error {
 		return nil
 	}
 
-	for _, t := range teams {
-		if color[t.Name] == white {
-			if err := visit(t.Name); err != nil {
+	for i := range teams {
+		if color[teams[i].Name] == white {
+			if err := visit(teams[i].Name); err != nil {
 				return err
 			}
 		}
