@@ -48,37 +48,3 @@ type RepositoryArtifact struct {
 	CommitSHA      string `json:"commit_sha"`
 	PullRequestURL string `json:"pull_request_url,omitempty"`
 }
-
-// AgentRecord is the user-scoped cache entry for a managed agent.
-type AgentRecord struct {
-	Key       string    `json:"key"`
-	Project   string    `json:"project"`
-	Role      string    `json:"role"`
-	AgentID   string    `json:"agent_id"`
-	Version   int       `json:"version"`
-	SpecHash  string    `json:"spec_hash"`
-	UpdatedAt time.Time `json:"updated_at"`
-	LastUsed  time.Time `json:"last_used,omitempty"`
-}
-
-// EnvRecord is the user-scoped cache entry for a managed environment.
-type EnvRecord struct {
-	Key       string    `json:"key"`
-	Project   string    `json:"project"`
-	Name      string    `json:"name"`
-	EnvID     string    `json:"env_id"`
-	SpecHash  string    `json:"spec_hash"`
-	UpdatedAt time.Time `json:"updated_at"`
-	LastUsed  time.Time `json:"last_used,omitempty"`
-}
-
-// LockMode selects whether a run lock is exclusive or shared.
-type LockMode int
-
-const (
-	// LockExclusive prevents any other exclusive or shared run lock from being acquired.
-	LockExclusive LockMode = iota
-
-	// LockShared allows other shared holders but blocks exclusive holders.
-	LockShared
-)

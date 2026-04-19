@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 
 	"github.com/itsHabib/orchestra/internal/config"
@@ -26,7 +27,7 @@ var initCmd = &cobra.Command{
 			logger.Warn("%s", w)
 		}
 
-		ws, err := workspace.Init(cfg)
+		ws, err := workspace.Init(context.Background(), cfg)
 		if err != nil {
 			logger.Error("Failed to init workspace: %s", err)
 			os.Exit(1)

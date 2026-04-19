@@ -3,6 +3,7 @@ package memstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -150,11 +151,11 @@ func (m *MemStore) PutAgent(ctx context.Context, key string, rec *store.AgentRec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if rec == nil {
+		return fmt.Errorf("%w: nil agent record", store.ErrInvalidArgument)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if rec == nil {
-		return store.ErrNotFound
-	}
 	next := *rec
 	next.Key = key
 	m.agents[key] = next
@@ -214,11 +215,11 @@ func (m *MemStore) PutEnv(ctx context.Context, key string, rec *store.EnvRecord)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if rec == nil {
+		return fmt.Errorf("%w: nil env record", store.ErrInvalidArgument)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if rec == nil {
-		return store.ErrNotFound
-	}
 	next := *rec
 	next.Key = key
 	m.envs[key] = next

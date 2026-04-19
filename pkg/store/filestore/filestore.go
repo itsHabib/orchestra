@@ -171,7 +171,7 @@ func (s *FileStore) GetAgent(ctx context.Context, key string) (*store.AgentRecor
 func (s *FileStore) PutAgent(ctx context.Context, key string, rec *store.AgentRecord) error {
 	return s.updateAgents(ctx, func(reg map[string]store.AgentRecord) error {
 		if rec == nil {
-			return store.ErrNotFound
+			return fmt.Errorf("%w: nil agent record", store.ErrInvalidArgument)
 		}
 		next := *rec
 		next.Key = key
@@ -234,7 +234,7 @@ func (s *FileStore) GetEnv(ctx context.Context, key string) (*store.EnvRecord, b
 func (s *FileStore) PutEnv(ctx context.Context, key string, rec *store.EnvRecord) error {
 	return s.updateEnvs(ctx, func(reg map[string]store.EnvRecord) error {
 		if rec == nil {
-			return store.ErrNotFound
+			return fmt.Errorf("%w: nil env record", store.ErrInvalidArgument)
 		}
 		next := *rec
 		next.Key = key
@@ -446,11 +446,13 @@ func acquireFileLock(ctx context.Context, path string, mode store.LockMode, body
 	if !locked {
 		return nil, lockError(path, body, store.ErrLockTimeout)
 	}
-	if mode == store.LockExclusive {
-		if err := os.WriteFile(path, []byte(lockBody(body)), 0o644); err != nil {
-			_ = f.Unlock()
-			return nil, fmt.Errorf("writing lockfile %s: %w", path, err)
-		}
+	// Refresh holder metadata for both modes so a stale exclusive record
+	// from a prior holder cannot mislead lockError after an
+	// exclusive→released→shared transition. For concurrent shared holders
+	// this is last-writer-wins, which is fine for best-effort diagnostics.
+	if err := os.WriteFile(path, []byte(lockBody(body)), 0o644); err != nil {
+		_ = f.Unlock()
+		return nil, fmt.Errorf("writing lockfile %s: %w", path, err)
 	}
 	var once sync.Once
 	return func() {

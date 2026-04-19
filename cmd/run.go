@@ -97,7 +97,7 @@ type tierResult struct {
 }
 
 func newOrchestrationRun(ctx context.Context, cfg *config.Config, logger *olog.Logger) (*orchestrationRun, [][]string, error) {
-	ws, err := workspace.InitContext(ctx, cfg)
+	ws, err := workspace.Init(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("init workspace: %w", err)
 	}
@@ -198,7 +198,7 @@ func (r *orchestrationRun) runTiers(ctx context.Context, tiers [][]string) error
 func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames []string) error {
 	r.logger.TierStart(tierIdx, tierNames)
 
-	state, err := r.ws.ReadStateContext(ctx)
+	state, err := r.ws.ReadState(ctx)
 	if err != nil {
 		return fmt.Errorf("reading state: %w", err)
 	}
@@ -345,7 +345,7 @@ func (r *orchestrationRun) collectTierResults(ctx context.Context, results <-cha
 
 func (r *orchestrationRun) markTeamFailed(ctx context.Context, teamName string, teamErr error) error {
 	r.logger.TeamMsg(teamName, "FAILED: %s", teamErr)
-	if err := r.ws.UpdateTeamStateContext(ctx, teamName, func(ts *workspace.TeamState) {
+	if err := r.ws.UpdateTeamState(ctx, teamName, func(ts *workspace.TeamState) {
 		*ts = workspace.TeamState{Status: "failed"}
 	}); err != nil {
 		return fmt.Errorf("updating failed team state for %s: %w", teamName, err)
@@ -371,7 +371,7 @@ func (r *orchestrationRun) recordTeamResult(ctx context.Context, teamName string
 }
 
 func (r *orchestrationRun) updateCompletedTeamState(ctx context.Context, teamName string, result *workspace.TeamResult) error {
-	err := r.ws.UpdateTeamStateContext(ctx, teamName, func(ts *workspace.TeamState) {
+	err := r.ws.UpdateTeamState(ctx, teamName, func(ts *workspace.TeamState) {
 		*ts = workspace.TeamState{
 			Status:        "done",
 			ResultSummary: result.Result,
@@ -434,7 +434,7 @@ func fmtTokens(n int64) string {
 }
 
 func printSummary(ctx context.Context, ws *workspace.Workspace, _ *config.Config, wallClock time.Duration) {
-	state, err := ws.ReadStateContext(ctx)
+	state, err := ws.ReadState(ctx)
 	if err != nil {
 		return
 	}

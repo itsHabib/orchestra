@@ -25,12 +25,7 @@ type Workspace struct {
 }
 
 // Init creates a new .orchestra/ workspace seeded from the config.
-func Init(cfg *config.Config) (*Workspace, error) {
-	return InitContext(context.Background(), cfg)
-}
-
-// InitContext creates a new .orchestra/ workspace seeded from the config.
-func InitContext(ctx context.Context, cfg *config.Config) (*Workspace, error) {
+func Init(ctx context.Context, cfg *config.Config) (*Workspace, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -55,7 +50,7 @@ func InitContext(ctx context.Context, cfg *config.Config) (*Workspace, error) {
 	for i := range cfg.Teams {
 		state.Teams[cfg.Teams[i].Name] = TeamState{Status: "pending"}
 	}
-	if err := ws.WriteStateContext(ctx, state); err != nil {
+	if err := ws.WriteState(ctx, state); err != nil {
 		return nil, fmt.Errorf("seeding state: %w", err)
 	}
 
@@ -119,32 +114,17 @@ func atomicWrite(path string, data []byte) error {
 }
 
 // ReadState reads state.json from the workspace.
-func (w *Workspace) ReadState() (*State, error) {
-	return w.ReadStateContext(context.Background())
-}
-
-// ReadStateContext reads state.json from the workspace.
-func (w *Workspace) ReadStateContext(ctx context.Context) (*State, error) {
+func (w *Workspace) ReadState(ctx context.Context) (*State, error) {
 	return w.store.LoadRunState(ctx)
 }
 
 // WriteState writes state.json atomically.
-func (w *Workspace) WriteState(s *State) error {
-	return w.WriteStateContext(context.Background(), s)
-}
-
-// WriteStateContext writes state.json atomically.
-func (w *Workspace) WriteStateContext(ctx context.Context, s *State) error {
+func (w *Workspace) WriteState(ctx context.Context, s *State) error {
 	return w.store.SaveRunState(ctx, s)
 }
 
 // UpdateTeamState performs a read-modify-write on the state for a single team.
-func (w *Workspace) UpdateTeamState(name string, fn func(*TeamState)) error {
-	return w.UpdateTeamStateContext(context.Background(), name, fn)
-}
-
-// UpdateTeamStateContext performs a read-modify-write on the state for a single team.
-func (w *Workspace) UpdateTeamStateContext(ctx context.Context, name string, fn func(*TeamState)) error {
+func (w *Workspace) UpdateTeamState(ctx context.Context, name string, fn func(*TeamState)) error {
 	return w.store.UpdateTeamState(ctx, name, fn)
 }
 

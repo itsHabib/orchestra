@@ -18,8 +18,10 @@ func RunConformance(t *testing.T, factory func(*testing.T) store.Store) {
 	t.Run("UpdateTeamStateSameTeamIsSerialized", func(t *testing.T) { testSameTeamUpdate(t, factory) })
 	t.Run("UpdateTeamStateDifferentTeamsAllLand", func(t *testing.T) { testDifferentTeamUpdates(t, factory) })
 	t.Run("RunLockExclusiveBlocksExclusive", func(t *testing.T) { testRunLock(t, factory) })
+	t.Run("RunLockSharedSemantics", func(t *testing.T) { testRunLockShared(t, factory) })
 	t.Run("AgentRegistryCRUDAndSort", func(t *testing.T) { testAgentRegistry(t, factory) })
 	t.Run("AgentLockSerializesCallback", func(t *testing.T) { testAgentLock(t, factory) })
+	t.Run("EnvLockSerializesCallback", func(t *testing.T) { testEnvLock(t, factory) })
 	t.Run("EnvRegistryCRUDAndSort", func(t *testing.T) { testEnvRegistry(t, factory) })
 }
 
@@ -163,6 +165,72 @@ func testAgentLock(t *testing.T, factory func(*testing.T) store.Store) {
 	if err := <-done; err != nil {
 		t.Fatalf("first lock callback: %v", err)
 	}
+}
+
+func testEnvLock(t *testing.T, factory func(*testing.T) store.Store) {
+	t.Helper()
+	s := factory(t)
+	ctx := context.Background()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- s.WithEnvLock(ctx, "k", func(context.Context) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	waitCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer cancel()
+	err := s.WithEnvLock(waitCtx, "k", func(context.Context) error { return nil })
+	if !errors.Is(err, store.ErrLockTimeout) {
+		close(release)
+		t.Fatalf("WithEnvLock err=%v, want ErrLockTimeout", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("first lock callback: %v", err)
+	}
+}
+
+func testRunLockShared(t *testing.T, factory func(*testing.T) store.Store) {
+	t.Helper()
+	s := factory(t)
+	ctx := context.Background()
+
+	// Two shared holders must coexist.
+	release1, err := s.AcquireRunLock(ctx, store.LockShared)
+	if err != nil {
+		t.Fatalf("AcquireRunLock first shared: %v", err)
+	}
+	release2, err := s.AcquireRunLock(ctx, store.LockShared)
+	if err != nil {
+		release1()
+		t.Fatalf("AcquireRunLock second shared: %v", err)
+	}
+
+	// Exclusive must block while any shared holder is active.
+	waitCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	_, err = s.AcquireRunLock(waitCtx, store.LockExclusive)
+	cancel()
+	if !errors.Is(err, store.ErrLockTimeout) {
+		release2()
+		release1()
+		t.Fatalf("AcquireRunLock exclusive while shared held err=%v, want ErrLockTimeout", err)
+	}
+
+	release2()
+	release1()
+
+	// Exclusive must succeed once all shared holders release.
+	release3, err := s.AcquireRunLock(ctx, store.LockExclusive)
+	if err != nil {
+		t.Fatalf("AcquireRunLock exclusive after shared release: %v", err)
+	}
+	release3()
 }
 
 func testEnvRegistry(t *testing.T, factory func(*testing.T) store.Store) {
