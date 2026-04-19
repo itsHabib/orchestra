@@ -414,9 +414,9 @@ func testMAAgent(spec AgentSpec, key string, id string, version int64) anthropic
 	return anthropic.BetaManagedAgentsAgent{
 		ID:        id,
 		Name:      key,
-		Model:     anthropic.BetaManagedAgentsModelConfig{ID: anthropic.BetaManagedAgentsModel(spec.Model)},
+		Model:     anthropic.BetaManagedAgentsModelConfig{ID: spec.Model},
 		System:    spec.SystemPrompt,
-		Metadata:  agentMetadata(spec),
+		Metadata:  agentMetadata(&spec),
 		Version:   version,
 		UpdatedAt: time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC),
 	}
@@ -426,7 +426,7 @@ func testMAEnv(spec EnvSpec, key string, id string) anthropic.BetaEnvironment {
 	return anthropic.BetaEnvironment{
 		ID:       id,
 		Name:     key,
-		Metadata: envMetadata(spec),
+		Metadata: envMetadata(&spec),
 		Config: anthropic.BetaCloudConfig{
 			Packages: anthropic.BetaPackages{
 				Apt:   spec.Packages.APT,
@@ -465,6 +465,7 @@ func newFakeAgentAPI() *fakeAgentAPI {
 	}
 }
 
+//nolint:gocritic // fake API mirrors the SDK method shape used by production code.
 func (f *fakeAgentAPI) New(_ context.Context, params anthropic.BetaAgentNewParams, _ ...option.RequestOption) (*anthropic.BetaManagedAgentsAgent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -500,6 +501,7 @@ func (f *fakeAgentAPI) Get(_ context.Context, id string, _ anthropic.BetaAgentGe
 	return &agent, nil
 }
 
+//nolint:gocritic // fake API mirrors the SDK method shape used by production code.
 func (f *fakeAgentAPI) Update(_ context.Context, id string, params anthropic.BetaAgentUpdateParams, _ ...option.RequestOption) (*anthropic.BetaManagedAgentsAgent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -514,6 +516,7 @@ func (f *fakeAgentAPI) Update(_ context.Context, id string, params anthropic.Bet
 	return &agent, nil
 }
 
+//nolint:gocritic // fake API mirrors the SDK method shape used by production code.
 func (f *fakeAgentAPI) List(_ context.Context, _ anthropic.BetaAgentListParams, _ ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaManagedAgentsAgent], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -549,6 +552,7 @@ func newFakeEnvAPI() *fakeEnvAPI {
 	return &fakeEnvAPI{envs: make(map[string]anthropic.BetaEnvironment)}
 }
 
+//nolint:gocritic // fake API mirrors the SDK method shape used by production code.
 func (f *fakeEnvAPI) New(_ context.Context, params anthropic.BetaEnvironmentNewParams, _ ...option.RequestOption) (*anthropic.BetaEnvironment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -612,6 +616,7 @@ func (f *fakeEnvAPI) Archive(_ context.Context, id string, _ anthropic.BetaEnvir
 	return &env, nil
 }
 
+//nolint:gocritic // fake API mirrors the SDK method shape used by production code.
 func (f *fakeEnvAPI) List(_ context.Context, _ anthropic.BetaEnvironmentListParams, _ ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaEnvironment], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

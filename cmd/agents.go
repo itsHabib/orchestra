@@ -98,10 +98,10 @@ func loadAgentRows(ctx context.Context, workspace string) ([]agentRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	return annotateAgentRows(ctx, client, records), nil
+	return annotateAgentRows(ctx, &client, records), nil
 }
 
-func annotateAgentRows(ctx context.Context, client anthropic.Client, records []store.AgentRecord) []agentRow {
+func annotateAgentRows(ctx context.Context, client *anthropic.Client, records []store.AgentRecord) []agentRow {
 	rows := make([]agentRow, len(records))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -125,7 +125,7 @@ func annotateAgentRows(ctx context.Context, client anthropic.Client, records []s
 	return rows
 }
 
-func getAgentStatus(ctx context.Context, client anthropic.Client, agentID string) (string, error) {
+func getAgentStatus(ctx context.Context, client *anthropic.Client, agentID string) (string, error) {
 	agent, err := client.Beta.Agents.Get(ctx, agentID, anthropic.BetaAgentGetParams{})
 	switch {
 	case isAnthropicStatus(err, http.StatusNotFound):
@@ -141,7 +141,8 @@ func getAgentStatus(ctx context.Context, client anthropic.Client, agentID string
 
 func printAgentRows(rows []agentRow) {
 	fmt.Printf("%-32s  %-28s  %-7s  %-16s  %s\n", "KEY", "AGENT ID", "VERSION", "LAST USED", "MA STATUS")
-	for _, row := range rows {
+	for i := range rows {
+		row := &rows[i]
 		status := row.status
 		if row.err != nil {
 			status = status + " (" + compactError(row.err) + ")"
@@ -166,32 +167,16 @@ func runAgentsPrune(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows := annotateAgentRows(ctx, client, records)
-	stale := staleAgentRows(rows, time.Now().UTC(), agentsPruneOlder)
+	rows := annotateAgentRows(ctx, &client, records)
+	now := time.Now().UTC()
+	stale := staleAgentRows(rows, now, agentsPruneOlder)
 
-	action := "Would delete"
-	if agentsPruneApply {
-		action = "Deleted"
-	}
-	if len(stale) == 0 {
-		fmt.Println("No stale cached agents.")
-	} else {
-		for _, row := range stale {
-			reason := staleReason(row, time.Now().UTC(), agentsPruneOlder)
-			if agentsPruneApply {
-				if err := st.DeleteAgent(ctx, row.record.Key); err != nil && !errors.Is(err, store.ErrNotFound) {
-					return err
-				}
-			}
-			fmt.Printf("%s %s (%s)\n", action, row.record.Key, reason)
-		}
-		if !agentsPruneApply {
-			fmt.Println("Dry run only. Re-run with --apply to delete these cache records.")
-		}
+	if err := printOrApplyStaleAgents(ctx, st, stale, now); err != nil {
+		return err
 	}
 
 	if agentsReconcile {
-		orphaned, err := listOrphanAgents(ctx, client, records)
+		orphaned, err := listOrphanAgents(ctx, &client, records)
 		if err != nil {
 			return err
 		}
@@ -200,17 +185,43 @@ func runAgentsPrune(ctx context.Context) error {
 	return nil
 }
 
+func printOrApplyStaleAgents(ctx context.Context, st store.Store, stale []agentRow, now time.Time) error {
+	if len(stale) == 0 {
+		fmt.Println("No stale cached agents.")
+		return nil
+	}
+
+	action := "Would delete"
+	if agentsPruneApply {
+		action = "Deleted"
+	}
+	for i := range stale {
+		row := &stale[i]
+		reason := staleReason(row, now, agentsPruneOlder)
+		if agentsPruneApply {
+			if err := st.DeleteAgent(ctx, row.record.Key); err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+		}
+		fmt.Printf("%s %s (%s)\n", action, row.record.Key, reason)
+	}
+	if !agentsPruneApply {
+		fmt.Println("Dry run only. Re-run with --apply to delete these cache records.")
+	}
+	return nil
+}
+
 func staleAgentRows(rows []agentRow, now time.Time, olderThan time.Duration) []agentRow {
 	var out []agentRow
-	for _, row := range rows {
-		if staleReason(row, now, olderThan) != "" {
-			out = append(out, row)
+	for i := range rows {
+		if staleReason(&rows[i], now, olderThan) != "" {
+			out = append(out, rows[i])
 		}
 	}
 	return out
 }
 
-func staleReason(row agentRow, now time.Time, olderThan time.Duration) string {
+func staleReason(row *agentRow, now time.Time, olderThan time.Duration) string {
 	switch row.status {
 	case "missing":
 		return "MA 404"
@@ -223,9 +234,10 @@ func staleReason(row agentRow, now time.Time, olderThan time.Duration) string {
 	return ""
 }
 
-func listOrphanAgents(ctx context.Context, client anthropic.Client, records []store.AgentRecord) ([]orphanAgent, error) {
+func listOrphanAgents(ctx context.Context, client *anthropic.Client, records []store.AgentRecord) ([]orphanAgent, error) {
 	cached := make(map[string]string, len(records))
-	for _, rec := range records {
+	for i := range records {
+		rec := &records[i]
 		cached[rec.Key] = rec.AgentID
 	}
 
@@ -239,7 +251,8 @@ func listOrphanAgents(ctx context.Context, client anthropic.Client, records []st
 		if err != nil {
 			return nil, err
 		}
-		for _, agent := range page.Data {
+		for i := range page.Data {
+			agent := &page.Data[i]
 			key, ok := agentCacheKeyFromMetadata(agent.Metadata)
 			if !ok {
 				continue

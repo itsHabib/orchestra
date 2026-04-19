@@ -134,6 +134,8 @@ func withManagedAgentsClock(clock ManagedAgentsClock) ManagedAgentsOption {
 }
 
 // EnsureAgent returns an active managed-agent resource for spec.
+//
+//nolint:gocritic // Spawner interface intentionally takes AgentSpec by value.
 func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) (AgentHandle, error) {
 	spec = normalizeAgentSpec(spec)
 	key, err := agentCacheKey(spec)
@@ -152,7 +154,7 @@ func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) 
 			return err
 		}
 		if found {
-			h, resolved, err := s.resolveAgentFromCache(ctx, key, hash, spec, rec)
+			h, resolved, err := s.resolveAgentFromCache(ctx, key, hash, &spec, rec)
 			if err != nil {
 				return err
 			}
@@ -161,7 +163,7 @@ func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) 
 				return nil
 			}
 		}
-		h, err := s.adoptOrCreateAgent(ctx, key, hash, spec)
+		h, err := s.adoptOrCreateAgent(ctx, key, hash, &spec)
 		if err != nil {
 			return err
 		}
@@ -181,7 +183,7 @@ func (s *ManagedAgentsSpawner) resolveAgentFromCache(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec AgentSpec,
+	spec *AgentSpec,
 	rec *store.AgentRecord,
 ) (AgentHandle, bool, error) {
 	agent, err := s.agents.Get(ctx, rec.AgentID, anthropic.BetaAgentGetParams{})
@@ -226,7 +228,7 @@ func (s *ManagedAgentsSpawner) adoptOrCreateAgent(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec AgentSpec,
+	spec *AgentSpec,
 ) (AgentHandle, error) {
 	matches, err := s.listOrchestraAgents(ctx, spec.Project, spec.Role, key)
 	if err != nil {
@@ -258,7 +260,7 @@ func (s *ManagedAgentsSpawner) adoptSingleAgent(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec AgentSpec,
+	spec *AgentSpec,
 	agent *anthropic.BetaManagedAgentsAgent,
 ) (AgentHandle, error) {
 	adoptHash, ok := hashFromMAAgent(agent)
@@ -294,12 +296,13 @@ func (s *ManagedAgentsSpawner) listOrchestraAgents(
 		if err != nil {
 			return nil, err
 		}
-		for _, agent := range page.Data {
-			if isAgentArchived(&agent) {
+		for i := range page.Data {
+			agent := &page.Data[i]
+			if isAgentArchived(agent) {
 				continue
 			}
 			if agent.Name == key && taggedAgent(agent.Metadata, project, role) {
-				matches = append(matches, agent)
+				matches = append(matches, *agent)
 			}
 		}
 		if len(matches) > 0 || page.NextPage == "" {
@@ -312,6 +315,8 @@ func (s *ManagedAgentsSpawner) listOrchestraAgents(
 }
 
 // EnsureEnvironment returns an active managed-agents environment resource for spec.
+//
+//nolint:gocritic // Spawner interface intentionally takes EnvSpec by value.
 func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSpec) (EnvHandle, error) {
 	spec = normalizeEnvSpec(spec)
 	key, err := envCacheKey(spec)
@@ -330,7 +335,7 @@ func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSp
 			return err
 		}
 		if found {
-			h, resolved, err := s.resolveEnvFromCache(ctx, key, hash, spec, rec)
+			h, resolved, err := s.resolveEnvFromCache(ctx, key, hash, &spec, rec)
 			if err != nil {
 				return err
 			}
@@ -339,7 +344,7 @@ func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSp
 				return nil
 			}
 		}
-		h, err := s.adoptOrCreateEnv(ctx, key, hash, spec)
+		h, err := s.adoptOrCreateEnv(ctx, key, hash, &spec)
 		if err != nil {
 			return err
 		}
@@ -359,7 +364,7 @@ func (s *ManagedAgentsSpawner) resolveEnvFromCache(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec EnvSpec,
+	spec *EnvSpec,
 	rec *store.EnvRecord,
 ) (EnvHandle, bool, error) {
 	env, err := s.environments.Get(ctx, rec.EnvID, anthropic.BetaEnvironmentGetParams{})
@@ -388,7 +393,7 @@ func (s *ManagedAgentsSpawner) adoptOrCreateEnv(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec EnvSpec,
+	spec *EnvSpec,
 ) (EnvHandle, error) {
 	matches, err := s.listOrchestraEnvs(ctx, spec.Project, spec.Name, key)
 	if err != nil {
@@ -419,7 +424,7 @@ func (s *ManagedAgentsSpawner) adoptSingleEnv(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec EnvSpec,
+	spec *EnvSpec,
 	env *anthropic.BetaEnvironment,
 ) (EnvHandle, error) {
 	adoptHash := hashFromMAEnv(env)
@@ -437,7 +442,7 @@ func (s *ManagedAgentsSpawner) replaceEnv(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec EnvSpec,
+	spec *EnvSpec,
 	oldEnv *anthropic.BetaEnvironment,
 ) (EnvHandle, bool, error) {
 	handle, err := s.replaceEnvHandle(ctx, key, hash, spec, oldEnv)
@@ -448,7 +453,7 @@ func (s *ManagedAgentsSpawner) replaceEnvHandle(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec EnvSpec,
+	spec *EnvSpec,
 	oldEnv *anthropic.BetaEnvironment,
 ) (EnvHandle, error) {
 	// The Managed Agents API archives environments instead of updating them in place;
@@ -480,12 +485,13 @@ func (s *ManagedAgentsSpawner) listOrchestraEnvs(
 		if err != nil {
 			return nil, err
 		}
-		for _, env := range page.Data {
-			if isEnvArchived(&env) {
+		for i := range page.Data {
+			env := &page.Data[i]
+			if isEnvArchived(env) {
 				continue
 			}
 			if env.Name == key && taggedEnv(env.Metadata, project, name) {
-				matches = append(matches, env)
+				matches = append(matches, *env)
 			}
 		}
 		if len(matches) > 0 || page.NextPage == "" {
@@ -501,7 +507,7 @@ func (s *ManagedAgentsSpawner) putAgentRecord(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec AgentSpec,
+	spec *AgentSpec,
 	agent *anthropic.BetaManagedAgentsAgent,
 ) error {
 	now := s.now()
@@ -521,7 +527,7 @@ func (s *ManagedAgentsSpawner) putEnvRecord(
 	ctx context.Context,
 	key string,
 	hash string,
-	spec EnvSpec,
+	spec *EnvSpec,
 	env *anthropic.BetaEnvironment,
 ) error {
 	now := s.now()
@@ -580,13 +586,13 @@ func isMAStatus(err error, code int) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == code
 }
 
-func taggedAgent(metadata map[string]string, project string, role string) bool {
+func taggedAgent(metadata map[string]string, project, role string) bool {
 	return metadata[orchestraMetadataProject] == project &&
 		metadata[orchestraMetadataRole] == role &&
 		metadata[orchestraMetadataVersion] == orchestraVersionV2
 }
 
-func taggedEnv(metadata map[string]string, project string, name string) bool {
+func taggedEnv(metadata map[string]string, project, name string) bool {
 	return metadata[orchestraMetadataProject] == project &&
 		metadata[orchestraMetadataEnv] == name &&
 		metadata[orchestraMetadataVersion] == orchestraVersionV2
@@ -606,7 +612,7 @@ func handleFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) AgentHandle {
 		Backend:  managedAgentsBackend,
 		Name:     agent.Name,
 		Version:  int(agent.Version),
-		Model:    string(agent.Model.ID),
+		Model:    agent.Model.ID,
 		Metadata: cloneStringMap(agent.Metadata),
 	}
 }
@@ -622,16 +628,16 @@ func handleFromMAEnv(env *anthropic.BetaEnvironment) EnvHandle {
 
 func agentIDs(agents []anthropic.BetaManagedAgentsAgent) []string {
 	out := make([]string, 0, len(agents))
-	for _, agent := range agents {
-		out = append(out, agent.ID)
+	for i := range agents {
+		out = append(out, agents[i].ID)
 	}
 	return out
 }
 
 func envIDs(envs []anthropic.BetaEnvironment) []string {
 	out := make([]string, 0, len(envs))
-	for _, env := range envs {
-		out = append(out, env.ID)
+	for i := range envs {
+		out = append(out, envs[i].ID)
 	}
 	return out
 }

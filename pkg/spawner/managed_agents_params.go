@@ -8,7 +8,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
-func toAgentCreateParams(spec AgentSpec, key string) anthropic.BetaAgentNewParams {
+func toAgentCreateParams(spec *AgentSpec, key string) anthropic.BetaAgentNewParams {
 	params := anthropic.BetaAgentNewParams{
 		Name:       key,
 		Model:      agentModelParam(spec.Model),
@@ -24,7 +24,7 @@ func toAgentCreateParams(spec AgentSpec, key string) anthropic.BetaAgentNewParam
 	return params
 }
 
-func toAgentUpdateParams(spec AgentSpec, key string, version int64) anthropic.BetaAgentUpdateParams {
+func toAgentUpdateParams(spec *AgentSpec, key string, version int64) anthropic.BetaAgentUpdateParams {
 	params := anthropic.BetaAgentUpdateParams{
 		Version:    version,
 		Name:       anthropic.String(key),
@@ -41,7 +41,7 @@ func toAgentUpdateParams(spec AgentSpec, key string, version int64) anthropic.Be
 	return params
 }
 
-func toEnvCreateParams(spec EnvSpec, key string) anthropic.BetaEnvironmentNewParams {
+func toEnvCreateParams(spec *EnvSpec, key string) anthropic.BetaEnvironmentNewParams {
 	return anthropic.BetaEnvironmentNewParams{
 		Name:     key,
 		Config:   envConfigParams(spec),
@@ -56,7 +56,7 @@ func agentModelParam(model string) anthropic.BetaManagedAgentsModelConfigParams 
 	}
 }
 
-func agentMetadata(spec AgentSpec) map[string]string {
+func agentMetadata(spec *AgentSpec) map[string]string {
 	md := cloneStringMap(spec.Metadata)
 	md[orchestraMetadataProject] = spec.Project
 	md[orchestraMetadataRole] = spec.Role
@@ -64,7 +64,7 @@ func agentMetadata(spec AgentSpec) map[string]string {
 	return md
 }
 
-func envMetadata(spec EnvSpec) map[string]string {
+func envMetadata(spec *EnvSpec) map[string]string {
 	md := cloneStringMap(spec.Metadata)
 	md[orchestraMetadataProject] = spec.Project
 	md[orchestraMetadataEnv] = spec.Name
@@ -202,14 +202,14 @@ func skillParams(skills []Skill) []anthropic.BetaManagedAgentsSkillParamsUnion {
 	return out
 }
 
-func envConfigParams(spec EnvSpec) anthropic.BetaCloudConfigParams {
+func envConfigParams(spec *EnvSpec) anthropic.BetaCloudConfigParams {
 	return anthropic.BetaCloudConfigParams{
-		Packages:   packageParams(spec.Packages),
+		Packages:   packageParams(&spec.Packages),
 		Networking: networkParams(spec.Networking),
 	}
 }
 
-func packageParams(packages PackageSpec) anthropic.BetaPackagesParams {
+func packageParams(packages *PackageSpec) anthropic.BetaPackagesParams {
 	return anthropic.BetaPackagesParams{
 		Type:  anthropic.BetaPackagesParamsTypePackages,
 		Apt:   append([]string(nil), packages.APT...),

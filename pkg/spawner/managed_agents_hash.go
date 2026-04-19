@@ -36,7 +36,7 @@ func specHash(spec AgentSpec) string {
 
 func envSpecHash(spec EnvSpec) string {
 	canon := canonicalEnvSpec{
-		Packages:   canonicalPackages(spec.Packages),
+		Packages:   canonicalPackages(&spec.Packages),
 		Networking: canonicalNetwork(spec.Networking),
 	}
 	return hashCanonical(canon)
@@ -87,7 +87,7 @@ func canonicalSkills(skills []Skill) []Skill {
 	return out
 }
 
-func canonicalPackages(packages PackageSpec) PackageSpec {
+func canonicalPackages(packages *PackageSpec) PackageSpec {
 	return PackageSpec{
 		APT:   append([]string(nil), packages.APT...),
 		Cargo: append([]string(nil), packages.Cargo...),
@@ -159,7 +159,7 @@ func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, bool) {
 		return "", false
 	}
 	spec := AgentSpec{
-		Model:        string(agent.Model.ID),
+		Model:        agent.Model.ID,
 		SystemPrompt: agent.System,
 		Tools:        toolsFromMAAgent(agent.Tools),
 		MCPServers:   mcpServersFromMAAgent(agent.MCPServers),
@@ -170,10 +170,12 @@ func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, bool) {
 
 func toolsFromMAAgent(tools []anthropic.BetaManagedAgentsAgentToolUnion) []Tool {
 	var out []Tool
-	for _, tool := range tools {
+	for i := range tools {
+		tool := &tools[i]
 		switch tool.Type {
 		case "agent_toolset_20260401":
-			for _, cfg := range tool.Configs.OfBetaManagedAgentsAgentToolConfigArray {
+			for j := range tool.Configs.OfBetaManagedAgentsAgentToolConfigArray {
+				cfg := &tool.Configs.OfBetaManagedAgentsAgentToolConfigArray[j]
 				if cfg.Enabled {
 					out = append(out, Tool{Name: string(cfg.Name), Type: "agent_toolset_20260401"})
 				}
@@ -198,7 +200,8 @@ func toolsFromMAAgent(tools []anthropic.BetaManagedAgentsAgentToolUnion) []Tool 
 
 func mcpServersFromMAAgent(servers []anthropic.BetaManagedAgentsMCPServerURLDefinition) []MCPServer {
 	out := make([]MCPServer, 0, len(servers))
-	for _, server := range servers {
+	for i := range servers {
+		server := &servers[i]
 		out = append(out, MCPServer{
 			Name: server.Name,
 			Type: string(server.Type),
@@ -210,7 +213,8 @@ func mcpServersFromMAAgent(servers []anthropic.BetaManagedAgentsMCPServerURLDefi
 
 func skillsFromMAAgent(skills []anthropic.BetaManagedAgentsAgentSkillUnion) []Skill {
 	out := make([]Skill, 0, len(skills))
-	for _, skill := range skills {
+	for i := range skills {
+		skill := &skills[i]
 		md := map[string]string{"type": skill.Type}
 		out = append(out, Skill{Name: skill.SkillID, Version: skill.Version, Metadata: md})
 	}
