@@ -15,8 +15,7 @@ import (
 
 func TestBeginSeedsStateAndHoldsLock(t *testing.T) {
 	ctx := context.Background()
-	svc := New(memstore.New())
-	svc.clock = fixedClock()
+	svc := New(memstore.New(), WithClock(fixedClock()))
 
 	active, err := svc.Begin(ctx, testConfig())
 	if err != nil {
@@ -53,8 +52,7 @@ func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 		t.Fatal(err)
 	}
 	spy := &archiveSpy{Store: base}
-	svc := New(spy)
-	svc.clock = fixedClock()
+	svc := New(spy, WithClock(fixedClock()))
 
 	active, err := svc.Begin(ctx, testConfig())
 	if err != nil {
@@ -79,8 +77,7 @@ func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 
 func TestRecordTeamTransitions(t *testing.T) {
 	ctx := context.Background()
-	svc := New(memstore.New())
-	svc.clock = fixedClock()
+	svc := New(memstore.New(), WithClock(fixedClock()))
 	active, err := svc.Begin(ctx, testConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +87,7 @@ func TestRecordTeamTransitions(t *testing.T) {
 	if err := svc.RecordTeamStart(ctx, "alpha"); err != nil {
 		t.Fatalf("RecordTeamStart: %v", err)
 	}
-	if err := svc.RecordTeamComplete(ctx, "alpha", &TeamResult{
+	if err := svc.RecordTeamComplete(ctx, &TeamResult{
 		Team:         "alpha",
 		Status:       "success",
 		Result:       "built it",
@@ -120,10 +117,26 @@ func TestRecordTeamTransitions(t *testing.T) {
 	}
 }
 
+func TestRecordTeamCompleteRejectsBadResult(t *testing.T) {
+	ctx := context.Background()
+	svc := New(memstore.New(), WithClock(fixedClock()))
+	active, err := svc.Begin(ctx, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.End(active) }()
+
+	if err := svc.RecordTeamComplete(ctx, nil); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("RecordTeamComplete(nil) err=%v, want ErrInvalidArgument", err)
+	}
+	if err := svc.RecordTeamComplete(ctx, &TeamResult{}); !errors.Is(err, store.ErrInvalidArgument) {
+		t.Fatalf("RecordTeamComplete(empty-team) err=%v, want ErrInvalidArgument", err)
+	}
+}
+
 func TestRecordTeamFailKeepsOtherTeams(t *testing.T) {
 	ctx := context.Background()
-	svc := New(memstore.New())
-	svc.clock = fixedClock()
+	svc := New(memstore.New(), WithClock(fixedClock()))
 	active, err := svc.Begin(ctx, testConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +203,7 @@ func TestConcurrentTeamTransitions(t *testing.T) {
 				t.Errorf("RecordTeamStart(%s): %v", teamName, err)
 				return
 			}
-			if err := svc.RecordTeamComplete(ctx, teamName, &TeamResult{
+			if err := svc.RecordTeamComplete(ctx, &TeamResult{
 				Team:   teamName,
 				Status: "success",
 				Result: "ok",
@@ -228,6 +241,62 @@ func TestSnapshotWhileActiveLockHeld(t *testing.T) {
 	if got.RunID != active.RunID {
 		t.Fatalf("RunID=%q, want %q", got.RunID, active.RunID)
 	}
+}
+
+func TestSharedSnapshotReturnsStateAndReleasesLock(t *testing.T) {
+	ctx := context.Background()
+	svc := New(memstore.New(), WithClock(fixedClock()))
+	active, err := svc.Begin(ctx, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = svc.End(active)
+
+	state, release, err := svc.SharedSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("SharedSnapshot: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected non-nil state")
+	}
+	if state.Project != "test-project" {
+		t.Fatalf("Project=%q, want test-project", state.Project)
+	}
+	if release == nil {
+		t.Fatal("expected non-nil release")
+	}
+	release()
+
+	// After release we can acquire exclusive lock again.
+	next, err := svc.Begin(ctx, testConfig())
+	if err != nil {
+		t.Fatalf("Begin after SharedSnapshot release: %v", err)
+	}
+	_ = svc.End(next)
+}
+
+func TestSharedSnapshotNoActiveRunReturnsNilState(t *testing.T) {
+	ctx := context.Background()
+	svc := New(memstore.New())
+
+	state, release, err := svc.SharedSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("SharedSnapshot: %v", err)
+	}
+	if state != nil {
+		t.Fatalf("expected nil state, got %+v", state)
+	}
+	if release == nil {
+		t.Fatal("expected release even when no run exists")
+	}
+	release()
+
+	// Lock was released so a fresh Begin succeeds.
+	active, err := svc.Begin(ctx, testConfig())
+	if err != nil {
+		t.Fatalf("Begin after release: %v", err)
+	}
+	_ = svc.End(active)
 }
 
 type archiveSpy struct {

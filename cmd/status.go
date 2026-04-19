@@ -22,7 +22,7 @@ var statusCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, _ []string) {
 		logger := olog.New()
 
-		runService := runsvc.NewFile(workspaceFlag)
+		runService := newRunService(workspaceFlag, logger)
 		state, err := runService.Snapshot(context.Background())
 		switch {
 		case runsvc.IsNotFound(err):
@@ -121,5 +121,5 @@ var statusCmd = &cobra.Command{
 }
 
 func init() {
-	statusCmd.Flags().StringVar(&workspaceFlag, "workspace", ".orchestra", "Path to workspace directory")
+	statusCmd.Flags().StringVar(&workspaceFlag, "workspace", workspaceDir, "Path to workspace directory")
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/injection"
 	olog "github.com/itsHabib/orchestra/internal/log"
-	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/pkg/spawner"
 	"github.com/spf13/cobra"
 )
@@ -35,7 +34,7 @@ var spawnCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		runService := runsvc.NewFile(".orchestra")
+		runService := newRunService(workspaceDir, logger)
 		state, releaseRunLock, lockErr := runService.SharedSnapshot(context.Background())
 		if lockErr != nil {
 			logger.Error("Failed to acquire run lock: %s", lockErr)

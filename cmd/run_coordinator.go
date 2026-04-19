@@ -3,12 +3,15 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/pkg/spawner"
 )
 
-func (r *orchestrationRun) startCoordinator(ctx context.Context, tiers [][]string) (*spawner.CoordinatorHandle, func(), error) {
+// startCoordinator spawns the coordinator agent (if enabled). The returned
+// io.Closer owns the coordinator log file; callers must Close it.
+func (r *orchestrationRun) startCoordinator(ctx context.Context, tiers [][]string) (*spawner.CoordinatorHandle, io.Closer, error) {
 	if !r.cfg.Coordinator.Enabled {
 		return nil, nil, nil
 	}
@@ -36,7 +39,7 @@ func (r *orchestrationRun) startCoordinator(ctx context.Context, tiers [][]strin
 	}
 
 	r.logger.Success("Coordinator agent spawned")
-	return coordHandle, func() { _ = coordLogWriter.Close() }, nil
+	return coordHandle, coordLogWriter, nil
 }
 
 func (r *orchestrationRun) stopCoordinator(coordHandle *spawner.CoordinatorHandle) error {

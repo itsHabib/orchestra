@@ -11,7 +11,6 @@ import (
 	"github.com/itsHabib/orchestra/internal/messaging"
 	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/filestore"
 )
 
 // TeamResult is the structured result recorded for a completed team.
@@ -22,6 +21,7 @@ type Service struct {
 	store     store.Store
 	clock     func() time.Time
 	workspace *workspace.Workspace
+	warn      func(format string, args ...any)
 }
 
 // Active represents a live run holding the exclusive run lock.
@@ -34,24 +34,57 @@ type Active struct {
 	once    sync.Once
 }
 
-// New creates a run service backed by the provided Store.
-func New(s store.Store) *Service {
-	return &Service{store: s, clock: time.Now}
+// Option configures a Service at construction time.
+type Option func(*Service)
+
+// WithWorkspace attaches a workspace so team transitions mirror into registry.json.
+// Registry mirror failures are non-fatal — state.json is the source of truth.
+func WithWorkspace(ws *workspace.Workspace) Option {
+	return func(s *Service) { s.workspace = ws }
 }
 
-// NewFile creates a run service backed by a filesystem workspace.
-func NewFile(path string) *Service {
-	return &Service{
-		store:     filestore.New(path),
-		clock:     time.Now,
-		workspace: workspace.ForPath(path),
+// WithClock overrides the clock used for state timestamps. Useful in tests.
+func WithClock(fn func() time.Time) Option {
+	return func(s *Service) {
+		if fn != nil {
+			s.clock = fn
+		}
 	}
+}
+
+// WithWarn sets a logger hook for non-fatal registry mirror failures.
+func WithWarn(fn func(format string, args ...any)) Option {
+	return func(s *Service) {
+		if fn != nil {
+			s.warn = fn
+		}
+	}
+}
+
+// New creates a run service backed by the provided Store.
+func New(s store.Store, opts ...Option) *Service {
+	svc := &Service{
+		store: s,
+		clock: time.Now,
+		warn:  func(string, ...any) {},
+	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // IsNotFound reports whether err wraps the store not-found sentinel.
 func IsNotFound(err error) bool {
 	return errors.Is(err, store.ErrNotFound)
 }
+
+// Workspace returns the workspace attached via WithWorkspace, or nil.
+func (s *Service) Workspace() *workspace.Workspace { return s.workspace }
+
+// Now returns the service clock reading. Callers use this to stamp times
+// consistently with the rest of the run lifecycle.
+func (s *Service) Now() time.Time { return s.clock() }
 
 // Begin acquires the exclusive run lock, archives any prior active run, and seeds fresh state.
 func (s *Service) Begin(ctx context.Context, cfg *config.Config) (*Active, error) {
@@ -139,26 +172,26 @@ func (s *Service) RecordTeamStart(ctx context.Context, team string) error {
 		return fmt.Errorf("run.RecordTeamStart %s: %w", team, err)
 	}
 
-	if s.workspace == nil {
-		return nil
-	}
-	if err := s.workspace.UpdateRegistryEntry(team, func(e *workspace.RegistryEntry) {
+	s.mirrorRegistry("RecordTeamStart", team, func(e *workspace.RegistryEntry) {
 		e.Status = "running"
 		e.StartedAt = now
 		e.EndedAt = time.Time{}
-	}); err != nil {
-		return fmt.Errorf("run.RecordTeamStart registry %s: %w", team, err)
-	}
+	})
 	return nil
 }
 
 // RecordTeamComplete transitions a team to done and records result counters.
-func (s *Service) RecordTeamComplete(ctx context.Context, team string, result *TeamResult) error {
+// The team name is taken from result.Team.
+func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) error {
 	if result == nil {
 		return fmt.Errorf("%w: nil team result", store.ErrInvalidArgument)
 	}
+	if result.Team == "" {
+		return fmt.Errorf("%w: team result missing team name", store.ErrInvalidArgument)
+	}
 
 	now := s.clock().UTC()
+	team := result.Team
 	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
 		ts.Status = "done"
 		ts.EndedAt = now
@@ -173,16 +206,11 @@ func (s *Service) RecordTeamComplete(ctx context.Context, team string, result *T
 		return fmt.Errorf("run.RecordTeamComplete %s: %w", team, err)
 	}
 
-	if s.workspace == nil {
-		return nil
-	}
-	if err := s.workspace.UpdateRegistryEntry(team, func(e *workspace.RegistryEntry) {
+	s.mirrorRegistry("RecordTeamComplete", team, func(e *workspace.RegistryEntry) {
 		e.Status = "done"
 		e.SessionID = result.SessionID
 		e.EndedAt = now
-	}); err != nil {
-		return fmt.Errorf("run.RecordTeamComplete registry %s: %w", team, err)
-	}
+	})
 	return nil
 }
 
@@ -202,19 +230,15 @@ func (s *Service) RecordTeamFail(ctx context.Context, team string, cause error) 
 		return fmt.Errorf("run.RecordTeamFail %s: %w", team, err)
 	}
 
-	if s.workspace == nil {
-		return nil
-	}
-	if err := s.workspace.UpdateRegistryEntry(team, func(e *workspace.RegistryEntry) {
+	s.mirrorRegistry("RecordTeamFail", team, func(e *workspace.RegistryEntry) {
 		e.Status = "failed"
 		e.EndedAt = now
-	}); err != nil {
-		return fmt.Errorf("run.RecordTeamFail registry %s: %w", team, err)
-	}
+	})
 	return nil
 }
 
 // End releases the run lock. It is safe to call multiple times.
+// The error return is reserved for future use; today it is always nil.
 func (s *Service) End(active *Active) error {
 	if active == nil {
 		return nil
@@ -227,6 +251,21 @@ func (s *Service) End(active *Active) error {
 	return nil
 }
 
+// mirrorRegistry best-effort mirrors a team state transition into registry.json.
+// state.json (written above) is authoritative; registry.json is a human-facing
+// view used by status/monitor, so a mirror failure is logged and swallowed
+// rather than failing the whole run.
+func (s *Service) mirrorRegistry(op, team string, fn func(*workspace.RegistryEntry)) {
+	if s.workspace == nil {
+		return
+	}
+	if err := s.workspace.UpdateRegistryEntry(team, fn); err != nil {
+		s.warn("run.%s registry mirror %s: %s", op, team, err)
+	}
+}
+
+// archivePrevious retires the currently-active run (if any). An empty runID
+// tells the store to archive whichever run is currently active.
 func (s *Service) archivePrevious(ctx context.Context) error {
 	err := s.store.ArchiveRun(ctx, "")
 	switch {

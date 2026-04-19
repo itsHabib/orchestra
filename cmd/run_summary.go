@@ -8,13 +8,15 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/itsHabib/orchestra/internal/config"
+	olog "github.com/itsHabib/orchestra/internal/log"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
-func printSummary(ctx context.Context, runService *runsvc.Service, ws *workspace.Workspace, cfg *config.Config, wallClock time.Duration) {
+func printSummary(ctx context.Context, logger *olog.Logger, runService *runsvc.Service, ws *workspace.Workspace, cfg *config.Config, wallClock time.Duration) {
 	state, err := runService.Snapshot(ctx)
 	if err != nil {
+		logger.Warn("Summary unavailable: %s", err)
 		return
 	}
 

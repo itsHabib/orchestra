@@ -7,6 +7,8 @@ import (
 	"github.com/itsHabib/orchestra/internal/config"
 	olog "github.com/itsHabib/orchestra/internal/log"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
+	"github.com/itsHabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/pkg/store/filestore"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +29,7 @@ var initCmd = &cobra.Command{
 			logger.Warn("%s", w)
 		}
 
-		runService := runsvc.NewFile(".orchestra")
+		runService := newRunService(workspaceDir, logger)
 		active, err := runService.Begin(context.Background(), cfg)
 		if err != nil {
 			logger.Error("Failed to init workspace: %s", err)
@@ -38,6 +40,16 @@ var initCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		logger.Success("Workspace created at %s", ".orchestra")
+		logger.Success("Workspace created at %s", workspaceDir)
 	},
+}
+
+// newRunService builds a run.Service backed by the filestore plus a workspace
+// mirror at path. Registry mirror failures flow through logger.Warn.
+func newRunService(path string, logger *olog.Logger) *runsvc.Service {
+	return runsvc.New(
+		filestore.New(path),
+		runsvc.WithWorkspace(workspace.ForPath(path)),
+		runsvc.WithWarn(logger.Warn),
+	)
 }

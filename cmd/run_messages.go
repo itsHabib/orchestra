@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"time"
-
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/messaging"
-	"github.com/itsHabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/pkg/store"
 )
 
 func teamNames(teams []config.Team) []string {
@@ -24,7 +22,7 @@ func inboxLookup(participants []messaging.Participant) map[string]string {
 	return lookup
 }
 
-func (r *orchestrationRun) seedBootstrapMessages(team *config.Team, state *workspace.State) error {
+func (r *orchestrationRun) seedBootstrapMessages(team *config.Team, state *store.RunState) error {
 	for _, dep := range team.DependsOn {
 		summary := r.dependencySummary(dep, state)
 		if summary == "" {
@@ -37,7 +35,7 @@ func (r *orchestrationRun) seedBootstrapMessages(team *config.Team, state *works
 	return nil
 }
 
-func (r *orchestrationRun) dependencySummary(dep string, state *workspace.State) string {
+func (r *orchestrationRun) dependencySummary(dep string, state *store.RunState) string {
 	depResult, err := r.ws.ReadResult(dep)
 	if err != nil || depResult == nil {
 		return ""
@@ -59,7 +57,7 @@ func (r *orchestrationRun) bootstrapMessage(dep, teamName, summary string) *mess
 		Type:      messaging.MsgBootstrap,
 		Subject:   "Results from " + dep + " (completed)",
 		Content:   summary,
-		Timestamp: time.Now(),
+		Timestamp: r.runService.Now(),
 		Read:      false,
 	}
 }

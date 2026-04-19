@@ -17,6 +17,7 @@ import (
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/pkg/spawner"
+	"github.com/itsHabib/orchestra/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +47,7 @@ var runCmd = &cobra.Command{
 func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logger) error {
 	wallStart := time.Now()
 
-	runService := runsvc.NewFile(".orchestra")
+	runService := newRunService(workspaceDir, logger)
 	active, err := runService.Begin(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("begin run: %w", err)
@@ -58,12 +59,12 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 		return err
 	}
 
-	coordHandle, closeCoordinatorLog, err := run.startCoordinator(ctx, tiers)
+	coordHandle, coordLog, err := run.startCoordinator(ctx, tiers)
 	if err != nil {
 		return err
 	}
-	if closeCoordinatorLog != nil {
-		defer closeCoordinatorLog()
+	if coordLog != nil {
+		defer func() { _ = coordLog.Close() }()
 	}
 
 	if err := run.runTiers(ctx, tiers); err != nil {
@@ -73,8 +74,7 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 		return err
 	}
 
-	// 7. Print summary
-	printSummary(ctx, run.runService, run.ws, cfg, time.Since(wallStart))
+	printSummary(ctx, logger, run.runService, run.ws, cfg, time.Since(wallStart))
 	return nil
 }
 
@@ -95,9 +95,9 @@ type tierResult struct {
 }
 
 func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *runsvc.Service, active *runsvc.Active) (*orchestrationRun, [][]string, error) {
-	ws, err := workspace.Open(".orchestra")
-	if err != nil {
-		return nil, nil, fmt.Errorf("open workspace: %w", err)
+	ws := runService.Workspace()
+	if ws == nil {
+		return nil, nil, errors.New("run service has no workspace attached")
 	}
 	logger.Success("Workspace initialized at %s", ws.Path)
 
@@ -165,14 +165,14 @@ func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames [
 	return nil
 }
 
-func (r *orchestrationRun) spawnTeam(ctx context.Context, teamName string, tierNames []string, state *workspace.State, results chan<- tierResult, wg *sync.WaitGroup) {
+func (r *orchestrationRun) spawnTeam(ctx context.Context, teamName string, tierNames []string, state *store.RunState, results chan<- tierResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	res, err := r.runTeam(ctx, teamName, tierNames, state)
 	results <- tierResult{name: teamName, res: res, err: err}
 }
 
-func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNames []string, state *workspace.State) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNames []string, state *store.RunState) (*workspace.TeamResult, error) {
 	team := r.cfg.TeamByName(teamName)
 	if team == nil {
 		return nil, fmt.Errorf("team %q not found in config", teamName)
@@ -204,7 +204,7 @@ func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNam
 	})
 }
 
-func (r *orchestrationRun) teamPrompt(team *config.Team, tierNames []string, state *workspace.State) string {
+func (r *orchestrationRun) teamPrompt(team *config.Team, tierNames []string, state *store.RunState) string {
 	return injection.BuildPrompt(team, r.cfg.Name, state, r.cfg, tierPeers(tierNames), r.inboxLookup[team.Name], r.bus.Path())
 }
 
@@ -252,5 +252,5 @@ func (r *orchestrationRun) recordTeamResult(ctx context.Context, teamName string
 	if err := r.ws.WriteResult(result); err != nil {
 		return fmt.Errorf("writing result for %s: %w", teamName, err)
 	}
-	return r.runService.RecordTeamComplete(ctx, teamName, result)
+	return r.runService.RecordTeamComplete(ctx, result)
 }
