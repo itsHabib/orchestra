@@ -46,7 +46,17 @@ var runCmd = &cobra.Command{
 func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logger) error {
 	wallStart := time.Now()
 
-	run, tiers, err := newOrchestrationRun(cfg, logger)
+	releaseRunLock, err := workspace.AcquireRunLock(ctx, ".orchestra", workspace.LockExclusive)
+	if err != nil {
+		return fmt.Errorf("acquiring run lock: %w", err)
+	}
+	defer releaseRunLock()
+
+	if err := workspace.ArchiveExistingRun(ctx, ".orchestra"); err != nil {
+		return fmt.Errorf("archiving previous run: %w", err)
+	}
+
+	run, tiers, err := newOrchestrationRun(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -67,7 +77,7 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 	}
 
 	// 7. Print summary
-	printSummary(run.ws, cfg, time.Since(wallStart))
+	printSummary(ctx, run.ws, cfg, time.Since(wallStart))
 	return nil
 }
 
@@ -86,8 +96,8 @@ type tierResult struct {
 	err  error
 }
 
-func newOrchestrationRun(cfg *config.Config, logger *olog.Logger) (*orchestrationRun, [][]string, error) {
-	ws, err := workspace.Init(cfg)
+func newOrchestrationRun(ctx context.Context, cfg *config.Config, logger *olog.Logger) (*orchestrationRun, [][]string, error) {
+	ws, err := workspace.InitContext(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("init workspace: %w", err)
 	}
@@ -188,7 +198,7 @@ func (r *orchestrationRun) runTiers(ctx context.Context, tiers [][]string) error
 func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames []string) error {
 	r.logger.TierStart(tierIdx, tierNames)
 
-	state, err := r.ws.ReadState()
+	state, err := r.ws.ReadStateContext(ctx)
 	if err != nil {
 		return fmt.Errorf("reading state: %w", err)
 	}
@@ -202,7 +212,7 @@ func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames [
 	wg.Wait()
 	close(results)
 
-	failed, err := r.collectTierResults(results)
+	failed, err := r.collectTierResults(ctx, results)
 	if err != nil {
 		return err
 	}
@@ -316,26 +326,26 @@ func (r *orchestrationRun) teamModel(team *config.Team) string {
 	return r.cfg.Defaults.Model
 }
 
-func (r *orchestrationRun) collectTierResults(results <-chan tierResult) ([]string, error) {
+func (r *orchestrationRun) collectTierResults(ctx context.Context, results <-chan tierResult) ([]string, error) {
 	var failed []string
 	for result := range results {
 		if result.err != nil {
 			failed = append(failed, result.name)
-			if err := r.markTeamFailed(result.name, result.err); err != nil {
+			if err := r.markTeamFailed(ctx, result.name, result.err); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if err := r.recordTeamResult(result.name, result.res); err != nil {
+		if err := r.recordTeamResult(ctx, result.name, result.res); err != nil {
 			return nil, err
 		}
 	}
 	return failed, nil
 }
 
-func (r *orchestrationRun) markTeamFailed(teamName string, teamErr error) error {
+func (r *orchestrationRun) markTeamFailed(ctx context.Context, teamName string, teamErr error) error {
 	r.logger.TeamMsg(teamName, "FAILED: %s", teamErr)
-	if err := r.ws.UpdateTeamState(teamName, func(ts *workspace.TeamState) {
+	if err := r.ws.UpdateTeamStateContext(ctx, teamName, func(ts *workspace.TeamState) {
 		*ts = workspace.TeamState{Status: "failed"}
 	}); err != nil {
 		return fmt.Errorf("updating failed team state for %s: %w", teamName, err)
@@ -349,19 +359,19 @@ func (r *orchestrationRun) markTeamFailed(teamName string, teamErr error) error 
 	return nil
 }
 
-func (r *orchestrationRun) recordTeamResult(teamName string, result *workspace.TeamResult) error {
+func (r *orchestrationRun) recordTeamResult(ctx context.Context, teamName string, result *workspace.TeamResult) error {
 	r.logger.TeamMsg(teamName, "Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
 	if err := r.ws.WriteResult(result); err != nil {
 		return fmt.Errorf("writing result for %s: %w", teamName, err)
 	}
-	if err := r.updateCompletedTeamState(teamName, result); err != nil {
+	if err := r.updateCompletedTeamState(ctx, teamName, result); err != nil {
 		return err
 	}
 	return r.updateCompletedRegistryEntry(teamName, result.SessionID)
 }
 
-func (r *orchestrationRun) updateCompletedTeamState(teamName string, result *workspace.TeamResult) error {
-	err := r.ws.UpdateTeamState(teamName, func(ts *workspace.TeamState) {
+func (r *orchestrationRun) updateCompletedTeamState(ctx context.Context, teamName string, result *workspace.TeamResult) error {
+	err := r.ws.UpdateTeamStateContext(ctx, teamName, func(ts *workspace.TeamState) {
 		*ts = workspace.TeamState{
 			Status:        "done",
 			ResultSummary: result.Result,
@@ -423,8 +433,8 @@ func fmtTokens(n int64) string {
 	}
 }
 
-func printSummary(ws *workspace.Workspace, _ *config.Config, wallClock time.Duration) {
-	state, err := ws.ReadState()
+func printSummary(ctx context.Context, ws *workspace.Workspace, _ *config.Config, wallClock time.Duration) {
+	state, err := ws.ReadStateContext(ctx)
 	if err != nil {
 		return
 	}

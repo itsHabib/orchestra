@@ -1,25 +1,39 @@
 package workspace
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/fsutil"
+	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/pkg/store/filestore"
 )
 
 // Workspace manages the .orchestra/ directory for a run.
 type Workspace struct {
-	Path string
-	mu   sync.Mutex
+	Path       string
+	store      *filestore.FileStore
+	registryMu sync.Mutex
 }
 
 // Init creates a new .orchestra/ workspace seeded from the config.
 func Init(cfg *config.Config) (*Workspace, error) {
+	return InitContext(context.Background(), cfg)
+}
+
+// InitContext creates a new .orchestra/ workspace seeded from the config.
+func InitContext(ctx context.Context, cfg *config.Config) (*Workspace, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	wsPath := ".orchestra"
 	for _, dir := range []string{wsPath, filepath.Join(wsPath, "results"), filepath.Join(wsPath, "logs")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -27,17 +41,21 @@ func Init(cfg *config.Config) (*Workspace, error) {
 		}
 	}
 
-	ws := &Workspace{Path: wsPath}
+	ws := &Workspace{Path: wsPath, store: filestore.New(wsPath)}
 
 	// Seed state
+	now := time.Now().UTC()
 	state := &State{
-		Project: cfg.Name,
-		Teams:   make(map[string]TeamState),
+		Project:   cfg.Name,
+		Backend:   "local",
+		RunID:     now.Format("20060102T150405.000000000Z"),
+		StartedAt: now,
+		Teams:     make(map[string]TeamState),
 	}
 	for i := range cfg.Teams {
 		state.Teams[cfg.Teams[i].Name] = TeamState{Status: "pending"}
 	}
-	if err := ws.WriteState(state); err != nil {
+	if err := ws.WriteStateContext(ctx, state); err != nil {
 		return nil, fmt.Errorf("seeding state: %w", err)
 	}
 
@@ -65,10 +83,23 @@ func Open(path string) (*Workspace, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workspace path %s is not a directory", path)
 	}
-	return &Workspace{Path: path}, nil
+	return &Workspace{Path: path, store: filestore.New(path)}, nil
 }
 
-func (w *Workspace) statePath() string    { return filepath.Join(w.Path, "state.json") }
+// AcquireRunLock takes the workspace run lock without otherwise opening the workspace.
+func AcquireRunLock(ctx context.Context, path string, mode LockMode) (func(), error) {
+	return filestore.New(path).AcquireRunLock(ctx, mode)
+}
+
+// ArchiveExistingRun moves a previous run's stateful workspace files under archive/.
+func ArchiveExistingRun(ctx context.Context, path string) error {
+	err := filestore.New(path).ArchiveRun(ctx, "")
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 func (w *Workspace) registryPath() string { return filepath.Join(w.Path, "registry.json") }
 func (w *Workspace) resultPath(name string) string {
 	return filepath.Join(w.Path, "results", name+".json")
@@ -89,39 +120,32 @@ func atomicWrite(path string, data []byte) error {
 
 // ReadState reads state.json from the workspace.
 func (w *Workspace) ReadState() (*State, error) {
-	data, err := os.ReadFile(w.statePath())
-	if err != nil {
-		return nil, err
-	}
-	var s State
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, err
-	}
-	return &s, nil
+	return w.ReadStateContext(context.Background())
+}
+
+// ReadStateContext reads state.json from the workspace.
+func (w *Workspace) ReadStateContext(ctx context.Context) (*State, error) {
+	return w.store.LoadRunState(ctx)
 }
 
 // WriteState writes state.json atomically.
 func (w *Workspace) WriteState(s *State) error {
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWrite(w.statePath(), data)
+	return w.WriteStateContext(context.Background(), s)
+}
+
+// WriteStateContext writes state.json atomically.
+func (w *Workspace) WriteStateContext(ctx context.Context, s *State) error {
+	return w.store.SaveRunState(ctx, s)
 }
 
 // UpdateTeamState performs a read-modify-write on the state for a single team.
 func (w *Workspace) UpdateTeamState(name string, fn func(*TeamState)) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	return w.UpdateTeamStateContext(context.Background(), name, fn)
+}
 
-	state, err := w.ReadState()
-	if err != nil {
-		return err
-	}
-	ts := state.Teams[name]
-	fn(&ts)
-	state.Teams[name] = ts
-	return w.WriteState(state)
+// UpdateTeamStateContext performs a read-modify-write on the state for a single team.
+func (w *Workspace) UpdateTeamStateContext(ctx context.Context, name string, fn func(*TeamState)) error {
+	return w.store.UpdateTeamState(ctx, name, fn)
 }
 
 // ReadRegistry reads registry.json from the workspace.
@@ -148,8 +172,8 @@ func (w *Workspace) WriteRegistry(r *Registry) error {
 
 // UpdateRegistryEntry performs a read-modify-write on a single registry entry.
 func (w *Workspace) UpdateRegistryEntry(name string, fn func(*RegistryEntry)) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.registryMu.Lock()
+	defer w.registryMu.Unlock()
 
 	reg, err := w.ReadRegistry()
 	if err != nil {

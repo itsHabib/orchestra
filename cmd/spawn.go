@@ -39,6 +39,12 @@ var spawnCmd = &cobra.Command{
 		var state *workspace.State
 		ws, wsErr := workspace.Open(".orchestra")
 		if wsErr == nil {
+			releaseRunLock, lockErr := workspace.AcquireRunLock(context.Background(), ".orchestra", workspace.LockExclusive)
+			if lockErr != nil {
+				logger.Error("Failed to acquire run lock: %s", lockErr)
+				os.Exit(1)
+			}
+			defer releaseRunLock()
 			state, _ = ws.ReadState()
 		}
 
