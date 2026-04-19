@@ -30,7 +30,8 @@ func printSummary(ctx context.Context, runService *runsvc.Service, ws *workspace
 
 	var totalIn, totalOut int64
 	var totalTurns int
-	for _, team := range cfg.Teams {
+	for i := range cfg.Teams {
+		team := &cfg.Teams[i]
 		ts := state.Teams[team.Name]
 		tokens := ""
 		turns := ""

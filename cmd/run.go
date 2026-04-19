@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,7 +108,7 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 	logger.Info("DAG: %d tiers", len(tiers))
 
 	if active.Bus == nil {
-		return nil, nil, fmt.Errorf("run began without message bus")
+		return nil, nil, errors.New("run began without message bus")
 	}
 	participants := messaging.BuildParticipants(teamNames(cfg.Teams))
 	inboxLookup := inboxLookup(participants)
