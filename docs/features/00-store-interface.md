@@ -1,6 +1,6 @@
 # Feature: Store interface
 
-Status: **Proposed**
+Status: **Shipped** (PR #2)
 Owner: @itsHabib
 Target: lands before P1.3 (registry cache) so P1.3 codes against the interface from day one.
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §10 (state & resumption), §9.1 (agents.json cache).

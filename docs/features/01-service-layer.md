@@ -1,6 +1,6 @@
 # Feature: Service layer
 
-Status: **Proposed**
+Status: **Shipped** (PR #4, merged to main as 028d1cc)
 Owner: @itsHabib
 Depends on: [00-store-interface.md](./00-store-interface.md) (shipped in PR #2)
 Relates to: [p13-registry-cache.md](./p13-registry-cache.md); [DESIGN-v2.md](../DESIGN-v2.md) §10 (state & resumption), §9.1 (agent cache choreography).

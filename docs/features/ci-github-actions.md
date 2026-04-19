@@ -1,6 +1,6 @@
 # Feature: CI via GitHub Actions (lint / vet / test)
 
-Status: **Proposed**
+Status: **Shipped** (PR #1, commit 7dc7964)
 Owner: @itsHabib
 Depends on: nothing — net-new. No prior CI exists.
 Relates to: [Makefile](../../Makefile) (`make lint test vet`), [.golangci.yml](../../.golangci.yml), [go.mod](../../go.mod) `tool` directive.
