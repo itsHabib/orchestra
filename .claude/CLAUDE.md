@@ -32,6 +32,7 @@ Requires Go 1.22+.
 - Tests use real binary + mock claude script (no mocks/interfaces for spawner)
 - Config validation has hard errors (block execution) and soft warnings (print only)
 - Teams communicate via file-based message bus under `.orchestra/messages/`
+- Do not force-push unless the human explicitly approves it; prefer follow-up commits on PR branches
 
 ## Companion Skills
 
