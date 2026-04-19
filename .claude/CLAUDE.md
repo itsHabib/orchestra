@@ -20,8 +20,9 @@ Requires Go 1.22+.
 - `internal/dag/` — Topological sort (Kahn's algorithm) → execution tiers
 - `internal/spawner/` — Spawns `claude -p --output-format stream-json` subprocesses
 - `internal/injection/` — Prompt construction (role + context + tasks + dependency results)
+- `internal/run/` — Run lifecycle service (lock, archive, seed state, team transitions)
 - `internal/messaging/` — File-based cross-team message bus
-- `internal/workspace/` — Atomic file I/O for state, registry, results, logs
+- `internal/workspace/` — Atomic file I/O helpers for registry, results, logs
 - `internal/fsutil/` — Atomic file operations (write .tmp → os.Rename)
 - `internal/log/` — NDJSON logging
 - `examples/` — Complete example projects with orchestra.yaml configs

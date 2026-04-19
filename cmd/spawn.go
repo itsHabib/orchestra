@@ -9,7 +9,7 @@ import (
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/injection"
 	olog "github.com/itsHabib/orchestra/internal/log"
-	"github.com/itsHabib/orchestra/internal/workspace"
+	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/pkg/spawner"
 	"github.com/spf13/cobra"
 )
@@ -35,21 +35,13 @@ var spawnCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Acquire the run lock unconditionally so a concurrent `orchestra run`
-		// cannot overlap even when the workspace has not been initialized yet.
-		// Spawn only reads prior state for prompt-building, so a shared lock
-		// is sufficient and allows other read-only commands to share.
-		releaseRunLock, lockErr := workspace.AcquireRunLock(context.Background(), ".orchestra", workspace.LockShared)
+		runService := runsvc.NewFile(".orchestra")
+		state, releaseRunLock, lockErr := runService.SharedSnapshot(context.Background())
 		if lockErr != nil {
 			logger.Error("Failed to acquire run lock: %s", lockErr)
 			os.Exit(1)
 		}
 		defer releaseRunLock()
-
-		var state *workspace.State
-		if ws, wsErr := workspace.Open(".orchestra"); wsErr == nil {
-			state, _ = ws.ReadState(context.Background())
-		}
 
 		prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, nil, "", "")
 

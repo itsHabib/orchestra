@@ -2,16 +2,15 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/fatih/color"
 	olog "github.com/itsHabib/orchestra/internal/log"
-	"github.com/itsHabib/orchestra/internal/workspace"
-	"github.com/itsHabib/orchestra/pkg/store"
+	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -23,15 +22,10 @@ var statusCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, _ []string) {
 		logger := olog.New()
 
-		ws, err := workspace.Open(workspaceFlag)
-		if err != nil {
-			logger.Error("Failed to open workspace: %s", err)
-			os.Exit(1)
-		}
-
-		state, err := ws.ReadState(context.Background())
+		runService := runsvc.NewFile(workspaceFlag)
+		state, err := runService.Snapshot(context.Background())
 		switch {
-		case errors.Is(err, store.ErrNotFound):
+		case runsvc.IsNotFound(err):
 			fmt.Println()
 			fmt.Println("  No active run.")
 			fmt.Println()
@@ -41,36 +35,20 @@ var statusCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		reg, err := ws.ReadRegistry()
-		switch {
-		case os.IsNotExist(err):
-			fmt.Println()
-			fmt.Println("  No active run.")
-			fmt.Println()
-			return
-		case err != nil:
-			logger.Error("Failed to read registry: %s", err)
-			os.Exit(1)
-		}
-
-		// Count teams by status (use registry status as source of truth for running)
 		counts := map[string]int{}
-		statusMap := make(map[string]string) // team name → effective status
-		for _, entry := range reg.Teams {
-			// Registry is more accurate for running teams (state only updates after spawn returns)
-			st := entry.Status
-			if st == "" {
-				if ts, ok := state.Teams[entry.Name]; ok {
-					st = ts.Status
-				}
-			}
+		names := make([]string, 0, len(state.Teams))
+		statusMap := make(map[string]string)
+		for name, ts := range state.Teams {
+			names = append(names, name)
+			st := ts.Status
 			if st == "" {
 				st = "pending"
 			}
 			counts[st]++
-			statusMap[entry.Name] = st
+			statusMap[name] = st
 		}
-		total := len(reg.Teams)
+		sort.Strings(names)
+		total := len(names)
 
 		// Summary line
 		bold := color.New(color.Bold)
@@ -98,9 +76,9 @@ var statusCmd = &cobra.Command{
 
 		now := time.Now()
 		var totalIn, totalOut int64
-		for _, entry := range reg.Teams {
-			ts := state.Teams[entry.Name]
-			st := statusMap[entry.Name]
+		for _, name := range names {
+			ts := state.Teams[name]
+			st := statusMap[name]
 
 			tokens := ""
 			dur := ""
@@ -115,8 +93,8 @@ var statusCmd = &cobra.Command{
 			case ts.DurationMs > 0:
 				d := time.Duration(ts.DurationMs) * time.Millisecond
 				dur = fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
-			case st == "running" && !entry.StartedAt.IsZero():
-				d := now.Sub(entry.StartedAt).Round(time.Second)
+			case st == "running" && !ts.StartedAt.IsZero():
+				d := now.Sub(ts.StartedAt).Round(time.Second)
 				dur = fmt.Sprintf("%dm %02ds ⏱", int(d.Minutes()), int(d.Seconds())%60)
 			}
 
@@ -131,7 +109,7 @@ var statusCmd = &cobra.Command{
 				stStr = color.RedString(st)
 			}
 
-			fmt.Printf("  %-16s │ %-17s │ %-12s │ %s\n", entry.Name, stStr, tokens, dur)
+			fmt.Printf("  %-16s │ %-17s │ %-12s │ %s\n", name, stStr, tokens, dur)
 		}
 
 		fmt.Printf("  ────────────────┼──────────┼──────────────┼────────────\n")
