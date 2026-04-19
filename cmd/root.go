@@ -4,6 +4,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// workspaceDir is the on-disk directory that orchestra commands read and write.
+const workspaceDir = ".orchestra"
+
 var rootCmd = &cobra.Command{
 	Use:   "orchestra",
 	Short: "Multi-team project orchestration CLI",

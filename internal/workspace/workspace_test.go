@@ -1,10 +1,8 @@
 package workspace
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/itsHabib/orchestra/internal/config"
@@ -37,12 +35,12 @@ func chdirTemp(t *testing.T) {
 	})
 }
 
-func TestInit_CreatesStructure(t *testing.T) {
+func TestEnsure_CreatesStructure(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(context.Background(), testConfig())
+	ws, err := Ensure(".orchestra")
 	if err != nil {
-		t.Fatalf("Init failed: %v", err)
+		t.Fatalf("Ensure failed: %v", err)
 	}
 
 	// Check dirs exist
@@ -56,20 +54,17 @@ func TestInit_CreatesStructure(t *testing.T) {
 			t.Fatalf("%s is not a directory", p)
 		}
 	}
+}
 
-	// Check state.json
-	state, err := ws.ReadState(context.Background())
+func TestSeedRegistry(t *testing.T) {
+	chdirTemp(t)
+
+	ws, err := Ensure(".orchestra")
 	if err != nil {
-		t.Fatalf("ReadState failed: %v", err)
+		t.Fatalf("Ensure failed: %v", err)
 	}
-	if state.Project != "test-project" {
-		t.Fatalf("expected test-project, got %s", state.Project)
-	}
-	if len(state.Teams) != 2 {
-		t.Fatalf("expected 2 teams in state, got %d", len(state.Teams))
-	}
-	if state.Teams["alpha"].Status != "pending" {
-		t.Fatalf("expected pending, got %s", state.Teams["alpha"].Status)
+	if err := ws.SeedRegistry(testConfig()); err != nil {
+		t.Fatalf("SeedRegistry failed: %v", err)
 	}
 
 	// Check registry.json
@@ -82,35 +77,10 @@ func TestInit_CreatesStructure(t *testing.T) {
 	}
 }
 
-func TestState_RoundTrip(t *testing.T) {
-	chdirTemp(t)
-
-	ws, err := Init(context.Background(), testConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := &State{
-		Project: "rtt",
-		Teams: map[string]TeamState{
-			"x": {Status: "done", ResultSummary: "built it", CostUSD: 1.5},
-		},
-	}
-	if err := ws.WriteState(context.Background(), state); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ws.ReadState(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Teams["x"].CostUSD != 1.5 {
-		t.Fatalf("expected 1.5, got %f", got.Teams["x"].CostUSD)
-	}
-}
-
 func TestResult_RoundTrip(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(context.Background(), testConfig())
+	ws, err := Ensure(".orchestra")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,46 +102,14 @@ func TestResult_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestUpdateTeamState_Concurrent(t *testing.T) {
-	chdirTemp(t)
-
-	ws, err := Init(context.Background(), testConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			name := "alpha"
-			if n%2 == 0 {
-				name = "beta"
-			}
-			if err := ws.UpdateTeamState(context.Background(), name, func(ts *TeamState) {
-				*ts = TeamState{Status: "done", CostUSD: float64(n)}
-			}); err != nil {
-				t.Errorf("UpdateTeamState failed: %v", err)
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	state, err := ws.ReadState(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Teams["alpha"].Status != "done" || state.Teams["beta"].Status != "done" {
-		t.Fatal("expected both teams done")
-	}
-}
-
 func TestUpdateRegistryEntry(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(context.Background(), testConfig())
+	ws, err := Ensure(".orchestra")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.SeedRegistry(testConfig()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,8 +139,11 @@ func TestUpdateRegistryEntry(t *testing.T) {
 func TestUpdateRegistryEntry_NotFound(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(context.Background(), testConfig())
+	ws, err := Ensure(".orchestra")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.SeedRegistry(testConfig()); err != nil {
 		t.Fatal(err)
 	}
 	err = ws.UpdateRegistryEntry("nonexistent", func(_ *RegistryEntry) {})
@@ -221,7 +162,7 @@ func TestOpen_NonExistent(t *testing.T) {
 func TestLogWriter(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(context.Background(), testConfig())
+	ws, err := Ensure(".orchestra")
 	if err != nil {
 		t.Fatal(err)
 	}

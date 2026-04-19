@@ -1,72 +1,42 @@
 package workspace
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/fsutil"
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/filestore"
 )
 
-// Workspace manages the .orchestra/ directory for a run.
+// Workspace manages file-backed helpers under a .orchestra/ directory.
 type Workspace struct {
 	Path       string
-	store      *filestore.FileStore
 	registryMu sync.Mutex
 }
 
-// Init creates a new .orchestra/ workspace seeded from the config.
-func Init(ctx context.Context, cfg *config.Config) (*Workspace, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+// ForPath returns a helper for path without touching the filesystem.
+func ForPath(path string) *Workspace {
+	if path == "" {
+		path = ".orchestra"
 	}
-	wsPath := ".orchestra"
-	for _, dir := range []string{wsPath, filepath.Join(wsPath, "results"), filepath.Join(wsPath, "logs")} {
+	return &Workspace{Path: path}
+}
+
+// Ensure creates the workspace helper directories if needed.
+func Ensure(path string) (*Workspace, error) {
+	if path == "" {
+		path = ".orchestra"
+	}
+	for _, dir := range []string{path, filepath.Join(path, "results"), filepath.Join(path, "logs")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating workspace dir %s: %w", dir, err)
 		}
 	}
-
-	ws := &Workspace{Path: wsPath, store: filestore.New(wsPath)}
-
-	// Seed state
-	now := time.Now().UTC()
-	state := &State{
-		Project:   cfg.Name,
-		Backend:   "local",
-		RunID:     now.Format("20060102T150405.000000000Z"),
-		StartedAt: now,
-		Teams:     make(map[string]TeamState),
-	}
-	for i := range cfg.Teams {
-		state.Teams[cfg.Teams[i].Name] = TeamState{Status: "pending"}
-	}
-	if err := ws.WriteState(ctx, state); err != nil {
-		return nil, fmt.Errorf("seeding state: %w", err)
-	}
-
-	// Seed registry
-	reg := &Registry{Project: cfg.Name}
-	for i := range cfg.Teams {
-		reg.Teams = append(reg.Teams, RegistryEntry{
-			Name:   cfg.Teams[i].Name,
-			Status: "pending",
-		})
-	}
-	if err := ws.WriteRegistry(reg); err != nil {
-		return nil, fmt.Errorf("seeding registry: %w", err)
-	}
-
-	return ws, nil
+	return &Workspace{Path: path}, nil
 }
 
 // Open opens an existing workspace at the given path.
@@ -78,23 +48,7 @@ func Open(path string) (*Workspace, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workspace path %s is not a directory", path)
 	}
-	return &Workspace{Path: path, store: filestore.New(path)}, nil
-}
-
-// AcquireRunLock takes the workspace run lock without otherwise opening the workspace.
-func AcquireRunLock(ctx context.Context, path string, mode LockMode) (func(), error) {
-	return filestore.New(path).AcquireRunLock(ctx, mode)
-}
-
-// ArchiveExistingRun moves a previous run's stateful workspace files under archive/.
-func ArchiveExistingRun(ctx context.Context, path string) error {
-	err := filestore.New(path).ArchiveRun(ctx, "")
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return nil
-	default:
-		return err
-	}
+	return &Workspace{Path: path}, nil
 }
 
 func (w *Workspace) registryPath() string { return filepath.Join(w.Path, "registry.json") }
@@ -113,21 +67,6 @@ func (w *Workspace) MessagesPath() string {
 // atomicWrite writes data to a temp file then renames it to the target path.
 func atomicWrite(path string, data []byte) error {
 	return fsutil.AtomicWrite(path, data)
-}
-
-// ReadState reads state.json from the workspace.
-func (w *Workspace) ReadState(ctx context.Context) (*State, error) {
-	return w.store.LoadRunState(ctx)
-}
-
-// WriteState writes state.json atomically.
-func (w *Workspace) WriteState(ctx context.Context, s *State) error {
-	return w.store.SaveRunState(ctx, s)
-}
-
-// UpdateTeamState performs a read-modify-write on the state for a single team.
-func (w *Workspace) UpdateTeamState(ctx context.Context, name string, fn func(*TeamState)) error {
-	return w.store.UpdateTeamState(ctx, name, fn)
 }
 
 // ReadRegistry reads registry.json from the workspace.
@@ -150,6 +89,18 @@ func (w *Workspace) WriteRegistry(r *Registry) error {
 		return err
 	}
 	return atomicWrite(w.registryPath(), data)
+}
+
+// SeedRegistry creates a fresh pending registry from the config.
+func (w *Workspace) SeedRegistry(cfg *config.Config) error {
+	reg := &Registry{Project: cfg.Name}
+	for i := range cfg.Teams {
+		reg.Teams = append(reg.Teams, RegistryEntry{
+			Name:   cfg.Teams[i].Name,
+			Status: "pending",
+		})
+	}
+	return w.WriteRegistry(reg)
 }
 
 // UpdateRegistryEntry performs a read-modify-write on a single registry entry.
