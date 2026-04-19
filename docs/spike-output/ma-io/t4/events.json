@@ -1,0 +1,192 @@
+{
+  "data": [
+    {
+      "id": "sevt_01HzNPsZGvuEiA7krNUAgCBX",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "session.status_running",
+      "processed_at": "2026-04-18T22:31:36.753Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01Y6ziyM4A4wQLapLFginc1m",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. Write the text 'hello from T4' to /workspace/t4.txt.\n2. Check whether the environment variable ANTHROPIC_API_KEY is set (do NOT print its value, just say set or unset).\n3. If set, run:\n   curl -sS -X POST https://api.anthropic.com/v1/files \\\n     -H \"x-api-key: $ANTHROPIC_API_KEY\" \\\n     -H \"anthropic-version: 2023-06-01\" \\\n     -H \"anthropic-beta: files-api-2025-04-14\" \\\n     -F \"file=@/workspace/t4.txt\"\n   and report the JSON response.\n4. If not set, report that and say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. Write the text 'hello from T4' to /workspace/t4.txt.\n2. Check whether the environment variable ANTHROPIC_API_KEY is set (do NOT print its value, just say set or unset).\n3. If set, run:\n   curl -sS -X POST https://api.anthropic.com/v1/files \\\n     -H \"x-api-key: $ANTHROPIC_API_KEY\" \\\n     -H \"anthropic-version: 2023-06-01\" \\\n     -H \"anthropic-beta: files-api-2025-04-14\" \\\n     -F \"file=@/workspace/t4.txt\"\n   and report the JSON response.\n4. If not set, report that and say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "Use the bash tool:\n1. Write the text 'hello from T4' to /workspace/t4.txt.\n2. Check whether the environment variable ANTHROPIC_API_KEY is set (do NOT print its value, just say set or unset).\n3. If set, run:\n   curl -sS -X POST https://api.anthropic.com/v1/files \\\n     -H \"x-api-key: $ANTHROPIC_API_KEY\" \\\n     -H \"anthropic-version: 2023-06-01\" \\\n     -H \"anthropic-beta: files-api-2025-04-14\" \\\n     -F \"file=@/workspace/t4.txt\"\n   and report the JSON response.\n4. If not set, report that and say DONE.",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. Write the text 'hello from T4' to /workspace/t4.txt.\n2. Check whether the environment variable ANTHROPIC_API_KEY is set (do NOT print its value, just say set or unset).\n3. If set, run:\n   curl -sS -X POST https://api.anthropic.com/v1/files \\\n     -H \"x-api-key: $ANTHROPIC_API_KEY\" \\\n     -H \"anthropic-version: 2023-06-01\" \\\n     -H \"anthropic-beta: files-api-2025-04-14\" \\\n     -F \"file=@/workspace/t4.txt\"\n   and report the JSON response.\n4. If not set, report that and say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. Write the text 'hello from T4' to /workspace/t4.txt.\n2. Check whether the environment variable ANTHROPIC_API_KEY is set (do NOT print its value, just say set or unset).\n3. If set, run:\n   curl -sS -X POST https://api.anthropic.com/v1/files \\\n     -H \"x-api-key: $ANTHROPIC_API_KEY\" \\\n     -H \"anthropic-version: 2023-06-01\" \\\n     -H \"anthropic-beta: files-api-2025-04-14\" \\\n     -F \"file=@/workspace/t4.txt\"\n   and report the JSON response.\n4. If not set, report that and say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "user.message",
+      "processed_at": "2026-04-18T22:31:37.119Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01FESugKqAbxvLc1c8DhEyfX",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_start",
+      "processed_at": "2026-04-18T22:31:37.232Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    }
+  ],
+  "next_page": ""
+}

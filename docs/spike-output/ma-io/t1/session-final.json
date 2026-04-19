@@ -1,0 +1,79 @@
+{
+  "id": "sesn_011CaC2GV6nzZVw66ZR3rNiw",
+  "agent": {
+    "id": "agent_011CaC22o3uPVJh9xyqrU8C3",
+    "description": "",
+    "mcp_servers": [],
+    "model": {
+      "id": "claude-sonnet-4-6",
+      "speed": "standard"
+    },
+    "name": "orchestra-spike-agent",
+    "skills": [],
+    "system": "You are a spike-test agent. When the user asks you to do something with files, do exactly what they ask, then say DONE. Be concise.",
+    "tools": [
+      {
+        "configs": {
+          "OfBetaManagedAgentsAgentToolConfigArray": [
+            {
+              "enabled": true,
+              "name": "bash",
+              "permission_policy": {
+                "type": "always_allow"
+              }
+            }
+          ],
+          "OfBetaManagedAgentsMCPToolConfigArray": [
+            {
+              "enabled": true,
+              "name": "bash",
+              "permission_policy": {
+                "type": "always_allow"
+              }
+            }
+          ]
+        },
+        "default_config": {
+          "enabled": true,
+          "permission_policy": {
+            "type": "always_allow"
+          }
+        },
+        "type": "agent_toolset_20260401",
+        "mcp_server_name": "",
+        "description": "",
+        "input_schema": {
+          "properties": null,
+          "required": null,
+          "type": ""
+        },
+        "name": ""
+      }
+    ],
+    "type": "agent",
+    "version": 1
+  },
+  "archived_at": "0001-01-01T00:00:00Z",
+  "created_at": "2026-04-18T22:26:16.222299Z",
+  "environment_id": "env_01KxKxiy8wMM2DWTmY3cFctg",
+  "metadata": {},
+  "resources": [],
+  "stats": {
+    "active_seconds": 0,
+    "duration_seconds": 2.044390173
+  },
+  "status": "idle",
+  "title": "spike-t1",
+  "type": "session",
+  "updated_at": "2026-04-18T22:26:16.222299Z",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_read_input_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "vault_ids": []
+}

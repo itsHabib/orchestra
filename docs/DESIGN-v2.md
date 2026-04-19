@@ -1,9 +1,9 @@
 # Orchestra v2 — Managed Agents backend
 
-Status: **Proposed (pending spike)**
+Status: **Proposed (spike complete 2026-04-18; amended)**
 Owner: @itsHabib
-Last updated: 2026-04-17
-Depends on: [SPIKE-ma-io.md](./SPIKE-ma-io.md) — blocks the artifact/prompt/runtime chapters (P1.1.5 and P1.4+), but not the spike-independent scaffolding chapters (P1.1-P1.3). The artifact-flow sections (§5 D5, §9.6) and the repo I/O model are written against the spike's optimistic case; amendments are expected once the spike lands.
+Last updated: 2026-04-18
+Spike: [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md) — T1/T3/T4 executed live against MA (see `docs/spike-output/ma-io/` for raw evidence). Q1 answered negatively — the Files API has no session-scoped view of container-written files — and §5 D5, §9.6, §10, §12.2, §13, §14, §16 were rewritten accordingly. The artifact medium pivoted from Files API to GitHub. One open thread: vault credential injection (`vault_ids`), deferred to a 15-min follow-up probe before P1.4.
 
 > **TL;DR.** v2 introduces a second backend — `backend: managed_agents` — that runs each DAG team as a Claude Managed Agents (MA) session. The existing `backend: local` (spawns `claude -p` subprocesses, supports team-with-members + coordinator + file-bus) is **unchanged**. The MA backend is deliberately narrower: DAG orchestration only. No members, no coordinator, no cross-team messaging. What MA gives us in return is durable cloud sessions, native steering, managed container infra, and a cleaner path to an embeddable Go SDK.
 >
@@ -77,11 +77,12 @@ Facts from the MA platform docs (as of April 2026), relevant to this design:
 
 Key implications for our design:
 
-1. **Sessions do not share a filesystem.** Cross-team artifact flow must go through the Files API + the orchestrator host.
+1. **Sessions do not share a filesystem AND the Files API has no view of container-produced files.** Verified by spike T1: `Files.List(scope_id=session_id)` returns 400 *"unknown field scope_id"*; there is no `/v1/sessions/{id}/files` endpoint; `session.resources` is input-only. The MA product does not treat container writes as first-class artifacts. Cross-team artifact flow must therefore use an external substrate — in practice, GitHub.
 2. **Steering is a real primitive.** Human interventions can be direct `user.message` events — no polling needed.
 3. **Durability is server-side.** Orchestra stores `session_id`s; session state lives on Anthropic's infra. No daemon required for resume.
-4. **Repo I/O should prefer session resources when available.** MA supports `github_repository` resources mounted into the session container and cached across sessions. The spike must confirm whether that path replaces raw `git clone`/push as the default repo model.
-5. **`callable_agents` is research preview** and gives us threads for one level of delegation. **We do not depend on it in v1** — the v2 MA backend is single-lead per team. Multi-level team hierarchy (members) stays on the local backend.
+4. **Repo I/O via `github_repository` session resources is the primary artifact path.** Team A's deliverable is a branch push; orchestra reads the branch head via the GitHub API; team B mounts the same repo checked out to A's branch. The Files API remains useful only for small host-side input uploads.
+5. **Credentials are injected via vaults.** Spike T4 + container probe confirmed `ANTHROPIC_API_KEY` is not in the container env by default, and no `anthropic` CLI is preinstalled. Vaults (passed via `vault_ids` on session creation) are the documented credential-injection path. A GitHub PAT in a vault is the prerequisite for step 4.
+6. **`callable_agents` is research preview** and gives us threads for one level of delegation. **We do not depend on it in v1** — the v2 MA backend is single-lead per team. Multi-level team hierarchy (members) stays on the local backend.
 
 ---
 
@@ -93,7 +94,7 @@ Key implications for our design:
 | **D2** | **Under `managed_agents`: one MA session per team, DAG-only.** `members:` and `coordinator:` are honored only under `local`; under MA they are ignored with a validation warning. | Keeps v1 scope small. Team-with-members needs MA threads (research preview, one-level-delegation cap). Coordinator needs real-time cross-session observation. Both are significant extra design surface; neither is on the critical path. |
 | **D3** | **`Spawner` is a Go interface.** v1 code (`internal/spawner/spawner.go:79-323`) is refactored into `LocalSubprocessSpawner`; `ManagedAgentsSpawner` is the new implementation. Both implement the same `Spawner` + `Session` interfaces. | Clean seam, idiomatic Go, mockable for tests, forward-compatible with future backends. |
 | **D4** | **Event contract is modeled on MA's shape** (typed union: agent message, thinking, tool use/result, session status, span). The `local` backend's implementation adapts `claude -p` stdout NDJSON upward into this shape (as its existing parser already does, see `internal/spawner/spawner.go:163-284`). | Preserves the expressiveness MA gives us. Lowest-common-denominator would defeat the migration. |
-| **D5** | **Orchestrator is the host-side hub for cross-team artifacts** (MA backend only). When team A finishes, orchestra downloads A's produced files via the Files API, persists them to host-side `.orchestra/results/A/`, and mounts them into team B's session via `session.resources` when B starts. Small/textual outputs continue to be inlined into B's initial prompt. | Forced by MA's "sessions do not share filesystem" constraint. This is the one piece of v2 MA plumbing that isn't trivial. |
+| **D5** | **Artifacts flow through GitHub, not the Files API** (MA backend only). Each team is given a `github_repository` resource (auth from a vault). Teams commit and push to a feature branch; orchestra resolves the branch head via the GitHub API on `session.status_idle + end_turn` and records `repository_artifacts[]` (url, branch, base_sha, commit_sha) in `state.json`. Downstream teams mount the same `github_repository` checked out to the upstream branch. Small textual outputs continue to be inlined into downstream prompts from the final `agent.message`. | Spike T1/T3/T4 verified the Files API is not a viable artifact medium under MA: `Files.List(scope_id=session_id)` is rejected, no endpoint exposes container-produced files, and the agent has no credentials in-container by default. GitHub is the substrate the MA product implicitly assumes for code-shaped deliverables, and "commit it to a repo" is the cleanest path even for non-code artifacts. |
 | **D6** | **Durable resume via `session_id`.** `.orchestra/state.json` records each team's `session_id` + `last_event_id`. `orchestra resume` reconnects to each live session, dedupes events by ID, rebuilds in-memory state, continues the DAG. | MA gives us server-side durability. We just need to remember the IDs. |
 | **D7** | **Agents and environments are cached orchestra resources,** keyed by project + role + content hash. Stored in `~/.config/orchestra/agents.json` and per-run `registry.json`. On spec drift, `Update` the agent (bumps MA version). | Avoids re-creating identical agents every run (hits MA rate limits and loses lineage). |
 | **D8** | **Human steering via native MA events.** `orchestra msg <team> "..."` sends `user.message`. `orchestra interrupt <team>` sends `user.interrupt`. No custom tools, no file-bus, no polling. | Simplest possible story. MA's steering is strong enough that we don't need to build our own. |
@@ -140,10 +141,10 @@ Shape of an MA-backend run:
 1. `orchestra run` loads `orchestra.yaml`, validates, builds DAG.
 2. For each team: `EnsureAgent` (create or reuse cached), `EnsureEnvironment` (one per project by default).
 3. Tier loop:
-   a. For each team in the tier concurrently: `StartSession`, **open event stream first**, then send the initial `user.message` (built by the existing prompt injection code). Opening the stream before sending is required: MA only delivers events emitted *after* the stream is opened, so the send-first ordering loses the early `session.status_running` and initial `agent.thinking`/`agent.message` events.
+   a. For each team in the tier concurrently: `StartSession` (with `vault_ids` and the team's `github_repository` resource attached), **open event stream first**, then send the initial `user.message` (built by the existing prompt injection code). Opening the stream before sending is required: MA only delivers events emitted *after* the stream is opened, so the send-first ordering loses the early `session.status_running` and initial `agent.thinking`/`agent.message` events.
    b. Stream events; persist each to `.orchestra/logs/<team>.ndjson`; update in-memory state; atomically rewrite `.orchestra/state.json` on status-changing events.
-   c. On `session.status_idle` with `stop_reason: end_turn`: extract textual summary from the final `agent.message`, list the session's produced files via the Files API, download them to `.orchestra/results/<team>/`, mark team complete.
-4. When all teams in a tier complete, proceed to next tier. Downstream teams get the upstream's summary injected into their initial prompt; large file deliverables are re-uploaded as session `resources` at session creation.
+   c. On `session.status_idle` with `stop_reason: end_turn`: extract textual summary from the final `agent.message`; resolve the team's expected feature branch via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`); record `{url, branch, base_sha, commit_sha}` in `repository_artifacts[]`; mark team complete. If no branch was pushed, the team is marked `failed` with `last_error: "no branch pushed"`.
+4. When all teams in a tier complete, proceed to next tier. Downstream teams start sessions with `github_repository` resources checked out to each upstream's recorded branch (multi-upstream → multiple mount points like `/workspace/upstream/<team-a>/`). Textual summaries are inlined into the downstream prompt as v1 already does.
 5. **Exit handling:**
    - **All teams completed successfully:** persist final state, archive each MA session via `Beta.Sessions.Archive`. Archiving preserves event history + usage (needed for audit and `orchestra status` post-hoc) while signaling to MA that the session is closed, so the container is reclaimed. Sessions are *not* deleted by default — deletion is destructive and loses history. Users who want to reclaim MA-side storage can run `orchestra sessions rm --run-id=<id>` explicitly.
    - **Unhandled error during run:** persist state, do *not* archive sessions (they may be resumable), exit non-zero. User can later run `orchestra resume`.
@@ -345,25 +346,34 @@ Default permission policy on orchestra-managed agents is `always_allow`. No inte
 
 ### 9.6 Artifact flow (D5, expanded)
 
-> **Dependency:** this section assumes the spike (see [SPIKE-ma-io.md](./SPIKE-ma-io.md)) confirms that files written inside a session's container are discoverable via `Beta.Files.List(scope_id=session_id)`. If the spike shows otherwise, this section will be amended to require the agent to publish deliverables via a built-in `anthropic files upload` bash call invoked from inside the container. The broader repo-I/O model (`github_repository` session resources vs. raw git-sync vs. Files API vs. hybrid) is also answered by the spike.
+Under the MA backend, cross-session artifact flow is mediated by **GitHub**, not the Files API. The MA Files API has no session-scoped view of files written inside a container (verified by spike T1; see [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md) §Q1). The MA product is not designed to treat container outputs as first-class artifacts: outputs leave the container only via external writes (git push, API calls) or as text in the event stream.
 
-On team A's `session.status_idle + stop_reason: end_turn`:
+#### Default flow (repo-backed deliverable)
 
-1. `a.ListProducedFiles(ctx)` → list via `Beta.Files.List(scope_id=A.ID)`.
-2. For each file: stream content to `.orchestra/results/A/<filename>.tmp`, then `os.Rename` to the final path. Atomicity matters because resume logic (§10.3) skips files that exist locally with a matching `file_id` — a half-written file that wasn't renamed must be indistinguishable from "not downloaded yet." Skip files larger than `max_artifact_mb` (default 100) with a warning recorded in `state.json`.
-3. After the full batch completes, record `artifacts: [...]` in `state.json` via `UpdateTeamState`. Store the MA `file_id`, local path, and content SHA-256 so resume can verify integrity (not just existence). If the `state.json` update crashes between files, resume will re-list and skip files whose local `.tmp` → final rename completed but SHA wasn't recorded; re-hash them and attach.
+1. Each team is given a `github_repository` session resource pointing at the project's repo (or a scoped fork), mounted at `/workspace/repo`, checked out to the branch declared by the team's upstream dependencies (or `main` for tier-0 teams). Auth comes from a vault whose ID is declared in `backend.managed_agents.vault_ids`.
+2. The team's prompt includes, as a standard suffix: *"Your working copy of the repo is at `/workspace/repo`. Commit your changes on a new branch named `orchestra/<team>-<run-id>` and push. Do not open a PR. Report the branch name and the final commit SHA in your last message."*
+3. On `session.status_idle + stop_reason: end_turn`, orchestra resolves the branch head via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`), **not** by parsing the agent's prose. If the branch doesn't exist or is identical to its base, the team is marked `failed` with `last_error: "no branch pushed"`.
+4. Orchestra records `{url, branch, base_sha, commit_sha}` as a `repository_artifacts[]` entry in `state.json`. Optionally opens a PR via the GitHub API, behind a config flag — not on by default (see Q8).
+5. Downstream teams that depend on A start sessions with a `github_repository` resource checked out to A's recorded branch. Multi-upstream fan-in becomes multiple mount points: `/workspace/upstream/<team-a>/`, `/workspace/upstream/<team-b>/`, ... — each its own `github_repository` resource.
 
-When team B (which depends on A) is about to start:
+#### Secondary flow (small inputs, no repo)
 
-1. Collect the set of files from A's (and all other upstream teams') artifact lists that B's prompt references or whose names match a `needs:` declaration in B's task.
-2. Attach those files through MA session resources: prefer `StartSession.Resources` at creation time; for an already-created session use `Beta.Sessions.Resources.Add`. Mount them into B's container at a known path (e.g., `/workspace/upstream/<team-a>/<filename>`).
-3. Inject into B's initial `user.message` a section: *"Upstream artifacts available at `/workspace/upstream/...`: A: [list]."*
+The host-side orchestrator uploads small input files via the Files API (`POST /v1/files`) and attaches them as `resources: [{type: "file", file_id: ...}]` on the session at creation. This is for cases like "team A writes a one-page plan.md that team B should read" with no repo involved — produced text summaries continue to be captured from the final `agent.message` and inlined into the downstream prompt. The 100-file-resource per-session cap remains, but is not load-bearing because input fan-in is small by construction.
 
-MA currently supports up to 100 file resources per session. If upstream artifact fan-in exceeds that, use a tarball bundle or the repo-resource path rather than mounting files one-by-one.
+#### What's gone
 
-For small/textual outputs (no files produced, just the final `agent.message` text), inline them into B's initial prompt as v1 already does — same `internal/injection/builder.go` code path.
+Removed from the design:
 
-For repo-backed runs, the produced artifact is usually a branch/commit/PR rather than a file. The MA engine records those as `repository_artifacts` in `state.json` once the spike finalizes the source of truth (preferably GitHub API/MCP response data, not parsing prose from the final agent message). Downstream teams receive a `github_repository` resource checked out to the recorded branch or commit.
+- `ListProducedFiles` via `Beta.Files.List(scope_id=session_id)` — the field is rejected by the API.
+- `DownloadFile` to `.orchestra/results/<team>/<filename>` — there is nothing to download.
+- `max_artifact_mb` config knob — there is no file download path to cap.
+- `artifacts[]` field in `state.json` (per-team file list with file_id + local path + SHA).
+
+Repository artifacts (`repository_artifacts[]`) replace all of it. If a team genuinely needs to publish a non-repo binary (a rendered PDF, a compiled wheel), it does so by **committing the artifact to the repo** alongside the code — same branch/SHA tracking, no second code path.
+
+#### Open dependency
+
+This flow assumes vault credentials surface inside the session container (probably as an env var like `GITHUB_TOKEN`, but the mechanism is undocumented and unverified). Spike T4 confirmed that without a vault, no credentials are present. **Vault behavior is the one open verification before P1.4** — see §13 chapter P1.0.5.
 
 ### 9.7 Teammates (members) and coordinator
 
@@ -386,8 +396,7 @@ No runtime code checks are needed beyond these validations — members and coord
 ├── registry.json         # agent/env IDs used by this run
 ├── results/
 │   └── <team>/
-│       ├── summary.md          # final agent.message text
-│       └── <produced-files...>
+│       └── summary.md    # final agent.message text (only); no produced files
 ├── logs/
 │   └── <team>.ndjson     # append-only event log (one JSON event per line)
 └── archive/
@@ -397,7 +406,7 @@ No runtime code checks are needed beyond these validations — members and coord
 
 No `runs/<run-id>/` + symlink layout. State for the active run is flat; previous runs are moved to `archive/<run-id>/` when a new run starts. This keeps existing skills (`/orchestra-monitor`, `/orchestra-inbox`, etc.) working unchanged against the flat paths and avoids the Windows-symlink issue flagged in review.
 
-**Archive pruning:** by default, keep the 20 most recent archived runs; older ones are deleted on the next `orchestra run`. Configurable via `defaults.archive_keep` in `orchestra.yaml` (0 disables pruning, retains everything). Archived artifacts under `archive/<run-id>/results/` can bulk up for repos with large deliverables, so the default bias toward pruning is intentional.
+**Archive pruning:** by default, keep the 20 most recent archived runs; older ones are deleted on the next `orchestra run`. Configurable via `defaults.archive_keep` in `orchestra.yaml` (0 disables pruning, retains everything). Archived state under `archive/<run-id>/` is small now that produced files no longer live there (see §9.6); pruning bias is conservative more for log volume than artifact volume.
 
 **Note on messaging folders:** `.orchestra/messages/` is a local-backend-only subtree, created by the local backend when it initializes. The MA backend never creates it. Skills that read `.orchestra/messages/` remain local-backend-only (which they effectively already are — MA has no file-bus).
 
@@ -419,15 +428,13 @@ No `runs/<run-id>/` + symlink layout. State for the active run is flat; previous
       "last_event_id": "evt_01...",
       "last_event_at": "2026-04-17T09:30:01Z",
       "result_summary": "",
-      "artifacts": [
-        {"name": "openapi.yaml", "path": "results/backend/openapi.yaml", "file_id": "file_01..."}
-      ],
       "repository_artifacts": [
         {
           "url": "https://github.com/org/repo",
           "branch": "orchestra/backend-20260417",
+          "base_sha": "5b7e...",
           "commit_sha": "abc123...",
-          "pull_request_url": "https://github.com/org/repo/pull/42"
+          "pull_request_url": null
         }
       ],
       "cost_usd": 0.42,
@@ -455,7 +462,7 @@ All writes use `internal/fsutil.AtomicWrite` (write `.tmp` → `os.Rename`). Cri
    d. **If `Sessions.Get` returns the session as `idle` with `stop_reason: requires_action`** (tool confirmation pending when we last disconnected — or new ones that accumulated while we were offline): read `stop_reason.requires_action.event_ids` from the *live* response, and only issue `user.tool_confirmation` for those specific IDs. Do not replay the NDJSON log scanning for historical `agent.tool_use` entries — those may already be resolved, and the idempotency of `user.tool_confirmation` on a resolved `tool_use_id` is not documented. If the agent's permission policy is `always_allow` (v1 default), auto-`allow` each currently-pending ID; otherwise surface to the CLI. Re-check `Sessions.Get` after sending confirmations to verify `stop_reason` cleared.
 3. Once all surviving teams are attached, continue DAG progression: schedule next-tier teams whose dependencies are complete.
 
-If orchestra died during file artifact download (crash between "session idle" and "files downloaded + state updated"), resume re-lists files for that session, skips ones already present on disk (by `file_id` check), downloads missing, updates state.
+If orchestra died between "session idle" and "repository artifacts recorded," resume re-resolves the team's branch via the GitHub API and re-records `repository_artifacts[]`. The operation is idempotent: the branch head is the source of truth, and re-reading it cannot lose information. There are no per-file retries because there are no per-file downloads.
 
 ---
 
@@ -516,16 +523,15 @@ backend:
       packages:
         pip: ["httpx", "pydantic"]
         npm: ["express"]
-        apt: []                # git is preinstalled in current cloud containers; add only extra packages
-    vault_ids: ["vault_..."]    # optional; MA vault IDs for MCP auth and other provider secrets
-    # Repo I/O shape is finalized by SPIKE-ma-io. Current leading candidate:
-    # repository:
-    #   type: github_repository
-    #   url: https://github.com/org/repo
-    #   mount_path: /workspace/repo
-    #   token_env: GITHUB_TOKEN # read from env/config store; never written to orchestra.yaml
+        apt: []                 # git 2.43.0 is preinstalled (spike-confirmed); listing it here is a no-op
+    vault_ids: ["vault_..."]    # required for repo pushes; vault must hold the GitHub PAT (and ANTHROPIC_API_KEY if any team needs it)
+    repository:                 # required for any team that produces a code-shaped artifact
+      type: github_repository
+      url: https://github.com/org/repo
+      mount_path: /workspace/repo
+      # Auth comes from the vault above; no token field here.
     agent_pinning: auto         # "auto" (latest) | "pinned"
-    max_artifact_mb: 100
+    open_pull_requests: false   # if true, orchestra opens a PR via the GitHub API per team-pushed branch on completion
 
 defaults:
   model: claude-opus-4-7
@@ -555,14 +561,15 @@ A v1 config without the `backend:` block defaults to `backend.kind: local`. No m
 
 ### Phase 1: MA backend (blocking ship)
 
-Each chapter is a mergeable PR. The spike (SPIKE-ma-io.md) is a hard prerequisite for P1.4 and everything after; P1.1 through P1.3 can run in parallel with it.
+Each chapter is a mergeable PR. The spike is complete (see [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md)); the one remaining gate before P1.4 is **P1.0.5 vault confirmation** — a 15-minute live probe.
 
+0. **P1.0.5 — Vault credential confirmation.** *Hard gate for P1.4+.* Create a vault via the Claude UI (or `Beta.Vault` if available in the SDK) holding a test `ANTHROPIC_API_KEY` and a test `GITHUB_TOKEN`. Create a session with `vault_ids: [<vault>]` and probe the container: are the secrets exposed as env vars (`env | grep ...`), as files under `/run/secrets/` or similar, or only via SDK-side auth that the container can't access? Outcome determines two things: (a) the prompt section instructing the agent to use `git push` / `curl` referencing the right env-var names, and (b) whether `Spawner.StartSession` needs to do anything beyond passing `vault_ids` through. If credentials are not surfaced into the container at all, fall back to `authorization_token` on the `github_repository` resource itself (see §8 `ResourceRef`) and re-amend the design accordingly. Estimated: 1 hour, including writing up the result.
 1. **P1.1 — Spawner interface + relocate local backend.** Define `pkg/spawner.Spawner`, `Session`, `Event` union. Move `internal/spawner/` behind the interface as `pkg/spawner/local.go`. Migrate every call site that currently imports `github.com/itsHabib/orchestra/internal/spawner` (today: `cmd/run.go`, `cmd/spawn.go`, and any engine code in `cmd/` or a future `internal/engine/`) to the new package path. CLI keeps working with `backend: local` (default). Diff must be purely structural — zero behavior change, zero new tests required beyond what exists; `make test && make vet` green. *Spike-independent.*
 2. **P1.2 — Anthropic Go SDK wiring + smoke test.** Add `github.com/anthropics/anthropic-sdk-go` at a pinned tag in `go.mod`. Implement `orchestra env show` that creates and tears down an MA environment. This chapter also validates API-key sourcing and the beta header. *Spike-independent.*
 3. **P1.3 — `ManagedAgentsSpawner.EnsureAgent` + `EnsureEnvironment`.** Registry cache in `~/.config/orchestra/` with `gofrs/flock`. Spec-hash-based drift detection. List-and-adopt reconcile on cache miss (§9.1 step 4). `orchestra agents ls` / `prune` commands. Cross-platform concurrency test (spawn two goroutines both doing `EnsureAgent` on the same role; assert one creates, one adopts). *Spike-independent.*
 4. **P1.1.5 — Prompt builder refactor.** *Spike-dependent; sized post-spike.* Refactor `internal/injection/builder.go` so the prompt is built from a `Capabilities` struct: `{HasFileBus, HasMembers, ArtifactPublishMode}`. Local backend passes `{true, team.HasMembers(), none}`; MA backend passes `{false, false, <mode>}` where `<mode>` comes from spike findings (likely `none` if Q1 works, `bash-upload` if Q2 needs explicit publish). Current prompt sections about `/loop` polling, file-bus bash recipes, and teammate assignment become conditional on the relevant capability being true. All v1 tests must still pass (prompts under `backend: local` are byte-identical).
 5. **P1.4 — `StartSession` + `Events` + `Send` + watchdog.** Single-team end-to-end using a realistic fixture (not a synthetic "write no files" task): pick the simplest `examples/` project that produces a single textual deliverable (e.g. a summary.md-only task). Stream-first ordering (§6 step 3a). Include the per-team timeout watchdog (§9 intro). Result summary persisted to `.orchestra/results/<team>/summary.md`.
-6. **P1.5 — Files API integration.** `ListProducedFiles`, `DownloadFile` with `.tmp`+rename atomicity, upstream re-mount via `StartSession.Resources` or `Beta.Sessions.Resources.Add`. Artifact flow end-to-end between two DAG nodes. Fixture: an `examples/` project with upstream deliverable (e.g. `openapi.yaml` from team A consumed by team B).
+6. **P1.5 — Repo-backed artifact flow.** Wire `github_repository` resources into `StartSession`. After a team reaches `idle + end_turn`, resolve the expected feature branch via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`); on success, record `repository_artifacts[]` (url, branch, base_sha, commit_sha) in `state.json`; on missing branch, mark `failed` with `last_error`. Mount the upstream's pushed branch on each downstream session as a `github_repository` resource at `/workspace/upstream/<team>/`. If `open_pull_requests: true`, open a PR via the GitHub API. Fixture: an `examples/` project where team A modifies a file in `/workspace/repo`, pushes branch `orchestra/<team>-<run-id>`, and team B reads from that branch. No Files API calls in this chapter — that path no longer exists.
 7. **P1.6 — Multi-team DAG runs.** Full tier-parallel orchestration under MA. Port a concrete picklist of examples (see *Test fixtures* below). For each, document `members:` sections that get ignored and any prompt edits needed for MA. Rate-limit retry and burst semaphore exercised under load.
 8. **P1.7 — Validation warnings.** `orchestra validate` emits warnings for `members:` and `coordinator:` under MA backend. `orchestra validate` auto-migrates v1 configs by inserting a minimal `backend: local` block and prints the diff. Refuses to write if the YAML has comments that would be lost; prints the intended diff and exits.
 9. **P1.8 — `orchestra resume`.** Read state, probe sessions via `Sessions.Get`, dedupe events, continue DAG. Handles archived + terminated + mid-tool-confirmation cases (§10.3d). Artifact re-download uses SHA verification not just existence check.
@@ -601,12 +608,14 @@ The Phase 1 regression bar is: every MA-ported example passes under `backend: ma
 
 Resolve during implementation; none block the design (except where noted).
 
-1. **Files API + repo I/O semantics.** The design assumes `Beta.Files.List(scope_id=session_id)` returns all session-produced files and that session resources work both at session creation and on a live session. **Resolved by: the spike in [SPIKE-ma-io.md](./SPIKE-ma-io.md) before P1.1.5/P1.4+.** The spike also answers the broader repo-I/O question (`github_repository` resources vs. raw git-sync vs. Files API vs. hybrid). §9.6 will be amended based on findings.
-2. **Artifact size / format filtering.** `max_artifact_mb` exists, but we also need to decide: do we download every produced file, or only files the team "publishes" (e.g., via a naming convention or a task `deliverables:` list)? Default in v1: download everything under a configurable root (default `/workspace/out/`), respect `max_artifact_mb`. Revisit after the spike.
-3. **Rate limits at scale.** 60 creates/min. A 10-team cold run with fresh cache is ~11 creates (10 agents + 1 env). 20 teams is ~21. With the list-and-adopt reconcile step (§9.1 step 4), warm caches are even cheaper — most runs create 0 agents. Measure during P1.6 and document the supported ceiling.
+1. **~~Files API + repo I/O semantics.~~** **Resolved (2026-04-18).** Spike T1/T3/T4 confirmed `Files.List(scope_id=session_id)` returns 400 *"unknown field scope_id"*; no `/v1/sessions/{id}/files` endpoint exists; `session.resources` is input-only. The Files API cannot be the artifact medium. Repo I/O via `github_repository` resources is the primary path; Files API remains useful only for small host-side input uploads. See [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md) §Q1 and the §9.6 rewrite.
+2. **~~Artifact size / format filtering.~~** **Resolved as moot.** No file download path exists, so there is nothing to filter or cap. `max_artifact_mb` was removed from the config schema.
+3. **Rate limits at scale.** 60 creates/min. A 10-team cold run with fresh cache is ~11 creates (10 agents + 1 env). 20 teams is ~21. With the list-and-adopt reconcile step (§9.1 step 4), warm caches are even cheaper — most runs create 0 agents. Per-team work is now: 1 session create + 1 GitHub API call (branch read), no file downloads. Measure during P1.6 and document the supported ceiling.
 4. **Cost vs. `claude -p`.** MA uses API tokens; `claude -p` rides the user's subscription. Do a pilot run of 2–3 `examples/` under both backends during P1.10 and document the delta. If 3x+, add a `max_budget_usd` safeguard.
-5. **Prompt builder refactor scope.** Under MA, `internal/injection/builder.go`'s current output (references to teammates, `/loop` cron, file-bus bash recipes) doesn't apply. The prompt builder needs a backend-aware `Capabilities` struct: `{HasFileBus, HasMembers, ExpectsArtifactUploads}`. The detailed shape is pending the spike (specifically Q2 — if the agent has to run `anthropic files upload`, that instruction goes in the prompt; if Q1 works, it doesn't). Added as a chapter **P1.1.5 — Prompt builder refactor** after the spike lands; scope sized then.
-6. **Repository artifact source of truth.** If repo I/O is the default for codebase tasks, we need a reliable way to record branch, commit SHA, and PR URL in `state.json`. Prefer GitHub API/MCP response data; do not rely on parsing the agent's final prose.
+5. **Prompt builder refactor scope.** Narrowed by the spike. Under MA, the artifact-publish prompt section is a fixed git-commit-and-push instruction (always the same shape: branch name `orchestra/<team>-<run-id>`, no PR opened by the agent). No branching on "upload via X." The prompt builder still needs a backend-aware `Capabilities` struct: `{HasFileBus, HasMembers, GitPushTarget}`, but `GitPushTarget` is just the upstream branch name resolved from dependencies. P1.1.5 chapter remains.
+6. **~~Repository artifact source of truth.~~** **Resolved.** GitHub API is the source of truth: branch + base_sha + commit_sha + (optional) pull_request_url, recorded by orchestra after `idle + end_turn`. Agent prose is never parsed.
+7. **Vault credential mechanics.** *Open. Hard gate for P1.4.* Spike T4 confirmed neither `ANTHROPIC_API_KEY` nor `GITHUB_TOKEN` are present in the container by default. The MA Claude UI exposes a credentials vault, and `vault_ids` on session creation is the documented hook. Unverified questions: are vault contents surfaced as env vars in the container, as files under a known path, or only via SDK-side auth? P1.0.5 (§13) closes this in ~1 hour of live testing.
+8. **PR creation.** Open. Recommended default: orchestra host-side via the GitHub API, gated by `backend.managed_agents.open_pull_requests` (default false). Atomic with run completion, easy to pause/resume, doesn't require giving the agent extra GitHub permissions. The agent only ever pushes a branch.
 
 ---
 
@@ -638,7 +647,7 @@ Resolve during implementation; none block the design (except where noted).
 | `agent.custom_tool_use` | `AgentCustomToolUseEvent` | yes | not used in v1 |
 | `agent.thread_context_compacted` | `AgentThreadContextCompactedEvent` | yes | counter |
 | `session.status_running` | `SessionStatusRunningEvent` | yes | `team.status` |
-| `session.status_idle` | `SessionStatusIdleEvent` | yes | `team.status`; behavior by `stop_reason`: `end_turn` → trigger artifact download, mark team complete; `requires_action` → pause team goroutine, inspect `event_ids`, auto-confirm if policy allows (else surface to CLI), resume; `max_turns` → mark team `stalled`, record `last_error`; `error`/unknown → mark team `failed`, persist `last_error`, do not retry automatically |
+| `session.status_idle` | `SessionStatusIdleEvent` | yes | `team.status`; behavior by `stop_reason`: `end_turn` → resolve team's expected feature branch via the GitHub API, record `repository_artifacts[]`, mark team complete; `requires_action` → pause team goroutine, inspect `event_ids`, auto-confirm if policy allows (else surface to CLI), resume; `max_turns` → mark team `stalled`, record `last_error`; `error`/unknown → mark team `failed`, persist `last_error`, do not retry automatically |
 | `session.status_rescheduled` | `SessionStatusRescheduledEvent` | yes | `team.status` |
 | `session.status_terminated` | `SessionStatusTerminatedEvent` | yes | `team.status`, finalize |
 | `session.error` | `SessionErrorEvent` | yes | `last_error` |
@@ -650,10 +659,11 @@ Events not listed (multiagent thread events, outcome events) are persisted to th
 
 ## 17. Review checklist
 
-- [ ] [SPIKE-ma-io.md](./SPIKE-ma-io.md) — completed, findings amended back into §9.6 + §14.1
+- [x] [SPIKE-ma-io.md](./SPIKE-ma-io.md) — completed; findings in [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md); §5 D5, §9.6, §10, §12.2, §13, §14, §16 amended (2026-04-18)
+- [ ] **P1.0.5 vault confirmation** (§13) — hard gate for P1.4
 - [ ] Spawner interface (§8) — sign-off on exported types
-- [ ] `state.json` schema (§10.2) — sign-off on shape before code writes it
+- [ ] `state.json` schema (§10.2) — sign-off on `repository_artifacts[]` shape (no `artifacts[]`)
 - [ ] CLI surface (§12.1) — sign-off on new commands (including one-way `orchestra msg` behavior in §11)
-- [ ] Config schema (§12.2) — sign-off on backend block shape + `environment_override` + `archive_keep`
-- [ ] Phase 1 ordering (§13) — confirm each chapter is shippable alone (P1.1.5 prompt refactor sized post-spike)
+- [ ] Config schema (§12.2) — sign-off on `repository:` and `vault_ids` being effectively required under `managed_agents`, plus `open_pull_requests` default
+- [ ] Phase 1 ordering (§13) — confirm P1.5 ("Repo-backed artifact flow") replaces the deleted Files API chapter
 - [ ] Session exit lifecycle (§6 step 5) — confirm archive-by-default is the right call

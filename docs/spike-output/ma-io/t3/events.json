@@ -1,0 +1,883 @@
+{
+  "data": [
+    {
+      "id": "sevt_01Q9BEPVf9kCgWAb1Jh6RVb4",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "session.status_running",
+      "processed_at": "2026-04-18T22:29:37.649Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01UYxoSgytu73VttcCoojGXs",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. First, run 'which anthropic || echo \"anthropic-cli not installed\"' and report the result.\n2. Write the text 'hello from T3' to /workspace/t3.txt.\n3. If the anthropic CLI is available, run 'anthropic files upload /workspace/t3.txt' and report the file_id.\n4. If not available, just say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. First, run 'which anthropic || echo \"anthropic-cli not installed\"' and report the result.\n2. Write the text 'hello from T3' to /workspace/t3.txt.\n3. If the anthropic CLI is available, run 'anthropic files upload /workspace/t3.txt' and report the file_id.\n4. If not available, just say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "Use the bash tool:\n1. First, run 'which anthropic || echo \"anthropic-cli not installed\"' and report the result.\n2. Write the text 'hello from T3' to /workspace/t3.txt.\n3. If the anthropic CLI is available, run 'anthropic files upload /workspace/t3.txt' and report the file_id.\n4. If not available, just say DONE.",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. First, run 'which anthropic || echo \"anthropic-cli not installed\"' and report the result.\n2. Write the text 'hello from T3' to /workspace/t3.txt.\n3. If the anthropic CLI is available, run 'anthropic files upload /workspace/t3.txt' and report the file_id.\n4. If not available, just say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "Use the bash tool:\n1. First, run 'which anthropic || echo \"anthropic-cli not installed\"' and report the result.\n2. Write the text 'hello from T3' to /workspace/t3.txt.\n3. If the anthropic CLI is available, run 'anthropic files upload /workspace/t3.txt' and report the file_id.\n4. If not available, just say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "user.message",
+      "processed_at": "2026-04-18T22:29:37.991Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01UZGyNUw3wxJy9RscsZ7uzj",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_start",
+      "processed_at": "2026-04-18T22:29:38.11Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01VxbFUNAqkJEfYHTXcubY6W",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "agent.thinking",
+      "processed_at": "2026-04-18T22:29:40.23Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01VykMZRrqCWJWRRbdwG4s7E",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "agent.tool_use",
+      "processed_at": "2026-04-18T22:29:40.23Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": {
+        "command": "which anthropic || echo \"anthropic-cli not installed\""
+      },
+      "name": "bash",
+      "mcp_server_name": "",
+      "evaluated_permission": "allow",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01CGRyv5GSP1QWNduBttJu13",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_end",
+      "processed_at": "2026-04-18T22:29:40.558Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "sevt_01UZGyNUw3wxJy9RscsZ7uzj",
+      "model_usage": {
+        "cache_creation_input_tokens": 419,
+        "cache_read_input_tokens": 4864,
+        "input_tokens": 3,
+        "output_tokens": 86,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01BhTShg6dPav3rEdVkxumYW",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "anthropic-cli not installed\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "anthropic-cli not installed\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "anthropic-cli not installed\n",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "anthropic-cli not installed\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "anthropic-cli not installed\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "agent.tool_result",
+      "processed_at": "2026-04-18T22:29:45.028Z",
+      "result": "",
+      "tool_use_id": "sevt_01VykMZRrqCWJWRRbdwG4s7E",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_013GuwrtRYwuxMU7BSF11Nrz",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_start",
+      "processed_at": "2026-04-18T22:29:45.147Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01P1F99XPiKePUHUBbFgTMYr",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "agent.tool_use",
+      "processed_at": "2026-04-18T22:29:47.641Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": {
+        "command": "mkdir -p /workspace \u0026\u0026 echo 'hello from T3' \u003e /workspace/t3.txt \u0026\u0026 cat /workspace/t3.txt"
+      },
+      "name": "bash",
+      "mcp_server_name": "",
+      "evaluated_permission": "allow",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_0187SLaxtRakrnc6ALPSmo1P",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_end",
+      "processed_at": "2026-04-18T22:29:47.76Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "sevt_013GuwrtRYwuxMU7BSF11Nrz",
+      "model_usage": {
+        "cache_creation_input_tokens": 107,
+        "cache_read_input_tokens": 5283,
+        "input_tokens": 1,
+        "output_tokens": 81,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01GUbnmLHyu2zbnAsRTbkKZi",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "hello from T3\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "hello from T3\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "hello from T3\n",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "hello from T3\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "hello from T3\n",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "agent.tool_result",
+      "processed_at": "2026-04-18T22:29:48.32Z",
+      "result": "",
+      "tool_use_id": "sevt_01P1F99XPiKePUHUBbFgTMYr",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01XkQ9MooK2znc9yLdMeEXAT",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_start",
+      "processed_at": "2026-04-18T22:29:48.434Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01FKFk4eKTcLxJKpYadVfPek",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "Results:\n\n1. **`which anthropic`** → `anthropic-cli not installed`\n2. **`/workspace/t3.txt`** created successfully with contents: `hello from T3`\n3. Anthropic CLI is **not available**, so skipping the upload step.\n\nDONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "Results:\n\n1. **`which anthropic`** → `anthropic-cli not installed`\n2. **`/workspace/t3.txt`** created successfully with contents: `hello from T3`\n3. Anthropic CLI is **not available**, so skipping the upload step.\n\nDONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "Results:\n\n1. **`which anthropic`** → `anthropic-cli not installed`\n2. **`/workspace/t3.txt`** created successfully with contents: `hello from T3`\n3. Anthropic CLI is **not available**, so skipping the upload step.\n\nDONE.",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "Results:\n\n1. **`which anthropic`** → `anthropic-cli not installed`\n2. **`/workspace/t3.txt`** created successfully with contents: `hello from T3`\n3. Anthropic CLI is **not available**, so skipping the upload step.\n\nDONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "Results:\n\n1. **`which anthropic`** → `anthropic-cli not installed`\n2. **`/workspace/t3.txt`** created successfully with contents: `hello from T3`\n3. Anthropic CLI is **not available**, so skipping the upload step.\n\nDONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "agent.message",
+      "processed_at": "2026-04-18T22:29:50.448Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01W6RRw6LfEmewbU61Ud7J1z",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_end",
+      "processed_at": "2026-04-18T22:29:50.563Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "sevt_01XkQ9MooK2znc9yLdMeEXAT",
+      "model_usage": {
+        "cache_creation_input_tokens": 98,
+        "cache_read_input_tokens": 5390,
+        "input_tokens": 1,
+        "output_tokens": 72,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01YP6suMKd663TMzeZshv7j9",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "session.status_idle",
+      "processed_at": "2026-04-18T22:29:50.716Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "end_turn",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    }
+  ],
+  "next_page": ""
+}

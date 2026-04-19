@@ -1,0 +1,192 @@
+{
+  "data": [
+    {
+      "id": "sevt_01WAa69iJPBjc7fP5ZTF6Gdm",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "session.status_running",
+      "processed_at": "2026-04-19T00:28:09.646Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01UNfd8rBxg7dT6ydz2zNnUP",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "Use the dedicated 'write' tool (NOT bash echo) to create three files with these exact contents:\n\n1. /workspace/hello-write.txt  — \"hello from write tool at /workspace\"\n2. /workspace/out/hello-write.txt — \"hello from write tool at /workspace/out\"  (create the directory first via bash mkdir if needed)\n3. /tmp/hello-write.txt        — \"hello from write tool at /tmp\"\n\nUse the write tool for each file individually. Then say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "Use the dedicated 'write' tool (NOT bash echo) to create three files with these exact contents:\n\n1. /workspace/hello-write.txt  — \"hello from write tool at /workspace\"\n2. /workspace/out/hello-write.txt — \"hello from write tool at /workspace/out\"  (create the directory first via bash mkdir if needed)\n3. /tmp/hello-write.txt        — \"hello from write tool at /tmp\"\n\nUse the write tool for each file individually. Then say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "Use the dedicated 'write' tool (NOT bash echo) to create three files with these exact contents:\n\n1. /workspace/hello-write.txt  — \"hello from write tool at /workspace\"\n2. /workspace/out/hello-write.txt — \"hello from write tool at /workspace/out\"  (create the directory first via bash mkdir if needed)\n3. /tmp/hello-write.txt        — \"hello from write tool at /tmp\"\n\nUse the write tool for each file individually. Then say DONE.",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "Use the dedicated 'write' tool (NOT bash echo) to create three files with these exact contents:\n\n1. /workspace/hello-write.txt  — \"hello from write tool at /workspace\"\n2. /workspace/out/hello-write.txt — \"hello from write tool at /workspace/out\"  (create the directory first via bash mkdir if needed)\n3. /tmp/hello-write.txt        — \"hello from write tool at /tmp\"\n\nUse the write tool for each file individually. Then say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "Use the dedicated 'write' tool (NOT bash echo) to create three files with these exact contents:\n\n1. /workspace/hello-write.txt  — \"hello from write tool at /workspace\"\n2. /workspace/out/hello-write.txt — \"hello from write tool at /workspace/out\"  (create the directory first via bash mkdir if needed)\n3. /tmp/hello-write.txt        — \"hello from write tool at /tmp\"\n\nUse the write tool for each file individually. Then say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "user.message",
+      "processed_at": "2026-04-19T00:28:10.056Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_01GGdo66yDeJawaACtiKA7pt",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "span.model_request_start",
+      "processed_at": "2026-04-19T00:28:10.192Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    }
+  ],
+  "next_page": ""
+}

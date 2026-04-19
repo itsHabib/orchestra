@@ -2,6 +2,8 @@
 orchestra
 examples/miniflow/cli
 examples/miniflow/server
+docs/spike-harness/spike-harness
+docs/spike-harness/spike-harness.exe
 
 # Claude Code local config
 .claude/settings.local.json

@@ -1,0 +1,150 @@
+{
+  "data": [
+    {
+      "id": "sevt_01KzVh9pF3DGFHump7UDNm6B",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": null,
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": null,
+        "OfBetaManagedAgentsTextBlockArray": null,
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": null,
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": null
+      },
+      "type": "session.status_running",
+      "processed_at": "2026-04-18T22:32:55.341Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    },
+    {
+      "id": "sevt_0185J9oboXFVuWWFDx1eKB7v",
+      "content": {
+        "OfBetaManagedAgentsUserMessageEventContentArray": [
+          {
+            "text": "Run this exact bash command and report the full output verbatim:\n\ncat \u003c\u003c'EOF' | bash\necho \"=== uname ===\"; uname -a\necho \"=== whoami ===\"; whoami\necho \"=== pwd ===\"; pwd\necho \"=== ls / ===\"; ls /\necho \"=== ls /workspace ===\"; ls -la /workspace 2\u003e\u00261\necho \"=== which git ===\"; which git \u0026\u0026 git --version\necho \"=== which python python3 pip ===\"; which python python3 pip 2\u003e\u00261\necho \"=== which node npm ===\"; which node npm 2\u003e\u00261\necho \"=== which anthropic ===\"; which anthropic 2\u003e\u00261\necho \"=== env keys (names only) ===\"; env | cut -d= -f1 | sort\necho \"=== /etc/os-release ===\"; cat /etc/os-release 2\u003e\u00261 | head -5\nEOF\n\nThen say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsUserCustomToolResultEventContentArray": [
+          {
+            "text": "Run this exact bash command and report the full output verbatim:\n\ncat \u003c\u003c'EOF' | bash\necho \"=== uname ===\"; uname -a\necho \"=== whoami ===\"; whoami\necho \"=== pwd ===\"; pwd\necho \"=== ls / ===\"; ls /\necho \"=== ls /workspace ===\"; ls -la /workspace 2\u003e\u00261\necho \"=== which git ===\"; which git \u0026\u0026 git --version\necho \"=== which python python3 pip ===\"; which python python3 pip 2\u003e\u00261\necho \"=== which node npm ===\"; which node npm 2\u003e\u00261\necho \"=== which anthropic ===\"; which anthropic 2\u003e\u00261\necho \"=== env keys (names only) ===\"; env | cut -d= -f1 | sort\necho \"=== /etc/os-release ===\"; cat /etc/os-release 2\u003e\u00261 | head -5\nEOF\n\nThen say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsTextBlockArray": [
+          {
+            "text": "Run this exact bash command and report the full output verbatim:\n\ncat \u003c\u003c'EOF' | bash\necho \"=== uname ===\"; uname -a\necho \"=== whoami ===\"; whoami\necho \"=== pwd ===\"; pwd\necho \"=== ls / ===\"; ls /\necho \"=== ls /workspace ===\"; ls -la /workspace 2\u003e\u00261\necho \"=== which git ===\"; which git \u0026\u0026 git --version\necho \"=== which python python3 pip ===\"; which python python3 pip 2\u003e\u00261\necho \"=== which node npm ===\"; which node npm 2\u003e\u00261\necho \"=== which anthropic ===\"; which anthropic 2\u003e\u00261\necho \"=== env keys (names only) ===\"; env | cut -d= -f1 | sort\necho \"=== /etc/os-release ===\"; cat /etc/os-release 2\u003e\u00261 | head -5\nEOF\n\nThen say DONE.",
+            "type": "text"
+          }
+        ],
+        "OfBetaManagedAgentsAgentMCPToolResultEventContentArray": [
+          {
+            "text": "Run this exact bash command and report the full output verbatim:\n\ncat \u003c\u003c'EOF' | bash\necho \"=== uname ===\"; uname -a\necho \"=== whoami ===\"; whoami\necho \"=== pwd ===\"; pwd\necho \"=== ls / ===\"; ls /\necho \"=== ls /workspace ===\"; ls -la /workspace 2\u003e\u00261\necho \"=== which git ===\"; which git \u0026\u0026 git --version\necho \"=== which python python3 pip ===\"; which python python3 pip 2\u003e\u00261\necho \"=== which node npm ===\"; which node npm 2\u003e\u00261\necho \"=== which anthropic ===\"; which anthropic 2\u003e\u00261\necho \"=== env keys (names only) ===\"; env | cut -d= -f1 | sort\necho \"=== /etc/os-release ===\"; cat /etc/os-release 2\u003e\u00261 | head -5\nEOF\n\nThen say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ],
+        "OfBetaManagedAgentsAgentToolResultEventContentArray": [
+          {
+            "text": "Run this exact bash command and report the full output verbatim:\n\ncat \u003c\u003c'EOF' | bash\necho \"=== uname ===\"; uname -a\necho \"=== whoami ===\"; whoami\necho \"=== pwd ===\"; pwd\necho \"=== ls / ===\"; ls /\necho \"=== ls /workspace ===\"; ls -la /workspace 2\u003e\u00261\necho \"=== which git ===\"; which git \u0026\u0026 git --version\necho \"=== which python python3 pip ===\"; which python python3 pip 2\u003e\u00261\necho \"=== which node npm ===\"; which node npm 2\u003e\u00261\necho \"=== which anthropic ===\"; which anthropic 2\u003e\u00261\necho \"=== env keys (names only) ===\"; env | cut -d= -f1 | sort\necho \"=== /etc/os-release ===\"; cat /etc/os-release 2\u003e\u00261 | head -5\nEOF\n\nThen say DONE.",
+            "type": "text",
+            "source": {
+              "data": "",
+              "media_type": "",
+              "type": "",
+              "url": "",
+              "file_id": ""
+            },
+            "context": "",
+            "title": ""
+          }
+        ]
+      },
+      "type": "user.message",
+      "processed_at": "0001-01-01T00:00:00Z",
+      "result": "",
+      "tool_use_id": "",
+      "deny_message": "",
+      "custom_tool_use_id": "",
+      "is_error": false,
+      "input": null,
+      "name": "",
+      "mcp_server_name": "",
+      "evaluated_permission": "",
+      "mcp_tool_use_id": "",
+      "error": {
+        "message": "",
+        "retry_status": {
+          "type": ""
+        },
+        "type": "",
+        "mcp_server_name": ""
+      },
+      "stop_reason": {
+        "type": "",
+        "event_ids": null
+      },
+      "model_request_start_id": "",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "speed": ""
+      }
+    }
+  ],
+  "next_page": ""
+}

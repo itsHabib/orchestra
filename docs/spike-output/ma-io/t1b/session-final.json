@@ -1,0 +1,63 @@
+{
+  "id": "sesn_011CaCBZTan8gSm17J5JE5Ry",
+  "agent": {
+    "id": "agent_011CaCBYPyDksZJAw7zv6Lyy",
+    "description": "",
+    "mcp_servers": [],
+    "model": {
+      "id": "claude-sonnet-4-6",
+      "speed": "standard"
+    },
+    "name": "orchestra-spike-agent-fulltools",
+    "skills": [],
+    "system": "You are a spike-test agent. When the user asks you to do something with files, do exactly what they ask using the dedicated file tools (write/edit) where possible — not bash echo redirects. Then say DONE. Be concise.",
+    "tools": [
+      {
+        "configs": {
+          "OfBetaManagedAgentsAgentToolConfigArray": [],
+          "OfBetaManagedAgentsMCPToolConfigArray": []
+        },
+        "default_config": {
+          "enabled": true,
+          "permission_policy": {
+            "type": "always_allow"
+          }
+        },
+        "type": "agent_toolset_20260401",
+        "mcp_server_name": "",
+        "description": "",
+        "input_schema": {
+          "properties": null,
+          "required": null,
+          "type": ""
+        },
+        "name": ""
+      }
+    ],
+    "type": "agent",
+    "version": 1
+  },
+  "archived_at": "0001-01-01T00:00:00Z",
+  "created_at": "2026-04-19T00:28:07.88235Z",
+  "environment_id": "env_01KxKxiy8wMM2DWTmY3cFctg",
+  "metadata": {},
+  "resources": [],
+  "stats": {
+    "active_seconds": 0,
+    "duration_seconds": 2.144933602
+  },
+  "status": "idle",
+  "title": "spike-t1b",
+  "type": "session",
+  "updated_at": "2026-04-19T00:28:07.88235Z",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_read_input_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "vault_ids": []
+}
