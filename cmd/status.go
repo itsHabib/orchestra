@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"github.com/fatih/color"
 	olog "github.com/itsHabib/orchestra/internal/log"
 	"github.com/itsHabib/orchestra/internal/workspace"
+	"github.com/itsHabib/orchestra/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -26,14 +29,26 @@ var statusCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		state, err := ws.ReadState()
-		if err != nil {
+		state, err := ws.ReadState(context.Background())
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			fmt.Println()
+			fmt.Println("  No active run.")
+			fmt.Println()
+			return
+		case err != nil:
 			logger.Error("Failed to read state: %s", err)
 			os.Exit(1)
 		}
 
 		reg, err := ws.ReadRegistry()
-		if err != nil {
+		switch {
+		case os.IsNotExist(err):
+			fmt.Println()
+			fmt.Println("  No active run.")
+			fmt.Println()
+			return
+		case err != nil:
 			logger.Error("Failed to read registry: %s", err)
 			os.Exit(1)
 		}

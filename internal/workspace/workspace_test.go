@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -39,7 +40,7 @@ func chdirTemp(t *testing.T) {
 func TestInit_CreatesStructure(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestInit_CreatesStructure(t *testing.T) {
 	}
 
 	// Check state.json
-	state, err := ws.ReadState()
+	state, err := ws.ReadState(context.Background())
 	if err != nil {
 		t.Fatalf("ReadState failed: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestInit_CreatesStructure(t *testing.T) {
 func TestState_RoundTrip(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,10 +95,10 @@ func TestState_RoundTrip(t *testing.T) {
 			"x": {Status: "done", ResultSummary: "built it", CostUSD: 1.5},
 		},
 	}
-	if err := ws.WriteState(state); err != nil {
+	if err := ws.WriteState(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ws.ReadState()
+	got, err := ws.ReadState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestState_RoundTrip(t *testing.T) {
 func TestResult_RoundTrip(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func TestResult_RoundTrip(t *testing.T) {
 func TestUpdateTeamState_Concurrent(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestUpdateTeamState_Concurrent(t *testing.T) {
 			if n%2 == 0 {
 				name = "beta"
 			}
-			if err := ws.UpdateTeamState(name, func(ts *TeamState) {
+			if err := ws.UpdateTeamState(context.Background(), name, func(ts *TeamState) {
 				*ts = TeamState{Status: "done", CostUSD: float64(n)}
 			}); err != nil {
 				t.Errorf("UpdateTeamState failed: %v", err)
@@ -157,7 +158,7 @@ func TestUpdateTeamState_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	state, err := ws.ReadState()
+	state, err := ws.ReadState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestUpdateTeamState_Concurrent(t *testing.T) {
 func TestUpdateRegistryEntry(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestUpdateRegistryEntry(t *testing.T) {
 func TestUpdateRegistryEntry_NotFound(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +221,7 @@ func TestOpen_NonExistent(t *testing.T) {
 func TestLogWriter(t *testing.T) {
 	chdirTemp(t)
 
-	ws, err := Init(testConfig())
+	ws, err := Init(context.Background(), testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,18 +1,23 @@
 package workspace
 
-// State holds the shared state that grows as teams complete.
-type State struct {
-	Project string               `json:"project"`
-	Teams   map[string]TeamState `json:"teams"`
-}
+import "github.com/itsHabib/orchestra/pkg/store"
 
-// TeamState holds the result state of a completed team.
-type TeamState struct {
-	Status        string   `json:"status"`
-	ResultSummary string   `json:"result_summary"`
-	Artifacts     []string `json:"artifacts"`
-	CostUSD       float64  `json:"cost_usd"`
-	DurationMs    int64    `json:"duration_ms"`
-	InputTokens   int64    `json:"input_tokens"`
-	OutputTokens  int64    `json:"output_tokens"`
-}
+// State aliases the store run-state document for legacy workspace callers.
+type State = store.RunState
+
+// TeamState aliases the store team-state document for legacy workspace callers.
+type TeamState = store.TeamState
+
+// RepositoryArtifact aliases the managed-agent repository artifact type.
+type RepositoryArtifact = store.RepositoryArtifact
+
+// LockMode aliases the store run-lock mode.
+type LockMode = store.LockMode
+
+const (
+	// LockExclusive aliases the store exclusive run lock mode.
+	LockExclusive = store.LockExclusive
+
+	// LockShared aliases the store shared run lock mode.
+	LockShared = store.LockShared
+)

@@ -22,7 +22,7 @@ Perform ALL of the following checks in a single pass. Be concise — this runs e
 
 ### 1. Team Status
 
-Read `$WS/state.json` and `$WS/registry.json`.
+Read `$WS/state.json` and `$WS/registry.json`. `state.json` uses the v2 run-state shape: top-level `project`, optional `backend`/`run_id`/`started_at`, and a `teams` map keyed by team name. Local runs still use `status: "done"` for completed teams.
 
 Count teams by status and show a one-line summary:
 ```
