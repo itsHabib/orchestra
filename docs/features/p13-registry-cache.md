@@ -134,76 +134,169 @@ Library: `github.com/gibson042/canonicaljson-go` preferred (RFC 8785 compliant, 
 
 ### 5.1 `EnsureAgent` control flow
 
+Types and clients the implementation uses:
+
+- `s.store store.Store` — the interface from 00-store-interface.md.
+- `s.ma *anthropic.Client` — the Anthropic SDK client, constructed via `internal/machost.NewClient()`. No abstraction layer; we call `s.ma.Beta.Agents.Get/List/New/Update/Archive` directly.
+- `s.logger *slog.Logger` — standard library slog.
+
+Spawner struct lives in `pkg/spawner/managed_agents.go`:
+
+```go
+type ManagedAgentsSpawner struct {
+    store  store.Store
+    ma     *anthropic.Client
+    logger *slog.Logger
+    cfg    Config // field defaults in §5.3 and §5.4 below
+}
+
+type Config struct {
+    MaxListPages       int           // default 10 (§5.3)
+    AgentLockTimeout   time.Duration // default 90s (§5.1, §5.2)
+    EnvLockTimeout     time.Duration // default 90s
+    AdoptListWorkers   int           // default 5 (CLI §5.6)
+}
 ```
-key  := "<project>__<role>"
-hash := specHash(spec)
 
-store.WithAgentLock(ctx, key, func(ctx) error {
-    rec, found, err := store.GetAgent(ctx, key)
-    if err != nil { return err }
+The full control flow (prose + pseudocode). Helper functions named below are inline methods on `ManagedAgentsSpawner`; agent may inline them or extract as it prefers.
 
-    if found {
-        agent, err := ma.Agents.Get(ctx, rec.AgentID)
-        switch {
-        case isNotFound(err):
-            // Dashboard delete or eventual-consistency window.
-            // See §5.4 — don't delete cache yet; fall through to adopt.
-            goto adopt
-        case err != nil:
+```go
+func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) (AgentHandle, error) {
+    key := fmt.Sprintf("%s__%s", spec.Project, spec.Role) // AgentSpec gains Project/Role fields per P1.1 shape — verify during impl
+    hash := specHash(spec)
+
+    ctx, cancel := context.WithTimeout(ctx, s.cfg.AgentLockTimeout)
+    defer cancel()
+
+    var handle AgentHandle
+    err := s.store.WithAgentLock(ctx, key, func(ctx context.Context) error {
+        rec, found, err := s.store.GetAgent(ctx, key)
+        if err != nil {
             return err
-        case agent.ArchivedAt != nil:
-            // Cache points at archived agent; adopt from fresh list.
-            goto adopt
-        case rec.SpecHash == hash && rec.Version == agent.Version:
-            // Fast path. Touch LastUsed; return.
-            return store.PutAgent(ctx, key, rec.withLastUsedNow())
-        case rec.SpecHash != hash:
-            // Spec drift: Update bumps MA version.
-            updated, err := ma.Agents.Update(ctx, agent.ID, params(spec), agent.Version)
-            if err != nil { return err }
-            slog.Info("agent updated due to spec drift", "key", key, "new_version", updated.Version)
-            return store.PutAgent(ctx, key, AgentRecord{...Version: updated.Version, SpecHash: hash, ...})
-        default:
-            // Same hash, version drifted (someone touched the agent in the MA dashboard).
-            // Refresh our cache to match; log a warning so this is visible.
-            slog.Warn("agent version drifted outside orchestra; adopting new version", "key", key, "prev", rec.Version, "current", agent.Version)
-            return store.PutAgent(ctx, key, rec.withVersion(agent.Version).withLastUsedNow())
         }
+        if found {
+            h, resolved, err := s.resolveFromCache(ctx, key, hash, rec)
+            if err != nil {
+                return err
+            }
+            if resolved {
+                handle = h
+                return nil
+            }
+            // fall through to adopt
+        }
+        h, err := s.adoptOrCreate(ctx, key, hash, spec)
+        if err != nil {
+            return err
+        }
+        handle = h
+        return nil
+    })
+    if err != nil {
+        return AgentHandle{}, err
     }
+    return handle, nil
+}
+```
 
-adopt:
-    matches, err := listScoped(ctx, ma, spec.Project, spec.Role) // see §5.3
-    if err != nil { return err }
+**`resolveFromCache`** — handles the "have a cached agent ID" path. Returns `(handle, resolved, err)` where `resolved==false` means fall through to adopt.
+
+```go
+func (s *ManagedAgentsSpawner) resolveFromCache(ctx context.Context, key, hash string, rec *store.AgentRecord) (AgentHandle, bool, error) {
+    agent, err := s.ma.Beta.Agents.Get(ctx, rec.AgentID)
+    switch {
+    case isMAStatus(err, 404):
+        // Don't delete cache; fall through to adopt (§5.4).
+        return AgentHandle{}, false, nil
+    case err != nil:
+        return AgentHandle{}, false, err
+    case agent.ArchivedAt != nil:
+        return AgentHandle{}, false, nil // fall through
+    case rec.SpecHash == hash && rec.Version == agent.Version:
+        // Fast path: touch LastUsed, return.
+        rec.LastUsed = time.Now().UTC()
+        if err := s.store.PutAgent(ctx, key, *rec); err != nil { return AgentHandle{}, false, err }
+        return handleFromMAAgent(agent), true, nil
+    case rec.SpecHash != hash:
+        updated, err := s.ma.Beta.Agents.Update(ctx, agent.ID, toUpdateParams(spec), agent.Version)
+        if err != nil { return AgentHandle{}, false, err }
+        s.logger.Info("agent updated due to spec drift", "key", key, "new_version", updated.Version)
+        newRec := store.AgentRecord{
+            Key: key, Project: spec.Project, Role: spec.Role,
+            AgentID: updated.ID, Version: updated.Version, SpecHash: hash,
+            UpdatedAt: time.Now().UTC(), LastUsed: time.Now().UTC(),
+        }
+        if err := s.store.PutAgent(ctx, key, newRec); err != nil { return AgentHandle{}, false, err }
+        return handleFromMAAgent(updated), true, nil
+    default:
+        // Same hash, different version — someone touched the agent out-of-band.
+        s.logger.Warn("agent version drifted outside orchestra", "key", key, "prev", rec.Version, "current", agent.Version)
+        rec.Version = agent.Version
+        rec.LastUsed = time.Now().UTC()
+        if err := s.store.PutAgent(ctx, key, *rec); err != nil { return AgentHandle{}, false, err }
+        return handleFromMAAgent(agent), true, nil
+    }
+}
+```
+
+**`adoptOrCreate`** — the list-and-adopt-or-create path. Invoked on cache miss or cache-with-failed-Get.
+
+```go
+func (s *ManagedAgentsSpawner) adoptOrCreate(ctx context.Context, key, hash string, spec AgentSpec) (AgentHandle, error) {
+    matches, err := s.listOrchestraAgents(ctx, spec.Project, spec.Role) // §5.3
+    if err != nil { return AgentHandle{}, err }
 
     switch len(matches) {
     case 0:
-        created, err := ma.Agents.New(ctx, params(spec, key, orchestraMetadata(spec)))
-        if err != nil { return err }
-        return store.PutAgent(ctx, key, AgentRecord{...AgentID: created.ID, ...})
+        created, err := s.ma.Beta.Agents.New(ctx, toCreateParams(spec, key, orchestraMetadata(spec)))
+        if err != nil { return AgentHandle{}, err }
+        rec := store.AgentRecord{
+            Key: key, Project: spec.Project, Role: spec.Role,
+            AgentID: created.ID, Version: created.Version, SpecHash: hash,
+            UpdatedAt: time.Now().UTC(), LastUsed: time.Now().UTC(),
+        }
+        return handleFromMAAgent(created), s.store.PutAgent(ctx, key, rec)
     case 1:
         adopted := matches[0]
-        // Hash-match check: if the adopted agent's recomputed hash matches ours, reuse.
-        // Otherwise Update to align.
-        // (We can recompute from the returned spec fields.)
-        if recomputeSpecHash(adopted) == hash {
-            return store.PutAgent(ctx, key, AgentRecord{...AgentID: adopted.ID, Version: adopted.Version, ...})
+        // Recompute hash from the returned agent's spec fields (confirm SDK exposes all of model/system/tools/mcp_servers/skills — verify during impl).
+        if hashFromMAAgent(adopted) == hash {
+            rec := store.AgentRecord{
+                Key: key, Project: spec.Project, Role: spec.Role,
+                AgentID: adopted.ID, Version: adopted.Version, SpecHash: hash,
+                UpdatedAt: time.Now().UTC(), LastUsed: time.Now().UTC(),
+            }
+            return handleFromMAAgent(adopted), s.store.PutAgent(ctx, key, rec)
         }
-        updated, err := ma.Agents.Update(ctx, adopted.ID, params(spec), adopted.Version)
-        if err != nil { return err }
-        return store.PutAgent(ctx, key, AgentRecord{...AgentID: updated.ID, Version: updated.Version, ...})
+        // Adopted but needs Update.
+        updated, err := s.ma.Beta.Agents.Update(ctx, adopted.ID, toUpdateParams(spec), adopted.Version)
+        if err != nil { return AgentHandle{}, err }
+        rec := store.AgentRecord{
+            Key: key, Project: spec.Project, Role: spec.Role,
+            AgentID: updated.ID, Version: updated.Version, SpecHash: hash,
+            UpdatedAt: time.Now().UTC(), LastUsed: time.Now().UTC(),
+        }
+        return handleFromMAAgent(updated), s.store.PutAgent(ctx, key, rec)
     default:
-        // Multiple matches with our metadata tag — shouldn't happen with the per-key lock,
-        // but possible if someone bypassed orchestra. Adopt most recently updated; warn.
-        slog.Warn("multiple orchestra-tagged MA agents match key; adopting most recent", "key", key, "matches", ids(matches))
-        sort.Slice(matches, byUpdatedAtDesc)
-        return adoptSingle(matches[0])
+        s.logger.Warn("multiple orchestra-tagged MA agents match key; adopting most recently updated",
+            "key", key, "match_ids", agentIDs(matches))
+        sort.Slice(matches, func(i, j int) bool { return matches[i].UpdatedAt.After(matches[j].UpdatedAt) })
+        return s.adoptSingle(ctx, key, hash, spec, matches[0])
     }
-})
+}
 ```
 
-**The flow runs under `WithAgentLock(key)`** — a per-key cross-process flock from the Store doc §5.2. Two `EnsureAgent` calls with the same key serialize; the second enters the callback and finds the first's cache write. No orphan creates.
+**Helpers to implement (names illustrative; agent may rename):**
 
-**On `WithAgentLock` timeout:** error with the holding PID and the key. Users can `orchestra agents unlock <key>` (stretch; see §10) if something is genuinely wedged.
+- `isMAStatus(err error, code int) bool` — type-asserts against the SDK's error type; returns true if the HTTP status matches. Needed because `Agents.Get` returns a typed error on 404.
+- `toCreateParams(spec AgentSpec, name string, md map[string]string) anthropic.BetaAgentNewParams` — maps our `AgentSpec` to the SDK's create params struct. Tools / MCPServers / Skills translation may need union-builder plumbing; see the spike harness at `docs/spike-harness/main.go` for working examples.
+- `toUpdateParams(spec AgentSpec) anthropic.BetaAgentUpdateParams` — same mapping, update variant.
+- `orchestraMetadata(spec AgentSpec) map[string]string` — returns `{"orchestra_project": spec.Project, "orchestra_role": spec.Role, "orchestra_version": "v2"}`.
+- `handleFromMAAgent(a *anthropic.BetaAgent) spawner.AgentHandle` — trivial struct conversion.
+- `hashFromMAAgent(a *anthropic.BetaAgent) string` — rebuild an `AgentSpec`-equivalent from the returned agent fields and run it through `specHash`. **Open risk: verify during implementation that the SDK's returned `BetaAgent` exposes every field `specHash` consumes**; if not, fall back to "adopt and immediately Update" instead of hash-matching, and flag this in the PR description.
+
+**The whole flow runs under `WithAgentLock(key)`** with a bounded timeout (`AgentLockTimeout`, default 90s). Two `EnsureAgent` calls with the same key serialize; the second enters the callback and finds the first's cache write.
+
+**On `WithAgentLock` timeout:** `EnsureAgent` returns an error that wraps `store.ErrLockTimeout`, with the holding PID and key in the message.
 
 ### 5.2 `EnsureEnvironment` control flow
 
@@ -225,6 +318,8 @@ Tiered mitigation:
 3. **Bounded scan ceiling.** Cap at `max_list_pages` (default 10) when searching for the zero-match case. If no match is found within that ceiling, treat as "no match, proceed to create." Logged at INFO with page count scanned. A user with more than ~1000 agents can raise the cap via config.
 
 P1.3 ships (2) and (3) unconditionally; (1) is implemented if the SDK supports it at the pinned version.
+
+`MaxListPages` is set on `ManagedAgentsSpawner.Config.MaxListPages` (default 10). Not exposed in `orchestra.yaml` in P1.3 — users with unusually large orgs can set it via a future `backend.managed_agents.max_list_pages` config field added when demand surfaces.
 
 ### 5.4 Handling transient MA 404s
 

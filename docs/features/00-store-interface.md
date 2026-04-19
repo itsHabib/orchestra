@@ -27,7 +27,7 @@ We want orchestra to be usable in production by people who are not running it ou
 - F2. Ship one concrete impl: `FileStore`, backed by the existing `.orchestra/` and `~/.config/orchestra/` layout.
 - F3. Ship an in-memory impl: `MemStore`, for unit tests.
 - F4. Provide a shared conformance suite (`storetest`) that both impls pass and any future impl must pass.
-- F5. Preserve existing `Workspace` public method surface where it is still used by `cmd/` callers (thin forwarders OK); no callsite has to change purely because of the refactor.
+- F5. Preserve existing `Workspace` public *method surface* (method names and shapes) for `cmd/` callers. Call-site diffs are limited to type renames — the old concrete types from `internal/workspace/` become type aliases (e.g. `type TeamState = store.TeamState`) so existing call sites compile unchanged aside from import rewrites.
 
 **Non-functional.**
 
@@ -152,6 +152,8 @@ type EnvRecord struct {
 
 ### 4.3 Interface
 
+**Package layout.** The interface and all record types live in `pkg/store/` (files: `store.go` for interface, `types.go` for records, `errors.go` for sentinels). Implementations live in subpackages: `pkg/store/filestore/`, `pkg/store/memstore/`. The conformance suite lives in `pkg/store/storetest/`. This keeps the top-level `store` package import-cycle-free — impls import `store`, not the other way around.
+
 ```go
 package store
 
@@ -174,17 +176,17 @@ type Store interface {
     GetAgent(ctx context.Context, key string) (*AgentRecord, bool, error)
     PutAgent(ctx context.Context, key string, rec AgentRecord) error
     DeleteAgent(ctx context.Context, key string) error
-    ListAgents(ctx context.Context) ([]AgentRecord, error)
+    ListAgents(ctx context.Context) ([]AgentRecord, error) // sorted by Key ascending
 
     // Per-key serialization around a user-driven operation (e.g., EnsureAgent).
-    // Held across the callback; see §5.2 and P1.3 doc §4.5.
+    // Held across the callback; see §5.2 and P1.3 doc §5.1.
     WithAgentLock(ctx context.Context, key string, fn func(context.Context) error) error
 
     // User-scoped env cache (parallel to agent cache).
     GetEnv(ctx context.Context, key string) (*EnvRecord, bool, error)
     PutEnv(ctx context.Context, key string, rec EnvRecord) error
     DeleteEnv(ctx context.Context, key string) error
-    ListEnvs(ctx context.Context) ([]EnvRecord, error)
+    ListEnvs(ctx context.Context) ([]EnvRecord, error)           // sorted by Key ascending
     WithEnvLock(ctx context.Context, key string, fn func(context.Context) error) error
 }
 
@@ -193,7 +195,24 @@ const (
     LockExclusive LockMode = iota
     LockShared
 )
+
+// Exported sentinels (pkg/store/errors.go). Callers use errors.Is.
+var (
+    ErrNotFound      = errors.New("store: not found")          // unused for Get (which returns (nil, false, nil)); used by Delete when key absent
+    ErrLockTimeout   = errors.New("store: lock acquire timed out")
+    ErrLockHeld      = errors.New("store: run lock held by another process")
+    ErrArchivedAgent = errors.New("store: cached agent is archived on backend") // returned by higher layers; Store itself does not classify
+)
 ```
+
+**`AcquireRunLock` release semantics.**
+- The returned `release` closure is **idempotent**: multiple calls are safe, subsequent calls are no-ops. Intended usage: `defer release()` at the top of the calling function.
+- On process death without `release()`, the OS releases the flock automatically (file descriptor close). The lockfile on disk is left behind; the next acquirer notices the stale PID via `syscall.Kill(pid, 0)` and reclaims it.
+- `ctx` cancellation aborts the acquisition attempt but does not affect an already-held lock.
+
+**Deadline contract.** All methods respect `ctx` cancellation. `WithAgentLock` / `WithEnvLock` require a deadline in the context (or they default to 90s — impl-defined). `AcquireRunLock` blocks up to the context deadline before returning `ErrLockTimeout`.
+
+**File mode (FileStore specific).** `state.json`, `agents.json`, `envs.json` written at 0o644. `run.lock` and per-key `.<key>.lock` at 0o644. Directories at 0o755. No secrets in any of these files (API keys live elsewhere).
 
 ### 4.4 Spec-hash canonical form
 
@@ -281,7 +300,7 @@ Not shipping that now. But not pretending the split doesn't exist either.
 
 ### 7.1 Conformance suite
 
-`pkg/store/storetest/` exports `RunConformance(t *testing.T, factory func(t) Store)`. Covers every interface method with the same canonical sequence of operations. Both `FileStore` (against `t.TempDir()`) and `MemStore` run it. Any future impl must pass it unchanged.
+`pkg/store/storetest/` exports `RunConformance(t *testing.T, factory func(t *testing.T) store.Store)`. Covers every interface method with the same canonical sequence of operations. Both `FileStore` (against `t.TempDir()`) and `MemStore` run it. Any future impl must pass it unchanged.
 
 Conformance cases, at minimum:
 
