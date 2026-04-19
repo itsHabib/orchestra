@@ -178,7 +178,7 @@ func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) 
 	}
 	hash, err := specHash(&spec)
 	if err != nil {
-		return AgentHandle{}, fmt.Errorf("%w: %v", store.ErrInvalidArgument, err)
+		return AgentHandle{}, fmt.Errorf("%w: %w", store.ErrInvalidArgument, err)
 	}
 
 	var handle AgentHandle
@@ -449,7 +449,7 @@ func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSp
 	}
 	hash, err := envSpecHash(&spec)
 	if err != nil {
-		return EnvHandle{}, fmt.Errorf("%w: %v", store.ErrInvalidArgument, err)
+		return EnvHandle{}, fmt.Errorf("%w: %w", store.ErrInvalidArgument, err)
 	}
 
 	var handle EnvHandle

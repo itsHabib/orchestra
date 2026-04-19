@@ -177,22 +177,36 @@ func runAgentsPrune(ctx context.Context) error {
 	}
 
 	if agentsReconcile {
-		// Reload the record set so keys just removed by --apply aren't still
-		// treated as cached, which would hide fresh orphans from the report.
-		current := records
-		if agentsPruneApply && len(stale) > 0 {
-			refreshed, err := st.ListAgents(ctx)
-			if err != nil {
-				return err
-			}
-			current = refreshed
+		if err := reportOrphanAgents(ctx, st, &client, records, stale); err != nil {
+			return err
 		}
-		orphaned, err := listOrphanAgents(ctx, &client, current)
+	}
+	return nil
+}
+
+// reportOrphanAgents prints MA agents tagged for orchestra that don't match
+// any cache record. If --apply just deleted records, the record set is
+// reloaded first so just-pruned keys don't mask fresh orphans.
+func reportOrphanAgents(
+	ctx context.Context,
+	st store.Store,
+	client *anthropic.Client,
+	records []store.AgentRecord,
+	stale []agentRow,
+) error {
+	current := records
+	if agentsPruneApply && len(stale) > 0 {
+		refreshed, err := st.ListAgents(ctx)
 		if err != nil {
 			return err
 		}
-		printOrphanAgents(orphaned)
+		current = refreshed
 	}
+	orphaned, err := listOrphanAgents(ctx, client, current)
+	if err != nil {
+		return err
+	}
+	printOrphanAgents(orphaned)
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -173,7 +174,7 @@ func isBuiltInTool(name string) bool {
 // adopted agent would fail an equality check and be needlessly updated.
 func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, error) {
 	if agent == nil {
-		return "", fmt.Errorf("spawner: nil managed agent")
+		return "", errors.New("spawner: nil managed agent")
 	}
 	spec := AgentSpec{
 		Model:        agent.Model.ID,
@@ -243,7 +244,7 @@ func skillsFromMAAgent(skills []anthropic.BetaManagedAgentsAgentSkillUnion) []Sk
 
 func hashFromMAEnv(env *anthropic.BetaEnvironment) (string, error) {
 	if env == nil {
-		return "", fmt.Errorf("spawner: nil managed environment")
+		return "", errors.New("spawner: nil managed environment")
 	}
 	spec := EnvSpec{
 		Packages: PackageSpec{
