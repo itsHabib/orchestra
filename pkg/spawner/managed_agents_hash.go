@@ -4,18 +4,22 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"golang.org/x/text/unicode/norm"
 )
 
+// canonicalAgentSpec is the JSON-serializable shape used to compute the spec
+// hash. Only fields we round-trip through the Managed Agents API are included,
+// which keeps specHash and hashFromMAAgent symmetric.
 type canonicalAgentSpec struct {
-	Model      string      `json:"model"`
-	System     string      `json:"system"`
-	Tools      []Tool      `json:"tools,omitempty"`
-	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
-	Skills     []Skill     `json:"skills,omitempty"`
+	Model      string           `json:"model"`
+	System     string           `json:"system"`
+	Tools      []Tool           `json:"tools,omitempty"`
+	MCPServers []MCPServer      `json:"mcp_servers,omitempty"`
+	Skills     []canonicalSkill `json:"skills,omitempty"`
 }
 
 type canonicalEnvSpec struct {
@@ -23,32 +27,39 @@ type canonicalEnvSpec struct {
 	Networking NetworkSpec `json:"networking"`
 }
 
-func specHash(spec *AgentSpec) string {
-	canon := canonicalAgentSpec{
+// canonicalSkill is the subset of Skill used for hashing. Arbitrary skill
+// metadata is intentionally dropped: the MA API does not return it, so
+// including it here would break round-trip equality with hashFromMAAgent.
+type canonicalSkill struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	Type    string `json:"type,omitempty"`
+}
+
+func specHash(spec *AgentSpec) (string, error) {
+	return hashCanonical(canonicalAgentSpec{
 		Model:      spec.Model,
 		System:     normalizePrompt(spec.SystemPrompt),
 		Tools:      canonicalTools(spec.Tools),
 		MCPServers: canonicalMCPServers(spec.MCPServers),
 		Skills:     canonicalSkills(spec.Skills),
-	}
-	return hashCanonical(canon)
+	})
 }
 
-func envSpecHash(spec *EnvSpec) string {
-	canon := canonicalEnvSpec{
+func envSpecHash(spec *EnvSpec) (string, error) {
+	return hashCanonical(canonicalEnvSpec{
 		Packages:   canonicalPackages(&spec.Packages),
 		Networking: canonicalNetwork(spec.Networking),
-	}
-	return hashCanonical(canon)
+	})
 }
 
-func hashCanonical(v any) string {
+func hashCanonical(v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("spawner: canonical hash marshal: %w", err)
 	}
 	sum := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func normalizePrompt(s string) string {
@@ -77,12 +88,14 @@ func canonicalMCPServers(servers []MCPServer) []MCPServer {
 	return out
 }
 
-func canonicalSkills(skills []Skill) []Skill {
-	out := make([]Skill, 0, len(skills))
+func canonicalSkills(skills []Skill) []canonicalSkill {
+	out := make([]canonicalSkill, 0, len(skills))
 	for _, skill := range skills {
-		next := skill
-		next.Metadata = cloneStringMap(skill.Metadata)
-		out = append(out, next)
+		out = append(out, canonicalSkill{
+			Name:    skill.Name,
+			Version: skill.Version,
+			Type:    skill.Metadata["type"],
+		})
 	}
 	return out
 }
@@ -154,9 +167,13 @@ func isBuiltInTool(name string) bool {
 	}
 }
 
-func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, bool) {
+// hashFromMAAgent reconstructs an AgentSpec from a Managed Agents resource and
+// returns its canonical hash. The reconstruction only includes fields the MA
+// API round-trips, which must match canonicalAgentSpec exactly — otherwise an
+// adopted agent would fail an equality check and be needlessly updated.
+func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, error) {
 	if agent == nil {
-		return "", false
+		return "", fmt.Errorf("spawner: nil managed agent")
 	}
 	spec := AgentSpec{
 		Model:        agent.Model.ID,
@@ -165,7 +182,7 @@ func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, bool) {
 		MCPServers:   mcpServersFromMAAgent(agent.MCPServers),
 		Skills:       skillsFromMAAgent(agent.Skills),
 	}
-	return specHash(&spec), true
+	return specHash(&spec)
 }
 
 func toolsFromMAAgent(tools []anthropic.BetaManagedAgentsAgentToolUnion) []Tool {
@@ -215,15 +232,18 @@ func skillsFromMAAgent(skills []anthropic.BetaManagedAgentsAgentSkillUnion) []Sk
 	out := make([]Skill, 0, len(skills))
 	for i := range skills {
 		skill := &skills[i]
-		md := map[string]string{"type": skill.Type}
-		out = append(out, Skill{Name: skill.SkillID, Version: skill.Version, Metadata: md})
+		out = append(out, Skill{
+			Name:     skill.SkillID,
+			Version:  skill.Version,
+			Metadata: map[string]string{"type": skill.Type},
+		})
 	}
 	return out
 }
 
-func hashFromMAEnv(env *anthropic.BetaEnvironment) string {
+func hashFromMAEnv(env *anthropic.BetaEnvironment) (string, error) {
 	if env == nil {
-		return ""
+		return "", fmt.Errorf("spawner: nil managed environment")
 	}
 	spec := EnvSpec{
 		Packages: PackageSpec{

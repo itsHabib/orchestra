@@ -14,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/itsHabib/orchestra/internal/machost"
+	"github.com/itsHabib/orchestra/pkg/spawner"
 	"github.com/itsHabib/orchestra/pkg/store"
 	"github.com/itsHabib/orchestra/pkg/store/filestore"
 	"github.com/spf13/cobra"
@@ -128,7 +129,7 @@ func annotateAgentRows(ctx context.Context, client *anthropic.Client, records []
 func getAgentStatus(ctx context.Context, client *anthropic.Client, agentID string) (string, error) {
 	agent, err := client.Beta.Agents.Get(ctx, agentID, anthropic.BetaAgentGetParams{})
 	switch {
-	case isAnthropicStatus(err, http.StatusNotFound):
+	case spawner.IsAPIStatus(err, http.StatusNotFound):
 		return "missing", nil
 	case err != nil:
 		return "unreachable", err
@@ -176,7 +177,17 @@ func runAgentsPrune(ctx context.Context) error {
 	}
 
 	if agentsReconcile {
-		orphaned, err := listOrphanAgents(ctx, &client, records)
+		// Reload the record set so keys just removed by --apply aren't still
+		// treated as cached, which would hide fresh orphans from the report.
+		current := records
+		if agentsPruneApply && len(stale) > 0 {
+			refreshed, err := st.ListAgents(ctx)
+			if err != nil {
+				return err
+			}
+			current = refreshed
+		}
+		orphaned, err := listOrphanAgents(ctx, &client, current)
 		if err != nil {
 			return err
 		}
@@ -253,7 +264,7 @@ func listOrphanAgents(ctx context.Context, client *anthropic.Client, records []s
 		}
 		for i := range page.Data {
 			agent := &page.Data[i]
-			key, ok := agentCacheKeyFromMetadata(agent.Metadata)
+			key, ok := spawner.AgentCacheKeyFromMetadata(agent.Metadata)
 			if !ok {
 				continue
 			}
@@ -290,23 +301,6 @@ func printOrphanAgents(orphaned []orphanAgent) {
 	for _, agent := range orphaned {
 		fmt.Printf("%-32s  %-28s  %-7d  %s\n", agent.key, agent.agentID, agent.version, agent.status)
 	}
-}
-
-func agentCacheKeyFromMetadata(metadata map[string]string) (string, bool) {
-	if metadata["orchestra_version"] != "v2" {
-		return "", false
-	}
-	project := metadata["orchestra_project"]
-	role := metadata["orchestra_role"]
-	if project == "" || role == "" {
-		return "", false
-	}
-	return project + "__" + role, true
-}
-
-func isAnthropicStatus(err error, code int) bool {
-	var apiErr *anthropic.Error
-	return errors.As(err, &apiErr) && apiErr.StatusCode == code
 }
 
 func formatCacheTime(t time.Time) string {

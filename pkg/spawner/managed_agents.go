@@ -1,3 +1,29 @@
+// Package spawner — Managed Agents backend.
+//
+// The ManagedAgentsSpawner keeps a local cache of the Anthropic Managed Agents
+// resources it has provisioned so that the same AgentSpec/EnvSpec does not
+// trigger a fresh API round trip on every invocation. Two layers back the
+// cache:
+//
+//  1. A persistent record in the Store (keyed by project+role or project+name)
+//     remembers which MA resource was created and the hash of the spec that
+//     produced it.
+//  2. Every MA resource Orchestra creates is tagged with metadata
+//     (orchestraMetadataProject / orchestraMetadataRole etc.) so that, if the
+//     cache ever disappears, we can scan MA for an existing resource that
+//     matches the cache key and adopt it instead of creating a duplicate.
+//
+// EnsureAgent / EnsureEnvironment are the entry points. Each acquires a
+// per-key lock via the Store and then runs this pipeline:
+//
+//	resolveAgentFromCache  →  hit:  reuse (or update-in-place on spec drift)
+//	                         miss: reconcileAgent
+//	                                 findAdoptableAgent → adoptAgent
+//	                                                    → createAgent
+//
+// Environments follow the same shape, except drift triggers
+// archive-and-recreate (the MA API does not allow in-place env updates).
+
 package spawner
 
 import (
@@ -8,6 +34,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -25,14 +52,25 @@ const (
 	orchestraMetadataEnv     = "orchestra_env"
 	orchestraMetadataVersion = "orchestra_version"
 	orchestraVersionV2       = "v2"
+
+	// cacheKeySeparator joins the two components of a cache key. Project, role,
+	// and env name are validated to not contain this sequence so that the
+	// resulting key is unambiguous.
+	cacheKeySeparator = "__"
 )
 
 // ManagedAgentsConfig controls the registry-cache behavior for managed agents.
 type ManagedAgentsConfig struct {
-	MaxListPages     int
+	// MaxListPages caps how many pages listOrchestraAgents/Envs will scan
+	// before giving up and creating a new resource. Protects against runaway
+	// pagination against a large MA account.
+	MaxListPages int
+
+	// AgentLockTimeout and EnvLockTimeout bound how long EnsureAgent /
+	// EnsureEnvironment will wait for the per-key lock before returning
+	// ErrLockTimeout.
 	AgentLockTimeout time.Duration
 	EnvLockTimeout   time.Duration
-	AdoptListWorkers int
 }
 
 // ManagedAgentsOption customizes a ManagedAgentsSpawner.
@@ -85,7 +123,6 @@ func newManagedAgentsSpawner(
 			MaxListPages:     10,
 			AgentLockTimeout: 90 * time.Second,
 			EnvLockTimeout:   90 * time.Second,
-			AdoptListWorkers: 5,
 		},
 		clock: func() time.Time { return time.Now().UTC() },
 	}
@@ -100,9 +137,6 @@ func newManagedAgentsSpawner(
 	}
 	if s.cfg.EnvLockTimeout <= 0 {
 		s.cfg.EnvLockTimeout = 90 * time.Second
-	}
-	if s.cfg.AdoptListWorkers <= 0 {
-		s.cfg.AdoptListWorkers = 5
 	}
 	if s.logger == nil {
 		s.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -142,28 +176,14 @@ func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) 
 	if err != nil {
 		return AgentHandle{}, err
 	}
-	hash := specHash(&spec)
-
-	lockCtx, cancel := context.WithTimeout(ctx, s.cfg.AgentLockTimeout)
-	defer cancel()
+	hash, err := specHash(&spec)
+	if err != nil {
+		return AgentHandle{}, fmt.Errorf("%w: %v", store.ErrInvalidArgument, err)
+	}
 
 	var handle AgentHandle
-	err = s.store.WithAgentLock(lockCtx, key, func(ctx context.Context) error {
-		rec, found, err := s.store.GetAgent(ctx, key)
-		if err != nil {
-			return err
-		}
-		if found {
-			h, resolved, err := s.resolveAgentFromCache(ctx, key, hash, &spec, rec)
-			if err != nil {
-				return err
-			}
-			if resolved {
-				handle = h
-				return nil
-			}
-		}
-		h, err := s.adoptOrCreateAgent(ctx, key, hash, &spec)
+	err = s.withAgentLock(ctx, key, func(ctx context.Context) error {
+		h, err := s.ensureAgentLocked(ctx, key, hash, &spec)
 		if err != nil {
 			return err
 		}
@@ -171,100 +191,199 @@ func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) 
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrLockTimeout) {
-			return AgentHandle{}, fmt.Errorf("%w: agent key %q", err, key)
-		}
 		return AgentHandle{}, err
 	}
 	return handle, nil
 }
 
+// withAgentLock wraps the store agent lock with a timeout and contextual error.
+func (s *ManagedAgentsSpawner) withAgentLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	lockCtx, cancel := context.WithTimeout(ctx, s.cfg.AgentLockTimeout)
+	defer cancel()
+	err := s.store.WithAgentLock(lockCtx, key, fn)
+	if errors.Is(err, store.ErrLockTimeout) {
+		return fmt.Errorf("%w: agent key %q", err, key)
+	}
+	return err
+}
+
+// ensureAgentLocked runs the cache-hit-then-reconcile pipeline inside the lock.
+func (s *ManagedAgentsSpawner) ensureAgentLocked(ctx context.Context, key, hash string, spec *AgentSpec) (AgentHandle, error) {
+	rec, found, err := s.store.GetAgent(ctx, key)
+	if err != nil {
+		return AgentHandle{}, err
+	}
+	if found {
+		handle, err := s.resolveAgentFromCache(ctx, key, hash, spec, rec)
+		if err != nil {
+			return AgentHandle{}, err
+		}
+		if handle != nil {
+			return *handle, nil
+		}
+	}
+	return s.reconcileAgent(ctx, key, hash, spec)
+}
+
+// resolveAgentFromCache verifies a cached MA agent and either reuses it,
+// updates it in place when the spec drifted, or signals the caller to
+// reconcile.
+//
+// Returns:
+//   - (handle, nil)  cache entry is still valid (possibly after an in-place update)
+//   - (nil, nil)     cached agent is missing or archived — caller should reconcile
+//   - (nil, err)     API or store failure
 func (s *ManagedAgentsSpawner) resolveAgentFromCache(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *AgentSpec,
 	rec *store.AgentRecord,
-) (AgentHandle, bool, error) {
+) (*AgentHandle, error) {
 	agent, err := s.agents.Get(ctx, rec.AgentID, anthropic.BetaAgentGetParams{})
 	switch {
-	case isMAStatus(err, http.StatusNotFound):
-		s.logger.Debug("cached agent missing; falling through to adopt", "key", key, "agent_id", rec.AgentID)
-		return AgentHandle{}, false, nil
+	case IsAPIStatus(err, http.StatusNotFound):
+		s.logger.Debug("cached agent missing; falling through to reconcile", "key", key, "agent_id", rec.AgentID)
+		return nil, nil
 	case err != nil:
-		return AgentHandle{}, false, err
+		return nil, err
 	case isAgentArchived(agent):
-		s.logger.Debug("cached agent archived; falling through to adopt", "key", key, "agent_id", rec.AgentID)
-		return AgentHandle{}, false, nil
-	case rec.SpecHash == hash && rec.Version == int(agent.Version):
-		s.logger.Debug("agent cache hit", "key", key, "agent_id", agent.ID)
-		rec.LastUsed = s.now()
-		if err := s.store.PutAgent(ctx, key, rec); err != nil {
-			return AgentHandle{}, false, err
-		}
-		return handleFromMAAgent(agent), true, nil
-	case rec.SpecHash != hash:
-		updated, err := s.agents.Update(ctx, agent.ID, toAgentUpdateParams(spec, key, agent.Version))
-		if err != nil {
-			return AgentHandle{}, false, err
-		}
-		s.logger.Info("agent updated due to spec drift", "key", key, "new_version", updated.Version)
-		if err := s.putAgentRecord(ctx, key, hash, spec, updated); err != nil {
-			return AgentHandle{}, false, err
-		}
-		return handleFromMAAgent(updated), true, nil
-	default:
-		s.logger.Warn("agent version drifted outside orchestra", "key", key, "previous_version", rec.Version, "current_version", agent.Version)
-		rec.Version = int(agent.Version)
-		rec.LastUsed = s.now()
-		if err := s.store.PutAgent(ctx, key, rec); err != nil {
-			return AgentHandle{}, false, err
-		}
-		return handleFromMAAgent(agent), true, nil
+		s.logger.Debug("cached agent archived; falling through to reconcile", "key", key, "agent_id", rec.AgentID)
+		return nil, nil
 	}
+
+	if rec.SpecHash != hash {
+		return s.updateAgentForSpecDrift(ctx, key, hash, spec, agent)
+	}
+	return s.refreshAgentRecord(ctx, key, rec, agent)
 }
 
-func (s *ManagedAgentsSpawner) adoptOrCreateAgent(
+// refreshAgentRecord updates the cache record's last-used timestamp (and
+// records an out-of-band version change if one happened) then returns the
+// existing agent handle.
+func (s *ManagedAgentsSpawner) refreshAgentRecord(
+	ctx context.Context,
+	key string,
+	rec *store.AgentRecord,
+	agent *anthropic.BetaManagedAgentsAgent,
+) (*AgentHandle, error) {
+	if rec.Version != int(agent.Version) {
+		s.logger.Warn("agent version drifted outside orchestra",
+			"key", key, "previous_version", rec.Version, "current_version", agent.Version)
+		rec.Version = int(agent.Version)
+	} else {
+		s.logger.Debug("agent cache hit", "key", key, "agent_id", agent.ID)
+	}
+	rec.LastUsed = s.now()
+	if err := s.store.PutAgent(ctx, key, rec); err != nil {
+		return nil, err
+	}
+	handle := handleFromMAAgent(agent)
+	return &handle, nil
+}
+
+// updateAgentForSpecDrift issues an MA Update to bring an existing agent back
+// in line with the current spec, then refreshes the cache record.
+func (s *ManagedAgentsSpawner) updateAgentForSpecDrift(
+	ctx context.Context,
+	key string,
+	hash string,
+	spec *AgentSpec,
+	agent *anthropic.BetaManagedAgentsAgent,
+) (*AgentHandle, error) {
+	updated, err := s.agents.Update(ctx, agent.ID, toAgentUpdateParams(spec, key, agent.Version))
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info("agent updated due to spec drift", "key", key, "new_version", updated.Version)
+	if err := s.putAgentRecord(ctx, key, hash, spec, updated); err != nil {
+		return nil, err
+	}
+	handle := handleFromMAAgent(updated)
+	return &handle, nil
+}
+
+// reconcileAgent runs when the cache has no usable record. It looks for an
+// existing orchestra-tagged MA agent to adopt; if none exists it creates a
+// fresh one.
+func (s *ManagedAgentsSpawner) reconcileAgent(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *AgentSpec,
 ) (AgentHandle, error) {
-	matches, err := s.listOrchestraAgents(ctx, spec.Project, spec.Role, key)
+	candidate, err := s.findAdoptableAgent(ctx, spec, key)
 	if err != nil {
 		return AgentHandle{}, err
 	}
+	if candidate == nil {
+		return s.createAgent(ctx, key, hash, spec)
+	}
+	return s.adoptAgent(ctx, key, hash, spec, candidate)
+}
 
+// findAdoptableAgent scans MA pages (bounded by MaxListPages) for orchestra-
+// tagged agents matching key. Returns nil when none exist; when multiple
+// candidates exist the most recently updated one is returned and a warning is
+// logged so operators can clean up duplicates.
+func (s *ManagedAgentsSpawner) findAdoptableAgent(
+	ctx context.Context,
+	spec *AgentSpec,
+	key string,
+) (*anthropic.BetaManagedAgentsAgent, error) {
+	matches, err := s.listOrchestraAgents(ctx, spec.Project, spec.Role, key)
+	if err != nil {
+		return nil, err
+	}
 	switch len(matches) {
 	case 0:
-		created, err := s.agents.New(ctx, toAgentCreateParams(spec, key))
-		if err != nil {
-			return AgentHandle{}, err
-		}
-		s.logger.Info("agent created", "key", key, "agent_id", created.ID)
-		if err := s.putAgentRecord(ctx, key, hash, spec, created); err != nil {
-			s.logger.Error("failed to cache created managed agent", "key", key, "agent_id", created.ID, "error", err)
-			return AgentHandle{}, err
-		}
-		return handleFromMAAgent(created), nil
+		return nil, nil
 	case 1:
-		return s.adoptSingleAgent(ctx, key, hash, spec, &matches[0])
+		return &matches[0], nil
 	default:
-		sort.Slice(matches, func(i, j int) bool { return matches[i].UpdatedAt.After(matches[j].UpdatedAt) })
-		s.logger.Warn("multiple orchestra-tagged MA agents match key; adopting most recently updated", "key", key, "match_ids", agentIDs(matches))
-		return s.adoptSingleAgent(ctx, key, hash, spec, &matches[0])
+		sort.Slice(matches, func(i, j int) bool {
+			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
+		})
+		s.logger.Warn("multiple orchestra-tagged MA agents match key; adopting most recently updated",
+			"key", key, "match_ids", agentIDs(matches))
+		return &matches[0], nil
 	}
 }
 
-func (s *ManagedAgentsSpawner) adoptSingleAgent(
+// createAgent provisions a brand-new MA agent and writes the cache record.
+func (s *ManagedAgentsSpawner) createAgent(
+	ctx context.Context,
+	key string,
+	hash string,
+	spec *AgentSpec,
+) (AgentHandle, error) {
+	created, err := s.agents.New(ctx, toAgentCreateParams(spec, key))
+	if err != nil {
+		return AgentHandle{}, err
+	}
+	s.logger.Info("agent created", "key", key, "agent_id", created.ID)
+	if err := s.putAgentRecord(ctx, key, hash, spec, created); err != nil {
+		s.logger.Error("failed to cache created managed agent", "key", key, "agent_id", created.ID, "error", err)
+		return AgentHandle{}, err
+	}
+	return handleFromMAAgent(created), nil
+}
+
+// adoptAgent takes over an existing orchestra-tagged MA agent. If the agent's
+// current spec hash matches our desired hash we simply record it; otherwise we
+// push an Update to bring it in line before recording.
+func (s *ManagedAgentsSpawner) adoptAgent(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *AgentSpec,
 	agent *anthropic.BetaManagedAgentsAgent,
 ) (AgentHandle, error) {
-	adoptHash, ok := hashFromMAAgent(agent)
-	if ok && adoptHash == hash {
+	adoptHash, err := hashFromMAAgent(agent)
+	if err != nil {
+		return AgentHandle{}, err
+	}
+	if adoptHash == hash {
 		s.logger.Debug("agent adopted", "key", key, "agent_id", agent.ID)
 		if err := s.putAgentRecord(ctx, key, hash, spec, agent); err != nil {
 			return AgentHandle{}, err
@@ -276,13 +395,18 @@ func (s *ManagedAgentsSpawner) adoptSingleAgent(
 	if err != nil {
 		return AgentHandle{}, err
 	}
-	s.logger.Info("adopted agent updated to match spec", "key", key, "agent_id", updated.ID, "new_version", updated.Version)
+	s.logger.Info("adopted agent updated to match spec",
+		"key", key, "agent_id", updated.ID, "new_version", updated.Version)
 	if err := s.putAgentRecord(ctx, key, hash, spec, updated); err != nil {
 		return AgentHandle{}, err
 	}
 	return handleFromMAAgent(updated), nil
 }
 
+// listOrchestraAgents pages through MA agents (up to MaxListPages) and returns
+// every non-archived match for the given key. Unlike a typical "find first"
+// scan, this collects all matches so adoptable duplicates on later pages are
+// visible to findAdoptableAgent's dedup warning.
 func (s *ManagedAgentsSpawner) listOrchestraAgents(
 	ctx context.Context,
 	project string,
@@ -305,7 +429,7 @@ func (s *ManagedAgentsSpawner) listOrchestraAgents(
 				matches = append(matches, *agent)
 			}
 		}
-		if len(matches) > 0 || page.NextPage == "" {
+		if page.NextPage == "" {
 			return matches, nil
 		}
 		params.Page = param.NewOpt(page.NextPage)
@@ -323,28 +447,14 @@ func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSp
 	if err != nil {
 		return EnvHandle{}, err
 	}
-	hash := envSpecHash(&spec)
-
-	lockCtx, cancel := context.WithTimeout(ctx, s.cfg.EnvLockTimeout)
-	defer cancel()
+	hash, err := envSpecHash(&spec)
+	if err != nil {
+		return EnvHandle{}, fmt.Errorf("%w: %v", store.ErrInvalidArgument, err)
+	}
 
 	var handle EnvHandle
-	err = s.store.WithEnvLock(lockCtx, key, func(ctx context.Context) error {
-		rec, found, err := s.store.GetEnv(ctx, key)
-		if err != nil {
-			return err
-		}
-		if found {
-			h, resolved, err := s.resolveEnvFromCache(ctx, key, hash, &spec, rec)
-			if err != nil {
-				return err
-			}
-			if resolved {
-				handle = h
-				return nil
-			}
-		}
-		h, err := s.adoptOrCreateEnv(ctx, key, hash, &spec)
+	err = s.withEnvLock(ctx, key, func(ctx context.Context) error {
+		h, err := s.ensureEnvLocked(ctx, key, hash, &spec)
 		if err != nil {
 			return err
 		}
@@ -352,82 +462,147 @@ func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSp
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrLockTimeout) {
-			return EnvHandle{}, fmt.Errorf("%w: env key %q", err, key)
-		}
 		return EnvHandle{}, err
 	}
 	return handle, nil
 }
 
+func (s *ManagedAgentsSpawner) withEnvLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	lockCtx, cancel := context.WithTimeout(ctx, s.cfg.EnvLockTimeout)
+	defer cancel()
+	err := s.store.WithEnvLock(lockCtx, key, fn)
+	if errors.Is(err, store.ErrLockTimeout) {
+		return fmt.Errorf("%w: env key %q", err, key)
+	}
+	return err
+}
+
+func (s *ManagedAgentsSpawner) ensureEnvLocked(ctx context.Context, key, hash string, spec *EnvSpec) (EnvHandle, error) {
+	rec, found, err := s.store.GetEnv(ctx, key)
+	if err != nil {
+		return EnvHandle{}, err
+	}
+	if found {
+		handle, err := s.resolveEnvFromCache(ctx, key, hash, spec, rec)
+		if err != nil {
+			return EnvHandle{}, err
+		}
+		if handle != nil {
+			return *handle, nil
+		}
+	}
+	return s.reconcileEnv(ctx, key, hash, spec)
+}
+
+// resolveEnvFromCache mirrors resolveAgentFromCache for environments. The one
+// structural difference: the MA API cannot update an environment in place, so
+// drift triggers archive-and-recreate via replaceEnv.
 func (s *ManagedAgentsSpawner) resolveEnvFromCache(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *EnvSpec,
 	rec *store.EnvRecord,
-) (EnvHandle, bool, error) {
+) (*EnvHandle, error) {
 	env, err := s.environments.Get(ctx, rec.EnvID, anthropic.BetaEnvironmentGetParams{})
 	switch {
-	case isMAStatus(err, http.StatusNotFound):
-		s.logger.Debug("cached environment missing; falling through to adopt", "key", key, "env_id", rec.EnvID)
-		return EnvHandle{}, false, nil
+	case IsAPIStatus(err, http.StatusNotFound):
+		s.logger.Debug("cached environment missing; falling through to reconcile", "key", key, "env_id", rec.EnvID)
+		return nil, nil
 	case err != nil:
-		return EnvHandle{}, false, err
+		return nil, err
 	case isEnvArchived(env):
-		s.logger.Debug("cached environment archived; falling through to adopt", "key", key, "env_id", rec.EnvID)
-		return EnvHandle{}, false, nil
-	case rec.SpecHash == hash:
-		s.logger.Debug("environment cache hit", "key", key, "env_id", env.ID)
-		rec.LastUsed = s.now()
-		if err := s.store.PutEnv(ctx, key, rec); err != nil {
-			return EnvHandle{}, false, err
-		}
-		return handleFromMAEnv(env), true, nil
-	default:
+		s.logger.Debug("cached environment archived; falling through to reconcile", "key", key, "env_id", rec.EnvID)
+		return nil, nil
+	}
+
+	if rec.SpecHash != hash {
 		return s.replaceEnv(ctx, key, hash, spec, env)
 	}
+
+	s.logger.Debug("environment cache hit", "key", key, "env_id", env.ID)
+	rec.LastUsed = s.now()
+	if err := s.store.PutEnv(ctx, key, rec); err != nil {
+		return nil, err
+	}
+	handle := handleFromMAEnv(env)
+	return &handle, nil
 }
 
-func (s *ManagedAgentsSpawner) adoptOrCreateEnv(
+// reconcileEnv handles an env cache miss: adopt an existing orchestra-tagged
+// environment if one exists, otherwise create a new one.
+func (s *ManagedAgentsSpawner) reconcileEnv(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *EnvSpec,
 ) (EnvHandle, error) {
-	matches, err := s.listOrchestraEnvs(ctx, spec.Project, spec.Name, key)
+	candidate, err := s.findAdoptableEnv(ctx, spec, key)
 	if err != nil {
 		return EnvHandle{}, err
 	}
+	if candidate == nil {
+		return s.createEnv(ctx, key, hash, spec)
+	}
+	return s.adoptEnv(ctx, key, hash, spec, candidate)
+}
+
+func (s *ManagedAgentsSpawner) findAdoptableEnv(
+	ctx context.Context,
+	spec *EnvSpec,
+	key string,
+) (*anthropic.BetaEnvironment, error) {
+	matches, err := s.listOrchestraEnvs(ctx, spec.Project, spec.Name, key)
+	if err != nil {
+		return nil, err
+	}
 	switch len(matches) {
 	case 0:
-		created, err := s.environments.New(ctx, toEnvCreateParams(spec, key))
-		if err != nil {
-			return EnvHandle{}, err
-		}
-		s.logger.Info("environment created", "key", key, "env_id", created.ID)
-		if err := s.putEnvRecord(ctx, key, hash, spec, created); err != nil {
-			s.logger.Error("failed to cache created managed environment", "key", key, "env_id", created.ID, "error", err)
-			return EnvHandle{}, err
-		}
-		return handleFromMAEnv(created), nil
+		return nil, nil
 	case 1:
-		return s.adoptSingleEnv(ctx, key, hash, spec, &matches[0])
+		return &matches[0], nil
 	default:
-		sort.Slice(matches, func(i, j int) bool { return parseMATime(matches[i].UpdatedAt).After(parseMATime(matches[j].UpdatedAt)) })
-		s.logger.Warn("multiple orchestra-tagged MA environments match key; adopting most recently updated", "key", key, "match_ids", envIDs(matches))
-		return s.adoptSingleEnv(ctx, key, hash, spec, &matches[0])
+		sort.Slice(matches, func(i, j int) bool {
+			return parseMATime(matches[i].UpdatedAt).After(parseMATime(matches[j].UpdatedAt))
+		})
+		s.logger.Warn("multiple orchestra-tagged MA environments match key; adopting most recently updated",
+			"key", key, "match_ids", envIDs(matches))
+		return &matches[0], nil
 	}
 }
 
-func (s *ManagedAgentsSpawner) adoptSingleEnv(
+func (s *ManagedAgentsSpawner) createEnv(
+	ctx context.Context,
+	key string,
+	hash string,
+	spec *EnvSpec,
+) (EnvHandle, error) {
+	created, err := s.environments.New(ctx, toEnvCreateParams(spec, key))
+	if err != nil {
+		return EnvHandle{}, err
+	}
+	s.logger.Info("environment created", "key", key, "env_id", created.ID)
+	if err := s.putEnvRecord(ctx, key, hash, spec, created); err != nil {
+		s.logger.Error("failed to cache created managed environment", "key", key, "env_id", created.ID, "error", err)
+		return EnvHandle{}, err
+	}
+	return handleFromMAEnv(created), nil
+}
+
+// adoptEnv takes over an existing orchestra-tagged env. If the env's current
+// spec hash matches we record it as-is; if it drifted we archive and recreate
+// (the MA API does not support in-place env updates).
+func (s *ManagedAgentsSpawner) adoptEnv(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *EnvSpec,
 	env *anthropic.BetaEnvironment,
 ) (EnvHandle, error) {
-	adoptHash := hashFromMAEnv(env)
+	adoptHash, err := hashFromMAEnv(env)
+	if err != nil {
+		return EnvHandle{}, err
+	}
 	if adoptHash == hash {
 		s.logger.Debug("environment adopted", "key", key, "env_id", env.ID)
 		if err := s.putEnvRecord(ctx, key, hash, spec, env); err != nil {
@@ -435,41 +610,39 @@ func (s *ManagedAgentsSpawner) adoptSingleEnv(
 		}
 		return handleFromMAEnv(env), nil
 	}
-	return s.replaceEnvHandle(ctx, key, hash, spec, env)
+	handle, err := s.replaceEnv(ctx, key, hash, spec, env)
+	if err != nil {
+		return EnvHandle{}, err
+	}
+	return *handle, nil
 }
 
+// replaceEnv archives oldEnv and creates a fresh environment from spec. Used
+// when a cached or adopted environment has drifted from the desired spec —
+// the MA API archives environments instead of updating them in place, so
+// existing sessions keep running on the old env while new sessions use the
+// replacement.
 func (s *ManagedAgentsSpawner) replaceEnv(
 	ctx context.Context,
 	key string,
 	hash string,
 	spec *EnvSpec,
 	oldEnv *anthropic.BetaEnvironment,
-) (EnvHandle, bool, error) {
-	handle, err := s.replaceEnvHandle(ctx, key, hash, spec, oldEnv)
-	return handle, err == nil, err
-}
-
-func (s *ManagedAgentsSpawner) replaceEnvHandle(
-	ctx context.Context,
-	key string,
-	hash string,
-	spec *EnvSpec,
-	oldEnv *anthropic.BetaEnvironment,
-) (EnvHandle, error) {
-	// The Managed Agents API archives environments instead of updating them in place;
-	// existing sessions continue on their original environment while future sessions use the replacement.
+) (*EnvHandle, error) {
 	if _, err := s.environments.Archive(ctx, oldEnv.ID, anthropic.BetaEnvironmentArchiveParams{}); err != nil {
-		return EnvHandle{}, err
+		return nil, err
 	}
 	created, err := s.environments.New(ctx, toEnvCreateParams(spec, key))
 	if err != nil {
-		return EnvHandle{}, err
+		return nil, err
 	}
-	s.logger.Info("environment recreated due to spec drift", "key", key, "old_env_id", oldEnv.ID, "new_env_id", created.ID)
+	s.logger.Info("environment recreated due to spec drift",
+		"key", key, "old_env_id", oldEnv.ID, "new_env_id", created.ID)
 	if err := s.putEnvRecord(ctx, key, hash, spec, created); err != nil {
-		return EnvHandle{}, err
+		return nil, err
 	}
-	return handleFromMAEnv(created), nil
+	handle := handleFromMAEnv(created)
+	return &handle, nil
 }
 
 func (s *ManagedAgentsSpawner) listOrchestraEnvs(
@@ -494,7 +667,7 @@ func (s *ManagedAgentsSpawner) listOrchestraEnvs(
 				matches = append(matches, *env)
 			}
 		}
-		if len(matches) > 0 || page.NextPage == "" {
+		if page.NextPage == "" {
 			return matches, nil
 		}
 		params.Page = param.NewOpt(page.NextPage)
@@ -560,14 +733,42 @@ func agentCacheKey(spec *AgentSpec) (string, error) {
 	if spec.Project == "" || spec.Role == "" {
 		return "", fmt.Errorf("%w: agent spec requires project and role", store.ErrInvalidArgument)
 	}
-	return spec.Project + "__" + spec.Role, nil
+	if strings.Contains(spec.Project, cacheKeySeparator) || strings.Contains(spec.Role, cacheKeySeparator) {
+		return "", fmt.Errorf("%w: agent project/role must not contain %q", store.ErrInvalidArgument, cacheKeySeparator)
+	}
+	return spec.Project + cacheKeySeparator + spec.Role, nil
 }
 
 func envCacheKey(spec *EnvSpec) (string, error) {
 	if spec.Project == "" || spec.Name == "" {
 		return "", fmt.Errorf("%w: environment spec requires project and name", store.ErrInvalidArgument)
 	}
-	return spec.Project + "__" + spec.Name, nil
+	if strings.Contains(spec.Project, cacheKeySeparator) || strings.Contains(spec.Name, cacheKeySeparator) {
+		return "", fmt.Errorf("%w: environment project/name must not contain %q", store.ErrInvalidArgument, cacheKeySeparator)
+	}
+	return spec.Project + cacheKeySeparator + spec.Name, nil
+}
+
+// AgentCacheKeyFromMetadata reconstructs the cache key for an orchestra-tagged
+// MA agent from its metadata map. Returns ("", false) if the agent isn't
+// tagged as v2 orchestra-managed or is missing required tags.
+func AgentCacheKeyFromMetadata(metadata map[string]string) (string, bool) {
+	if metadata[orchestraMetadataVersion] != orchestraVersionV2 {
+		return "", false
+	}
+	project := metadata[orchestraMetadataProject]
+	role := metadata[orchestraMetadataRole]
+	if project == "" || role == "" {
+		return "", false
+	}
+	return project + cacheKeySeparator + role, true
+}
+
+// IsAPIStatus reports whether err is an Anthropic API error carrying the given
+// HTTP status code.
+func IsAPIStatus(err error, code int) bool {
+	var apiErr *anthropic.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == code
 }
 
 func normalizeAgentSpec(spec *AgentSpec) {
@@ -577,11 +778,6 @@ func normalizeAgentSpec(spec *AgentSpec) {
 
 func normalizeEnvSpec(spec *EnvSpec) {
 	spec.Project = firstNonEmpty(spec.Project, spec.Metadata[orchestraMetadataProject])
-}
-
-func isMAStatus(err error, code int) bool {
-	var apiErr *anthropic.Error
-	return errors.As(err, &apiErr) && apiErr.StatusCode == code
 }
 
 func taggedAgent(metadata map[string]string, project, role string) bool {

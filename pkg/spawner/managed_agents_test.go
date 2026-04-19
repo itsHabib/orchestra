@@ -2,6 +2,7 @@ package spawner
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -10,15 +11,16 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/pagination"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/itsHabib/orchestra/pkg/store"
 	"github.com/itsHabib/orchestra/pkg/store/memstore"
 )
 
 func TestSpecHash_Deterministic(t *testing.T) {
 	spec := hashTestSpec()
-	want := specHash(&spec)
+	want := mustSpecHash(t, &spec)
 	for range 1000 {
-		if got := specHash(&spec); got != want {
+		if got := mustSpecHash(t, &spec); got != want {
 			t.Fatalf("hash changed: got %s want %s", got, want)
 		}
 	}
@@ -26,7 +28,7 @@ func TestSpecHash_Deterministic(t *testing.T) {
 
 func TestSpecHash_ChangesOnEachField(t *testing.T) {
 	base := hashTestSpec()
-	baseHash := specHash(&base)
+	baseHash := mustSpecHash(t, &base)
 
 	cases := map[string]AgentSpec{
 		"model":         withAgentMutation(&base, func(s *AgentSpec) { s.Model = "claude-opus-4-7" }),
@@ -36,7 +38,7 @@ func TestSpecHash_ChangesOnEachField(t *testing.T) {
 		"skill_version": withAgentMutation(&base, func(s *AgentSpec) { s.Skills[0].Version = "2" }),
 	}
 	for name, spec := range cases {
-		if got := specHash(&spec); got == baseHash {
+		if got := mustSpecHash(t, &spec); got == baseHash {
 			t.Fatalf("%s mutation did not change hash", name)
 		}
 	}
@@ -46,8 +48,18 @@ func TestSpecHash_MetadataIgnored(t *testing.T) {
 	base := hashTestSpec()
 	mutated := base
 	mutated.Metadata = map[string]string{"owner": "someone-else"}
-	if got, want := specHash(&mutated), specHash(&base); got != want {
+	if got, want := mustSpecHash(t, &mutated), mustSpecHash(t, &base); got != want {
 		t.Fatalf("top-level metadata should be ignored: got %s want %s", got, want)
+	}
+}
+
+func TestSpecHash_SkillMetadataIgnoredBeyondType(t *testing.T) {
+	base := hashTestSpec()
+	mutated := withAgentMutation(&base, func(s *AgentSpec) {
+		s.Skills[0].Metadata = map[string]string{"type": "custom", "owner": "team-b"}
+	})
+	if got, want := mustSpecHash(t, &mutated), mustSpecHash(t, &base); got != want {
+		t.Fatalf("skill metadata beyond type should not affect hash: got %s want %s", got, want)
 	}
 }
 
@@ -55,7 +67,7 @@ func TestSpecHash_SliceOrderMatters(t *testing.T) {
 	base := hashTestSpec()
 	reordered := base
 	reordered.Tools = []Tool{base.Tools[1], base.Tools[0]}
-	if got, want := specHash(&reordered), specHash(&base); got == want {
+	if got, want := mustSpecHash(t, &reordered), mustSpecHash(t, &base); got == want {
 		t.Fatal("reordered tools should change hash")
 	}
 }
@@ -77,7 +89,7 @@ func TestSpecHash_MapOrderIgnored(t *testing.T) {
 			InputSchema: map[string]any{"a": "one", "b": "two"},
 		}},
 	}
-	if got, want := specHash(&left), specHash(&right); got != want {
+	if got, want := mustSpecHash(t, &left), mustSpecHash(t, &right); got != want {
 		t.Fatalf("map order should not affect hash: got %s want %s", got, want)
 	}
 }
@@ -85,7 +97,7 @@ func TestSpecHash_MapOrderIgnored(t *testing.T) {
 func TestSpecHash_NormalizesPrompt(t *testing.T) {
 	nfc := AgentSpec{Model: "claude-sonnet-4-6", SystemPrompt: "caf\u00e9\na"}
 	nfd := AgentSpec{Model: "claude-sonnet-4-6", SystemPrompt: "cafe\u0301\r\na"}
-	if got, want := specHash(&nfd), specHash(&nfc); got != want {
+	if got, want := mustSpecHash(t, &nfd), mustSpecHash(t, &nfc); got != want {
 		t.Fatalf("prompt normalization mismatch: got %s want %s", got, want)
 	}
 }
@@ -114,7 +126,7 @@ func TestSpecHash_GoldenCases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := specHash(&tc.spec); got != tc.want {
+			if got := mustSpecHash(t, &tc.spec); got != tc.want {
 				t.Fatalf("got %s want %s", got, tc.want)
 			}
 		})
@@ -136,7 +148,7 @@ func TestEnsureAgent_FastPathCacheHit(t *testing.T) {
 		Role:      spec.Role,
 		AgentID:   "agent_cached",
 		Version:   3,
-		SpecHash:  specHash(&spec),
+		SpecHash:  mustSpecHash(t, &spec),
 		UpdatedAt: oldUsed,
 		LastUsed:  oldUsed,
 	}); err != nil {
@@ -205,7 +217,7 @@ func TestEnsureAgent_SpecDriftUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.SpecHash != specHash(&spec) || rec.Version != 2 {
+	if rec.SpecHash != mustSpecHash(t, &spec) || rec.Version != 2 {
 		t.Fatalf("cache not updated: %+v", rec)
 	}
 }
@@ -224,7 +236,7 @@ func TestEnsureAgent_404FallsThroughToAdopt(t *testing.T) {
 		Role:     spec.Role,
 		AgentID:  "agent_stale",
 		Version:  1,
-		SpecHash: specHash(&spec),
+		SpecHash: mustSpecHash(t, &spec),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +361,15 @@ func TestEnsureEnvironment_DriftArchivesOldCreatesNew(t *testing.T) {
 	if handle.ID == "env_old" {
 		t.Fatalf("expected replacement env, got %+v", handle)
 	}
+}
+
+func mustSpecHash(t *testing.T, spec *AgentSpec) string {
+	t.Helper()
+	h, err := specHash(spec)
+	if err != nil {
+		t.Fatalf("specHash: %v", err)
+	}
+	return h
 }
 
 func hashTestSpec() AgentSpec {
@@ -519,20 +540,20 @@ func (f *fakeAgentAPI) Update(_ context.Context, id string, params anthropic.Bet
 }
 
 //nolint:gocritic // fake API mirrors the SDK method shape used by production code.
-func (f *fakeAgentAPI) List(_ context.Context, _ anthropic.BetaAgentListParams, _ ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaManagedAgentsAgent], error) {
+func (f *fakeAgentAPI) List(_ context.Context, params anthropic.BetaAgentListParams, _ ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaManagedAgentsAgent], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listCalls++
-	idx := f.listCalls - 1
 	if len(f.listPages) == 0 {
 		return &pagination.PageCursor[anthropic.BetaManagedAgentsAgent]{}, nil
 	}
+	idx := fakePageIndex(params.Page)
 	if idx >= len(f.listPages) {
-		idx = len(f.listPages) - 1
+		return &pagination.PageCursor[anthropic.BetaManagedAgentsAgent]{}, nil
 	}
 	next := ""
-	if f.listCalls < len(f.listPages) {
-		next = "next"
+	if idx+1 < len(f.listPages) {
+		next = fakeCursor(idx + 1)
 	}
 	return &pagination.PageCursor[anthropic.BetaManagedAgentsAgent]{
 		Data:     f.listPages[idx],
@@ -619,23 +640,41 @@ func (f *fakeEnvAPI) Archive(_ context.Context, id string, _ anthropic.BetaEnvir
 }
 
 //nolint:gocritic // fake API mirrors the SDK method shape used by production code.
-func (f *fakeEnvAPI) List(_ context.Context, _ anthropic.BetaEnvironmentListParams, _ ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaEnvironment], error) {
+func (f *fakeEnvAPI) List(_ context.Context, params anthropic.BetaEnvironmentListParams, _ ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaEnvironment], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listCalls++
-	idx := f.listCalls - 1
 	if len(f.listPages) == 0 {
 		return &pagination.PageCursor[anthropic.BetaEnvironment]{}, nil
 	}
+	idx := fakePageIndex(params.Page)
 	if idx >= len(f.listPages) {
-		idx = len(f.listPages) - 1
+		return &pagination.PageCursor[anthropic.BetaEnvironment]{}, nil
 	}
 	next := ""
-	if f.listCalls < len(f.listPages) {
-		next = "next"
+	if idx+1 < len(f.listPages) {
+		next = fakeCursor(idx + 1)
 	}
 	return &pagination.PageCursor[anthropic.BetaEnvironment]{
 		Data:     f.listPages[idx],
 		NextPage: next,
 	}, nil
+}
+
+// fakeCursor / fakePageIndex translate a page index into the cursor string
+// the fake emits as NextPage. Production code threads this cursor back via
+// params.Page — without this plumbing a broken cursor would go undetected.
+func fakeCursor(idx int) string {
+	return fmt.Sprintf("page-%d", idx)
+}
+
+func fakePageIndex(page param.Opt[string]) int {
+	if !page.Valid() || page.Value == "" {
+		return 0
+	}
+	var idx int
+	if _, err := fmt.Sscanf(page.Value, "page-%d", &idx); err != nil {
+		return 0
+	}
+	return idx
 }
