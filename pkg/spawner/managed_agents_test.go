@@ -29,11 +29,11 @@ func TestSpecHash_ChangesOnEachField(t *testing.T) {
 	baseHash := specHash(&base)
 
 	cases := map[string]AgentSpec{
-		"model":         withAgentMutation(base, func(s *AgentSpec) { s.Model = "claude-opus-4-7" }),
-		"system":        withAgentMutation(base, func(s *AgentSpec) { s.SystemPrompt = "different" }),
-		"tool_name":     withAgentMutation(base, func(s *AgentSpec) { s.Tools[0].Name = "read" }),
-		"mcp_url":       withAgentMutation(base, func(s *AgentSpec) { s.MCPServers[0].URL = "https://example.net/mcp" }),
-		"skill_version": withAgentMutation(base, func(s *AgentSpec) { s.Skills[0].Version = "2" }),
+		"model":         withAgentMutation(&base, func(s *AgentSpec) { s.Model = "claude-opus-4-7" }),
+		"system":        withAgentMutation(&base, func(s *AgentSpec) { s.SystemPrompt = "different" }),
+		"tool_name":     withAgentMutation(&base, func(s *AgentSpec) { s.Tools[0].Name = "read" }),
+		"mcp_url":       withAgentMutation(&base, func(s *AgentSpec) { s.MCPServers[0].URL = "https://example.net/mcp" }),
+		"skill_version": withAgentMutation(&base, func(s *AgentSpec) { s.Skills[0].Version = "2" }),
 	}
 	for name, spec := range cases {
 		if got := specHash(&spec); got == baseHash {
@@ -144,7 +144,7 @@ func TestEnsureAgent_FastPathCacheHit(t *testing.T) {
 	}
 
 	agents := newFakeAgentAPI()
-	agents.agents["agent_cached"] = testMAAgent(spec, key, "agent_cached", 3)
+	agents.agents["agent_cached"] = testMAAgent(&spec, key, "agent_cached", 3)
 	now := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 	sp := newManagedAgentsSpawner(st, agents, newFakeEnvAPI(), withManagedAgentsClock(func() time.Time { return now }))
 
@@ -187,7 +187,8 @@ func TestEnsureAgent_SpecDriftUpdates(t *testing.T) {
 	}
 
 	agents := newFakeAgentAPI()
-	agents.agents["agent_cached"] = testMAAgent(withAgentMutation(spec, func(s *AgentSpec) { s.SystemPrompt = "old" }), key, "agent_cached", 1)
+	oldSpec := withAgentMutation(&spec, func(s *AgentSpec) { s.SystemPrompt = "old" })
+	agents.agents["agent_cached"] = testMAAgent(&oldSpec, key, "agent_cached", 1)
 	sp := newManagedAgentsSpawner(st, agents, newFakeEnvAPI())
 
 	handle, err := sp.EnsureAgent(ctx, spec)
@@ -231,7 +232,7 @@ func TestEnsureAgent_404FallsThroughToAdopt(t *testing.T) {
 	agents := newFakeAgentAPI()
 	agents.getErr["agent_stale"] = &anthropic.Error{StatusCode: http.StatusNotFound}
 	agents.listPages = [][]anthropic.BetaManagedAgentsAgent{{
-		testMAAgent(spec, key, "agent_adopted", 1),
+		testMAAgent(&spec, key, "agent_adopted", 1),
 	}}
 	sp := newManagedAgentsSpawner(st, agents, newFakeEnvAPI())
 
@@ -322,7 +323,8 @@ func TestEnsureEnvironment_DriftArchivesOldCreatesNew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := testMAEnv(withEnvMutation(spec, func(s *EnvSpec) { s.Packages.Pip = []string{"old"} }), key, "env_old")
+	oldSpec := withEnvMutation(&spec, func(s *EnvSpec) { s.Packages.Pip = []string{"old"} })
+	old := testMAEnv(&oldSpec, key, "env_old")
 	if err := st.PutEnv(ctx, key, &store.EnvRecord{
 		Key:      key,
 		Project:  spec.Project,
@@ -390,8 +392,8 @@ func ensureTestEnvSpec() EnvSpec {
 	}
 }
 
-func withAgentMutation(spec AgentSpec, fn func(*AgentSpec)) AgentSpec {
-	next := spec
+func withAgentMutation(spec *AgentSpec, fn func(*AgentSpec)) AgentSpec {
+	next := *spec
 	next.Tools = append([]Tool(nil), spec.Tools...)
 	next.MCPServers = append([]MCPServer(nil), spec.MCPServers...)
 	next.Skills = append([]Skill(nil), spec.Skills...)
@@ -400,8 +402,8 @@ func withAgentMutation(spec AgentSpec, fn func(*AgentSpec)) AgentSpec {
 	return next
 }
 
-func withEnvMutation(spec EnvSpec, fn func(*EnvSpec)) EnvSpec {
-	next := spec
+func withEnvMutation(spec *EnvSpec, fn func(*EnvSpec)) EnvSpec {
+	next := *spec
 	next.Packages.Pip = append([]string(nil), spec.Packages.Pip...)
 	next.Packages.NPM = append([]string(nil), spec.Packages.NPM...)
 	next.Networking.AllowedHosts = append([]string(nil), spec.Networking.AllowedHosts...)
@@ -410,23 +412,23 @@ func withEnvMutation(spec EnvSpec, fn func(*EnvSpec)) EnvSpec {
 	return next
 }
 
-func testMAAgent(spec AgentSpec, key string, id string, version int64) anthropic.BetaManagedAgentsAgent {
+func testMAAgent(spec *AgentSpec, key string, id string, version int64) anthropic.BetaManagedAgentsAgent {
 	return anthropic.BetaManagedAgentsAgent{
 		ID:        id,
 		Name:      key,
 		Model:     anthropic.BetaManagedAgentsModelConfig{ID: spec.Model},
 		System:    spec.SystemPrompt,
-		Metadata:  agentMetadata(&spec),
+		Metadata:  agentMetadata(spec),
 		Version:   version,
 		UpdatedAt: time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC),
 	}
 }
 
-func testMAEnv(spec EnvSpec, key string, id string) anthropic.BetaEnvironment {
+func testMAEnv(spec *EnvSpec, key string, id string) anthropic.BetaEnvironment {
 	return anthropic.BetaEnvironment{
 		ID:       id,
 		Name:     key,
-		Metadata: envMetadata(&spec),
+		Metadata: envMetadata(spec),
 		Config: anthropic.BetaCloudConfig{
 			Packages: anthropic.BetaPackages{
 				Apt:   spec.Packages.APT,
