@@ -66,7 +66,7 @@ type ManagedAgentsSpawner struct {
 }
 
 // NewManagedAgentsSpawner returns a managed-agents spawner backed by the given store and SDK client.
-func NewManagedAgentsSpawner(st store.Store, client anthropic.Client, opts ...ManagedAgentsOption) *ManagedAgentsSpawner {
+func NewManagedAgentsSpawner(st store.Store, client *anthropic.Client, opts ...ManagedAgentsOption) *ManagedAgentsSpawner {
 	return newManagedAgentsSpawner(st, &client.Beta.Agents, &client.Beta.Environments, opts...)
 }
 
@@ -137,12 +137,12 @@ func withManagedAgentsClock(clock ManagedAgentsClock) ManagedAgentsOption {
 //
 //nolint:gocritic // Spawner interface intentionally takes AgentSpec by value.
 func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) (AgentHandle, error) {
-	spec = normalizeAgentSpec(spec)
-	key, err := agentCacheKey(spec)
+	normalizeAgentSpec(&spec)
+	key, err := agentCacheKey(&spec)
 	if err != nil {
 		return AgentHandle{}, err
 	}
-	hash := specHash(spec)
+	hash := specHash(&spec)
 
 	lockCtx, cancel := context.WithTimeout(ctx, s.cfg.AgentLockTimeout)
 	defer cancel()
@@ -318,12 +318,12 @@ func (s *ManagedAgentsSpawner) listOrchestraAgents(
 //
 //nolint:gocritic // Spawner interface intentionally takes EnvSpec by value.
 func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSpec) (EnvHandle, error) {
-	spec = normalizeEnvSpec(spec)
-	key, err := envCacheKey(spec)
+	normalizeEnvSpec(&spec)
+	key, err := envCacheKey(&spec)
 	if err != nil {
 		return EnvHandle{}, err
 	}
-	hash := envSpecHash(spec)
+	hash := envSpecHash(&spec)
 
 	lockCtx, cancel := context.WithTimeout(ctx, s.cfg.EnvLockTimeout)
 	defer cancel()
@@ -556,29 +556,27 @@ func (s *ManagedAgentsSpawner) ResumeSession(context.Context, string) (Session, 
 	return nil, ErrUnsupported
 }
 
-func agentCacheKey(spec AgentSpec) (string, error) {
+func agentCacheKey(spec *AgentSpec) (string, error) {
 	if spec.Project == "" || spec.Role == "" {
 		return "", fmt.Errorf("%w: agent spec requires project and role", store.ErrInvalidArgument)
 	}
 	return spec.Project + "__" + spec.Role, nil
 }
 
-func envCacheKey(spec EnvSpec) (string, error) {
+func envCacheKey(spec *EnvSpec) (string, error) {
 	if spec.Project == "" || spec.Name == "" {
 		return "", fmt.Errorf("%w: environment spec requires project and name", store.ErrInvalidArgument)
 	}
 	return spec.Project + "__" + spec.Name, nil
 }
 
-func normalizeAgentSpec(spec AgentSpec) AgentSpec {
+func normalizeAgentSpec(spec *AgentSpec) {
 	spec.Project = firstNonEmpty(spec.Project, spec.Metadata[orchestraMetadataProject])
 	spec.Role = firstNonEmpty(spec.Role, spec.Metadata[orchestraMetadataRole])
-	return spec
 }
 
-func normalizeEnvSpec(spec EnvSpec) EnvSpec {
+func normalizeEnvSpec(spec *EnvSpec) {
 	spec.Project = firstNonEmpty(spec.Project, spec.Metadata[orchestraMetadataProject])
-	return spec
 }
 
 func isMAStatus(err error, code int) bool {

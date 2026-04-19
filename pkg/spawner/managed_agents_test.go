@@ -16,9 +16,9 @@ import (
 
 func TestSpecHash_Deterministic(t *testing.T) {
 	spec := hashTestSpec()
-	want := specHash(spec)
+	want := specHash(&spec)
 	for range 1000 {
-		if got := specHash(spec); got != want {
+		if got := specHash(&spec); got != want {
 			t.Fatalf("hash changed: got %s want %s", got, want)
 		}
 	}
@@ -26,7 +26,7 @@ func TestSpecHash_Deterministic(t *testing.T) {
 
 func TestSpecHash_ChangesOnEachField(t *testing.T) {
 	base := hashTestSpec()
-	baseHash := specHash(base)
+	baseHash := specHash(&base)
 
 	cases := map[string]AgentSpec{
 		"model":         withAgentMutation(base, func(s *AgentSpec) { s.Model = "claude-opus-4-7" }),
@@ -36,7 +36,7 @@ func TestSpecHash_ChangesOnEachField(t *testing.T) {
 		"skill_version": withAgentMutation(base, func(s *AgentSpec) { s.Skills[0].Version = "2" }),
 	}
 	for name, spec := range cases {
-		if got := specHash(spec); got == baseHash {
+		if got := specHash(&spec); got == baseHash {
 			t.Fatalf("%s mutation did not change hash", name)
 		}
 	}
@@ -46,7 +46,7 @@ func TestSpecHash_MetadataIgnored(t *testing.T) {
 	base := hashTestSpec()
 	mutated := base
 	mutated.Metadata = map[string]string{"owner": "someone-else"}
-	if got, want := specHash(mutated), specHash(base); got != want {
+	if got, want := specHash(&mutated), specHash(&base); got != want {
 		t.Fatalf("top-level metadata should be ignored: got %s want %s", got, want)
 	}
 }
@@ -55,7 +55,7 @@ func TestSpecHash_SliceOrderMatters(t *testing.T) {
 	base := hashTestSpec()
 	reordered := base
 	reordered.Tools = []Tool{base.Tools[1], base.Tools[0]}
-	if got, want := specHash(reordered), specHash(base); got == want {
+	if got, want := specHash(&reordered), specHash(&base); got == want {
 		t.Fatal("reordered tools should change hash")
 	}
 }
@@ -77,7 +77,7 @@ func TestSpecHash_MapOrderIgnored(t *testing.T) {
 			InputSchema: map[string]any{"a": "one", "b": "two"},
 		}},
 	}
-	if got, want := specHash(left), specHash(right); got != want {
+	if got, want := specHash(&left), specHash(&right); got != want {
 		t.Fatalf("map order should not affect hash: got %s want %s", got, want)
 	}
 }
@@ -85,7 +85,7 @@ func TestSpecHash_MapOrderIgnored(t *testing.T) {
 func TestSpecHash_NormalizesPrompt(t *testing.T) {
 	nfc := AgentSpec{Model: "claude-sonnet-4-6", SystemPrompt: "caf\u00e9\na"}
 	nfd := AgentSpec{Model: "claude-sonnet-4-6", SystemPrompt: "cafe\u0301\r\na"}
-	if got, want := specHash(nfd), specHash(nfc); got != want {
+	if got, want := specHash(&nfd), specHash(&nfc); got != want {
 		t.Fatalf("prompt normalization mismatch: got %s want %s", got, want)
 	}
 }
@@ -114,7 +114,7 @@ func TestSpecHash_GoldenCases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := specHash(tc.spec); got != tc.want {
+			if got := specHash(&tc.spec); got != tc.want {
 				t.Fatalf("got %s want %s", got, tc.want)
 			}
 		})
@@ -125,7 +125,7 @@ func TestEnsureAgent_FastPathCacheHit(t *testing.T) {
 	ctx := context.Background()
 	st := memstore.New()
 	spec := ensureTestAgentSpec()
-	key, err := agentCacheKey(spec)
+	key, err := agentCacheKey(&spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestEnsureAgent_FastPathCacheHit(t *testing.T) {
 		Role:      spec.Role,
 		AgentID:   "agent_cached",
 		Version:   3,
-		SpecHash:  specHash(spec),
+		SpecHash:  specHash(&spec),
 		UpdatedAt: oldUsed,
 		LastUsed:  oldUsed,
 	}); err != nil {
@@ -171,7 +171,7 @@ func TestEnsureAgent_SpecDriftUpdates(t *testing.T) {
 	ctx := context.Background()
 	st := memstore.New()
 	spec := ensureTestAgentSpec()
-	key, err := agentCacheKey(spec)
+	key, err := agentCacheKey(&spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestEnsureAgent_SpecDriftUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.SpecHash != specHash(spec) || rec.Version != 2 {
+	if rec.SpecHash != specHash(&spec) || rec.Version != 2 {
 		t.Fatalf("cache not updated: %+v", rec)
 	}
 }
@@ -213,7 +213,7 @@ func TestEnsureAgent_404FallsThroughToAdopt(t *testing.T) {
 	ctx := context.Background()
 	st := memstore.New()
 	spec := ensureTestAgentSpec()
-	key, err := agentCacheKey(spec)
+	key, err := agentCacheKey(&spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestEnsureAgent_404FallsThroughToAdopt(t *testing.T) {
 		Role:     spec.Role,
 		AgentID:  "agent_stale",
 		Version:  1,
-		SpecHash: specHash(spec),
+		SpecHash: specHash(&spec),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestEnsureEnvironment_DriftArchivesOldCreatesNew(t *testing.T) {
 	ctx := context.Background()
 	st := memstore.New()
 	spec := ensureTestEnvSpec()
-	key, err := envCacheKey(spec)
+	key, err := envCacheKey(&spec)
 	if err != nil {
 		t.Fatal(err)
 	}

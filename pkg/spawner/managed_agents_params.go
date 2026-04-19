@@ -51,7 +51,7 @@ func toEnvCreateParams(spec *EnvSpec, key string) anthropic.BetaEnvironmentNewPa
 
 func agentModelParam(model string) anthropic.BetaManagedAgentsModelConfigParams {
 	return anthropic.BetaManagedAgentsModelConfigParams{
-		ID:    anthropic.BetaManagedAgentsModel(model),
+		ID:    model,
 		Speed: anthropic.BetaManagedAgentsModelConfigParamsSpeedStandard,
 	}
 }

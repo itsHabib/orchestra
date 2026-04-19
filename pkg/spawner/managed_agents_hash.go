@@ -23,7 +23,7 @@ type canonicalEnvSpec struct {
 	Networking NetworkSpec `json:"networking"`
 }
 
-func specHash(spec AgentSpec) string {
+func specHash(spec *AgentSpec) string {
 	canon := canonicalAgentSpec{
 		Model:      spec.Model,
 		System:     normalizePrompt(spec.SystemPrompt),
@@ -34,7 +34,7 @@ func specHash(spec AgentSpec) string {
 	return hashCanonical(canon)
 }
 
-func envSpecHash(spec EnvSpec) string {
+func envSpecHash(spec *EnvSpec) string {
 	canon := canonicalEnvSpec{
 		Packages:   canonicalPackages(&spec.Packages),
 		Networking: canonicalNetwork(spec.Networking),
@@ -165,7 +165,7 @@ func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, bool) {
 		MCPServers:   mcpServersFromMAAgent(agent.MCPServers),
 		Skills:       skillsFromMAAgent(agent.Skills),
 	}
-	return specHash(spec), true
+	return specHash(&spec), true
 }
 
 func toolsFromMAAgent(tools []anthropic.BetaManagedAgentsAgentToolUnion) []Tool {
@@ -241,5 +241,5 @@ func hashFromMAEnv(env *anthropic.BetaEnvironment) string {
 			AllowPackageManagers: env.Config.Networking.AllowPackageManagers,
 		},
 	}
-	return envSpecHash(spec)
+	return envSpecHash(&spec)
 }
