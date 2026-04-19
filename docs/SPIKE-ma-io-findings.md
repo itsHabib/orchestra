@@ -1,6 +1,6 @@
 # Spike findings: Managed Agents I/O model
 
-Status: **Complete (Q1/Q2 resolved; Q3 deferred to a second pass)**
+Status: **Complete (Q1/Q2/Q7 resolved; Q3 resolved from docs)**
 Date run: 2026-04-18
 Harness: [`docs/spike-harness/`](./spike-harness/) against `anthropic-sdk-go v1.37.0`
 Evidence: [`docs/spike-output/ma-io/`](./spike-output/ma-io/) — raw request/response JSON per test. Retained for verifiability; safe to delete at any point (the harness can regenerate it, and the findings in this doc stand on their own).
@@ -13,7 +13,7 @@ The design's §9.6 artifact flow — "team A writes to `/workspace/out/`, orches
 
 The correct artifact model is inverted: **artifacts flow via the session's `github_repository` resource, not the Files API.** Agents are told to commit + push to a feature branch; orchestra reads the resulting branch/commit SHA through the GitHub API and mounts the same repo on downstream sessions checked out to that branch. The Files API is still useful for small binary inputs, but it is not the primary artifact medium.
 
-One dependency remains unverified: **vault-injected credentials** (`vault_ids` on session creation) are assumed to surface `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` inside the container. A throwaway vault test is the final gate before P1.4.
+The originally-planned vault probe (Q7) turned out to be unnecessary: the platform docs settle it. **Vaults are MCP-auth-only** — every credential binds to an `mcp_server_url` and is injected at the Anthropic MCP gateway, never into the container. GitHub-push auth instead flows through `resources[].authorization_token` on the `github_repository` session resource (a raw PAT, write-only at the API layer, rotatable via `Sessions.Resources.Update`; GitHub repos are cached across sessions that reuse the same URL). See §Q7 below for quotes + sources. No open gates remain.
 
 ---
 
@@ -78,6 +78,43 @@ The recommended repo I/O model pending follow-up verification:
 
 ---
 
+## Q7 — Vault credential mechanics
+
+**Answer: Not applicable — vaults are MCP-auth-only.** No live probe needed; the platform docs resolve this.
+
+**Evidence — [vaults docs](https://platform.claude.com/docs/en/managed-agents/vaults):**
+
+> "Each credential binds to a single `mcp_server_url`. When the agent connects to an MCP server at session runtime, the API matches the server URL against active credentials on the referenced vault and injects the token."
+
+Only two auth types exist, `mcp_oauth` and `static_bearer`, both with mandatory `mcp_server_url`. There is no env-var or filesystem mechanism; the token is injected at the Anthropic MCP gateway, outside the container.
+
+**The actual `git push` credential path** is `resources[].authorization_token` on each `github_repository` resource. From the [GitHub docs](https://platform.claude.com/docs/en/managed-agents/github):
+
+> "The `resources[].authorization_token` authenticates the repository clone operation and is not echoed in API responses."
+
+Properties worth knowing:
+
+- **Write-only at the API layer.** Never returned in responses.
+- **Rotatable mid-session** via `POST /v1/sessions/{id}/resources/{resource_id}` — useful for long-lived sessions spanning PAT-rotation windows.
+- **Repos are cached across sessions that reuse the same URL** → fan-out-heavy tiers start faster on warm caches.
+- **Scopes:** `repo` for private repos or `public_repo` for public; same scope covers issue + PR creation if the agent drives them.
+- **Two GitHub layers are independent.** The `github_repository` resource (filesystem clone + push) and the GitHub MCP server at `https://api.githubcopilot.com/mcp/` (PR-creation tools) are separate. Orchestra can use just the resource (for the default host-side PR-open path) or both (if agents open PRs themselves via the MCP).
+
+**Consequential facts from adjacent docs:**
+
+- **MCP toolsets default to `permission_policy: always_ask`** ([permission-policies docs](https://platform.claude.com/docs/en/managed-agents/permission-policies)). If orchestra ever opts into GitHub-MCP-driven PR creation, it must explicitly set `always_allow` on the `mcp_toolset` entry, otherwise every tool call parks the session at `stop_reason: requires_action` awaiting `user.tool_confirmation`.
+- **Invalid MCP credentials don't fail session creation** — a `session.error` event is emitted and retries happen on the next `idle → running` transition ([mcp-connector docs](https://platform.claude.com/docs/en/managed-agents/mcp-connector)). Orchestra needs to watch for this event type in the engine loop.
+
+**Design impact (folded in; see DESIGN-v2.md amendments):**
+
+- §9.6 step 1: auth source flipped from `vault_ids` → `resources[].authorization_token`.
+- §12.2: `vault_ids` dropped from required-under-`managed_agents` to optional; new `github_token` source priority (env → orchestra config → error) added.
+- §13 P1.0.5: killed as a live-probe chapter; marked resolved-from-docs.
+- §14 Q7: marked resolved.
+- §14 Q8: clarified that MCP-path PR creation needs the `always_allow` override.
+
+---
+
 ## Proposed amendments to DESIGN-v2.md
 
 ### §9.6 — Artifact flow (rewrite, not patch)
@@ -129,7 +166,7 @@ Remove the `artifacts[]` field. Keep `repository_artifacts[]`. Add `base_sha` al
 ### §13 phase ordering
 
 - P1.5 ("Files API integration") is **deleted**. Its work absorbs into a renamed P1.5 — *"Repo-backed artifact flow"* — which wires `github_repository` resources, branch-head resolution via GitHub API, and downstream session remount.
-- **New P1.0.5 (prerequisite):** vault behavior confirmation. 1-hour task, one live test: create a vault via the Claude UI with a test `ANTHROPIC_API_KEY`, create a session with that vault's ID, probe the container for the key. If present → green, proceed. If not → second design amendment to explicitly use `authorization_token` on the `github_repository` resource itself (in-memory only, see §8 `ResourceRef`).
+- **~~New P1.0.5 (prerequisite): vault behavior confirmation.~~** **Resolved from docs (see §Q7 above); no live probe needed.** The `github_repository.authorization_token` path is the design's default, not a fallback.
 
 ### §14 open questions
 
@@ -139,14 +176,14 @@ Remove the `artifacts[]` field. Keep `repository_artifacts[]`. Add `base_sha` al
 - **Q4 (cost delta vs `claude -p`):** unchanged.
 - **Q5 (prompt builder scope):** narrows — the "artifact publish" prompt section is now a fixed git-commit-and-push instruction, not a branching "upload via X" instruction. Simpler than the design assumed.
 - **Q6 (repo artifact source of truth):** **resolved** — GitHub API is the source of truth, branch + commit SHA + base SHA.
-- **New Q7 (vault mechanics):** how exactly does `vault_ids` surface credentials? Env var? File under `/run/secrets/`? SDK-side auth only? The follow-up spike answers this.
+- **~~New Q7 (vault mechanics):~~** **Resolved from docs — vaults are MCP-auth-only, every credential binds to an `mcp_server_url`, nothing surfaces inside the container.** `github_repository.authorization_token` is the actual git-push credential path. See §Q7 above.
 - **New Q8 (PR creation):** who opens PRs — orchestra host-side via the GitHub API, or the agent itself? Recommended: orchestra, so PR creation is atomic with run completion and can be gated by a config flag.
 
 ---
 
 ## Recommended next steps
 
-1. **Vault confirmation spike (task #8).** 15 minutes of live testing once the user creates a vault in the Claude UI with a test key.
+1. **~~Vault confirmation spike.~~** Resolved from docs — see §Q7 above. No live probe needed.
 2. **Amend DESIGN-v2.md §9.6 / §5 D5 / §10.2 / §12.2 / §13 / §14** with the diffs above. This should be a single follow-up commit.
 3. **Unblock P1.4.** With the pivoted §9.6, P1.4 becomes "StartSession + Events + Send + watchdog" with no Files API work. P1.5 ("Repo-backed artifact flow") is the new critical path.
 4. **Clean up.** The spike env and agent are live on the account:

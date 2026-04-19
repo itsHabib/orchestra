@@ -40,6 +40,23 @@ None of these are required for a DAG to run. All of them are user-opt-in.
 
 ---
 
+## Simpler alternative to consider first: custom tools
+
+MA supports host-executed **custom tools** declared directly on the agent config (type `custom`, with an `input_schema`). The agent emits `agent.custom_tool_use`; orchestra runs the logic host-side; orchestra replies with `user.custom_tool_result`. Same host-side interception story as MCP, minus the server.
+
+For an MVP of the tools sketched below (`publish_artifact`, `signal_progress`, `request_human_input`), custom tools are the lower-complexity starting point:
+
+- No second process or HTTP endpoint to run.
+- No vault / MCP-auth plumbing.
+- Declared per agent, so teams opt in or out individually.
+- Same `Workspace.UpdateTeamState` funnel writes state on disk.
+
+When would an MCP server beat custom tools? When tools want to be reused across agent configs, when the tool surface becomes large enough that a protocol boundary helps, or when we want to offer the same tools to third-party MA consumers outside orchestra. None of those apply for a v1 add-on.
+
+**Gotcha either way:** MCP toolsets default to `permission_policy: always_ask` (agent toolset defaults to `always_allow`). If we go the MCP route, orchestra must explicitly set `always_allow` on its own `mcp_toolset` entry — otherwise every orchestra-tool call parks the session at `stop_reason: requires_action` waiting for a `user.tool_confirmation`, and orchestra would have to auto-confirm in a loop. Custom tools have no such policy layer; they just execute host-side.
+
+---
+
 ## Architectural shape
 
 - **Sibling package or repo.** Lives in `pkg/orchestra-mcp/` (sub-package of the orchestra Go module) or `github.com/itsHabib/orchestra-mcp` (separate repo). Either way, importable by the orchestra binary but not pulled in unless the user enables it.

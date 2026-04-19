@@ -3,7 +3,7 @@
 Status: **Proposed (spike complete 2026-04-18; amended)**
 Owner: @itsHabib
 Last updated: 2026-04-18
-Spike: [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md) — T1/T3/T4 executed live against MA (see `docs/spike-output/ma-io/` for raw evidence). Q1 answered negatively — the Files API has no session-scoped view of container-written files — and §5 D5, §9.6, §10, §12.2, §13, §14, §16 were rewritten accordingly. The artifact medium pivoted from Files API to GitHub. One open thread: vault credential injection (`vault_ids`), deferred to a 15-min follow-up probe before P1.4.
+Spike: [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md) — T1/T3/T4 executed live against MA (see `docs/spike-output/ma-io/` for raw evidence). Q1 answered negatively — the Files API has no session-scoped view of container-written files — and §5 D5, §9.6, §10, §12.2, §13, §14, §16 were rewritten accordingly. The artifact medium pivoted from Files API to GitHub. Q7 (credential injection) resolved from platform docs on 2026-04-18: vaults are MCP-auth-only and never reach the container; `github_repository` resources carry auth directly via `resources[].authorization_token`. No open gates remain.
 
 > **TL;DR.** v2 introduces a second backend — `backend: managed_agents` — that runs each DAG team as a Claude Managed Agents (MA) session. The existing `backend: local` (spawns `claude -p` subprocesses, supports team-with-members + coordinator + file-bus) is **unchanged**. The MA backend is deliberately narrower: DAG orchestration only. No members, no coordinator, no cross-team messaging. What MA gives us in return is durable cloud sessions, native steering, managed container infra, and a cleaner path to an embeddable Go SDK.
 >
@@ -81,7 +81,7 @@ Key implications for our design:
 2. **Steering is a real primitive.** Human interventions can be direct `user.message` events — no polling needed.
 3. **Durability is server-side.** Orchestra stores `session_id`s; session state lives on Anthropic's infra. No daemon required for resume.
 4. **Repo I/O via `github_repository` session resources is the primary artifact path.** Team A's deliverable is a branch push; orchestra reads the branch head via the GitHub API; team B mounts the same repo checked out to A's branch. The Files API remains useful only for small host-side input uploads.
-5. **Credentials are injected via vaults.** Spike T4 + container probe confirmed `ANTHROPIC_API_KEY` is not in the container env by default, and no `anthropic` CLI is preinstalled. Vaults (passed via `vault_ids` on session creation) are the documented credential-injection path. A GitHub PAT in a vault is the prerequisite for step 4.
+5. **Credentials for `git push` come from the `github_repository` resource itself, not from vaults.** Spike T4 + container probe confirmed no Anthropic or GitHub creds are present in the container by default. Per the [GitHub docs](https://platform.claude.com/docs/en/managed-agents/github), each `github_repository` resource carries its own `authorization_token` (a raw PAT, write-only at the API, rotatable via `Sessions.Resources.Update`; repos are cached across sessions that reuse the same URL). Vaults are an adjacent primitive scoped to MCP-server authentication only — each credential binds to an `mcp_server_url` — so `vault_ids` only becomes relevant if an agent uses an MCP server that needs auth (e.g. the GitHub MCP for PR creation, see §9.6 and §14 Q8).
 6. **`callable_agents` is research preview** and gives us threads for one level of delegation. **We do not depend on it in v1** — the v2 MA backend is single-lead per team. Multi-level team hierarchy (members) stays on the local backend.
 
 ---
@@ -94,7 +94,7 @@ Key implications for our design:
 | **D2** | **Under `managed_agents`: one MA session per team, DAG-only.** `members:` and `coordinator:` are honored only under `local`; under MA they are ignored with a validation warning. | Keeps v1 scope small. Team-with-members needs MA threads (research preview, one-level-delegation cap). Coordinator needs real-time cross-session observation. Both are significant extra design surface; neither is on the critical path. |
 | **D3** | **`Spawner` is a Go interface.** v1 code (`internal/spawner/spawner.go:79-323`) is refactored into `LocalSubprocessSpawner`; `ManagedAgentsSpawner` is the new implementation. Both implement the same `Spawner` + `Session` interfaces. | Clean seam, idiomatic Go, mockable for tests, forward-compatible with future backends. |
 | **D4** | **Event contract is modeled on MA's shape** (typed union: agent message, thinking, tool use/result, session status, span). The `local` backend's implementation adapts `claude -p` stdout NDJSON upward into this shape (as its existing parser already does, see `internal/spawner/spawner.go:163-284`). | Preserves the expressiveness MA gives us. Lowest-common-denominator would defeat the migration. |
-| **D5** | **Artifacts flow through GitHub, not the Files API** (MA backend only). Each team is given a `github_repository` resource (auth from a vault). Teams commit and push to a feature branch; orchestra resolves the branch head via the GitHub API on `session.status_idle + end_turn` and records `repository_artifacts[]` (url, branch, base_sha, commit_sha) in `state.json`. Downstream teams mount the same `github_repository` checked out to the upstream branch. Small textual outputs continue to be inlined into downstream prompts from the final `agent.message`. | Spike T1/T3/T4 verified the Files API is not a viable artifact medium under MA: `Files.List(scope_id=session_id)` is rejected, no endpoint exposes container-produced files, and the agent has no credentials in-container by default. GitHub is the substrate the MA product implicitly assumes for code-shaped deliverables, and "commit it to a repo" is the cleanest path even for non-code artifacts. |
+| **D5** | **Artifacts flow through GitHub, not the Files API** (MA backend only). Each team is given a `github_repository` resource carrying its own `authorization_token` (a GitHub PAT supplied per-session by orchestra). Teams commit and push to a feature branch; orchestra resolves the branch head via the GitHub API on `session.status_idle + end_turn` and records `repository_artifacts[]` (url, branch, base_sha, commit_sha) in `state.json`. Downstream teams mount the same `github_repository` checked out to the upstream branch. Small textual outputs continue to be inlined into downstream prompts from the final `agent.message`. | Spike T1/T3/T4 verified the Files API is not a viable artifact medium under MA: `Files.List(scope_id=session_id)` is rejected, no endpoint exposes container-produced files, and the agent has no credentials in-container by default. GitHub is the substrate the MA product implicitly assumes for code-shaped deliverables, and "commit it to a repo" is the cleanest path even for non-code artifacts. |
 | **D6** | **Durable resume via `session_id`.** `.orchestra/state.json` records each team's `session_id` + `last_event_id`. `orchestra resume` reconnects to each live session, dedupes events by ID, rebuilds in-memory state, continues the DAG. | MA gives us server-side durability. We just need to remember the IDs. |
 | **D7** | **Agents and environments are cached orchestra resources,** keyed by project + role + content hash. Stored in `~/.config/orchestra/agents.json` and per-run `registry.json`. On spec drift, `Update` the agent (bumps MA version). | Avoids re-creating identical agents every run (hits MA rate limits and loses lineage). |
 | **D8** | **Human steering via native MA events.** `orchestra msg <team> "..."` sends `user.message`. `orchestra interrupt <team>` sends `user.interrupt`. No custom tools, no file-bus, no polling. | Simplest possible story. MA's steering is strong enough that we don't need to build our own. |
@@ -141,7 +141,7 @@ Shape of an MA-backend run:
 1. `orchestra run` loads `orchestra.yaml`, validates, builds DAG.
 2. For each team: `EnsureAgent` (create or reuse cached), `EnsureEnvironment` (one per project by default).
 3. Tier loop:
-   a. For each team in the tier concurrently: `StartSession` (with `vault_ids` and the team's `github_repository` resource attached), **open event stream first**, then send the initial `user.message` (built by the existing prompt injection code). Opening the stream before sending is required: MA only delivers events emitted *after* the stream is opened, so the send-first ordering loses the early `session.status_running` and initial `agent.thinking`/`agent.message` events.
+   a. For each team in the tier concurrently: `StartSession` (with the team's `github_repository` resource — carrying its own `authorization_token` — attached; `vault_ids` only if the agent has an MCP server that needs auth), **open event stream first**, then send the initial `user.message` (built by the existing prompt injection code). Opening the stream before sending is required: MA only delivers events emitted *after* the stream is opened, so the send-first ordering loses the early `session.status_running` and initial `agent.thinking`/`agent.message` events.
    b. Stream events; persist each to `.orchestra/logs/<team>.ndjson`; update in-memory state; atomically rewrite `.orchestra/state.json` on status-changing events.
    c. On `session.status_idle` with `stop_reason: end_turn`: extract textual summary from the final `agent.message`; resolve the team's expected feature branch via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`); record `{url, branch, base_sha, commit_sha}` in `repository_artifacts[]`; mark team complete. If no branch was pushed, the team is marked `failed` with `last_error: "no branch pushed"`.
 4. When all teams in a tier complete, proceed to next tier. Downstream teams start sessions with `github_repository` resources checked out to each upstream's recorded branch (multi-upstream → multiple mount points like `/workspace/upstream/<team-a>/`). Textual summaries are inlined into the downstream prompt as v1 already does.
@@ -350,7 +350,7 @@ Under the MA backend, cross-session artifact flow is mediated by **GitHub**, not
 
 #### Default flow (repo-backed deliverable)
 
-1. Each team is given a `github_repository` session resource pointing at the project's repo (or a scoped fork), mounted at `/workspace/repo`, checked out to the branch declared by the team's upstream dependencies (or `main` for tier-0 teams). Auth comes from a vault whose ID is declared in `backend.managed_agents.vault_ids`.
+1. Each team is given a `github_repository` session resource pointing at the project's repo (or a scoped fork), mounted at `/workspace/repo`, checked out to the branch declared by the team's upstream dependencies (or `main` for tier-0 teams). Auth comes from the resource's own `authorization_token` field (a GitHub PAT), sourced host-side per §12.2. The token is write-only at the API and rotatable mid-session via `Sessions.Resources.Update`. Repositories are cached across sessions that reuse the same URL, so fan-out-heavy tiers start faster on warm caches.
 2. The team's prompt includes, as a standard suffix: *"Your working copy of the repo is at `/workspace/repo`. Commit your changes on a new branch named `orchestra/<team>-<run-id>` and push. Do not open a PR. Report the branch name and the final commit SHA in your last message."*
 3. On `session.status_idle + stop_reason: end_turn`, orchestra resolves the branch head via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`), **not** by parsing the agent's prose. If the branch doesn't exist or is identical to its base, the team is marked `failed` with `last_error: "no branch pushed"`.
 4. Orchestra records `{url, branch, base_sha, commit_sha}` as a `repository_artifacts[]` entry in `state.json`. Optionally opens a PR via the GitHub API, behind a config flag — not on by default (see Q8).
@@ -371,9 +371,14 @@ Removed from the design:
 
 Repository artifacts (`repository_artifacts[]`) replace all of it. If a team genuinely needs to publish a non-repo binary (a rendered PDF, a compiled wheel), it does so by **committing the artifact to the repo** alongside the code — same branch/SHA tracking, no second code path.
 
-#### Open dependency
+#### PR creation
 
-This flow assumes vault credentials surface inside the session container (probably as an env var like `GITHUB_TOKEN`, but the mechanism is undocumented and unverified). Spike T4 confirmed that without a vault, no credentials are present. **Vault behavior is the one open verification before P1.4** — see §13 chapter P1.0.5.
+Two paths are available; orchestra picks one via `backend.managed_agents.open_pull_requests` (§12.2):
+
+- **Default (`false`): host-side.** Orchestra calls the GitHub API directly from the CLI process after a team pushes. Atomic with run completion; doesn't grant the agent extra GitHub permissions.
+- **Opt-in (`true`) via the GitHub MCP.** Declare `https://api.githubcopilot.com/mcp/` as an MCP server on the team's agent and supply vault-credentialed auth via `vault_ids` (a `static_bearer` credential bound to that URL). MCP toolsets default to `permission_policy: always_ask`; orchestra must explicitly set `always_allow` on the `mcp_toolset` entry, otherwise every PR-tool call will block the session on `stop_reason: requires_action` waiting for a `user.tool_confirmation`. See [permission-policies docs](https://platform.claude.com/docs/en/managed-agents/permission-policies).
+
+Both paths need the PAT to have `repo` scope for private repos or `public_repo` for public ones.
 
 ### 9.7 Teammates (members) and coordinator
 
@@ -524,12 +529,17 @@ backend:
         pip: ["httpx", "pydantic"]
         npm: ["express"]
         apt: []                 # git 2.43.0 is preinstalled (spike-confirmed); listing it here is a no-op
-    vault_ids: ["vault_..."]    # required for repo pushes; vault must hold the GitHub PAT (and ANTHROPIC_API_KEY if any team needs it)
     repository:                 # required for any team that produces a code-shaped artifact
       type: github_repository
       url: https://github.com/org/repo
       mount_path: /workspace/repo
-      # Auth comes from the vault above; no token field here.
+      # Auth: orchestra reads a GitHub PAT (priority: GITHUB_TOKEN env var →
+      # ~/.config/orchestra/config.json `github_token` → actionable error) and passes it
+      # per-session as resources[].authorization_token. The token is write-only at the API
+      # layer and never persisted to orchestra.yaml or state.json.
+    vault_ids: []               # optional — only needed if a team's agent declares an MCP server
+                                # requiring auth (e.g. the GitHub MCP for PR creation). Vaults
+                                # are MCP-auth-only; they do not surface inside the container.
     agent_pinning: auto         # "auto" (latest) | "pinned"
     open_pull_requests: false   # if true, orchestra opens a PR via the GitHub API per team-pushed branch on completion
 
@@ -561,9 +571,9 @@ A v1 config without the `backend:` block defaults to `backend.kind: local`. No m
 
 ### Phase 1: MA backend (blocking ship)
 
-Each chapter is a mergeable PR. The spike is complete (see [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md)); the one remaining gate before P1.4 is **P1.0.5 vault confirmation** — a 15-minute live probe.
+Each chapter is a mergeable PR. The spike is complete (see [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md)) and all open gates are resolved; P1.1 can start immediately.
 
-0. **P1.0.5 — Vault credential confirmation.** *Hard gate for P1.4+.* Create a vault via the Claude UI (or `Beta.Vault` if available in the SDK) holding a test `ANTHROPIC_API_KEY` and a test `GITHUB_TOKEN`. Create a session with `vault_ids: [<vault>]` and probe the container: are the secrets exposed as env vars (`env | grep ...`), as files under `/run/secrets/` or similar, or only via SDK-side auth that the container can't access? Outcome determines two things: (a) the prompt section instructing the agent to use `git push` / `curl` referencing the right env-var names, and (b) whether `Spawner.StartSession` needs to do anything beyond passing `vault_ids` through. If credentials are not surfaced into the container at all, fall back to `authorization_token` on the `github_repository` resource itself (see §8 `ResourceRef`) and re-amend the design accordingly. Estimated: 1 hour, including writing up the result.
+0. **~~P1.0.5 — Vault credential confirmation.~~** *Resolved from docs (2026-04-18); no live probe needed.* The [vaults docs](https://platform.claude.com/docs/en/managed-agents/vaults) state every credential in a vault binds to an `mcp_server_url` and is injected at the Anthropic MCP gateway — vaults never surface credentials inside the container. GitHub-push auth flows through `resources[].authorization_token` on the `github_repository` resource instead (see [GitHub docs](https://platform.claude.com/docs/en/managed-agents/github), §9.6, and §8 `ResourceRef`). P1.4+ is unblocked.
 1. **P1.1 — Spawner interface + relocate local backend.** Define `pkg/spawner.Spawner`, `Session`, `Event` union. Move `internal/spawner/` behind the interface as `pkg/spawner/local.go`. Migrate every call site that currently imports `github.com/itsHabib/orchestra/internal/spawner` (today: `cmd/run.go`, `cmd/spawn.go`, and any engine code in `cmd/` or a future `internal/engine/`) to the new package path. CLI keeps working with `backend: local` (default). Diff must be purely structural — zero behavior change, zero new tests required beyond what exists; `make test && make vet` green. *Spike-independent.*
 2. **P1.2 — Anthropic Go SDK wiring + smoke test.** Add `github.com/anthropics/anthropic-sdk-go` at a pinned tag in `go.mod`. Implement `orchestra env show` that creates and tears down an MA environment. This chapter also validates API-key sourcing and the beta header. *Spike-independent.*
 3. **P1.3 — `ManagedAgentsSpawner.EnsureAgent` + `EnsureEnvironment`.** Registry cache in `~/.config/orchestra/` with `gofrs/flock`. Spec-hash-based drift detection. List-and-adopt reconcile on cache miss (§9.1 step 4). `orchestra agents ls` / `prune` commands. Cross-platform concurrency test (spawn two goroutines both doing `EnsureAgent` on the same role; assert one creates, one adopts). *Spike-independent.*
@@ -614,8 +624,8 @@ Resolve during implementation; none block the design (except where noted).
 4. **Cost vs. `claude -p`.** MA uses API tokens; `claude -p` rides the user's subscription. Do a pilot run of 2–3 `examples/` under both backends during P1.10 and document the delta. If 3x+, add a `max_budget_usd` safeguard.
 5. **Prompt builder refactor scope.** Narrowed by the spike. Under MA, the artifact-publish prompt section is a fixed git-commit-and-push instruction (always the same shape: branch name `orchestra/<team>-<run-id>`, no PR opened by the agent). No branching on "upload via X." The prompt builder still needs a backend-aware `Capabilities` struct: `{HasFileBus, HasMembers, GitPushTarget}`, but `GitPushTarget` is just the upstream branch name resolved from dependencies. P1.1.5 chapter remains.
 6. **~~Repository artifact source of truth.~~** **Resolved.** GitHub API is the source of truth: branch + base_sha + commit_sha + (optional) pull_request_url, recorded by orchestra after `idle + end_turn`. Agent prose is never parsed.
-7. **Vault credential mechanics.** *Open. Hard gate for P1.4.* Spike T4 confirmed neither `ANTHROPIC_API_KEY` nor `GITHUB_TOKEN` are present in the container by default. The MA Claude UI exposes a credentials vault, and `vault_ids` on session creation is the documented hook. Unverified questions: are vault contents surfaced as env vars in the container, as files under a known path, or only via SDK-side auth? P1.0.5 (§13) closes this in ~1 hour of live testing.
-8. **PR creation.** Open. Recommended default: orchestra host-side via the GitHub API, gated by `backend.managed_agents.open_pull_requests` (default false). Atomic with run completion, easy to pause/resume, doesn't require giving the agent extra GitHub permissions. The agent only ever pushes a branch.
+7. **~~Vault credential mechanics.~~** **Resolved from docs (2026-04-18).** Vaults are MCP-auth-only: every credential binds to an `mcp_server_url` (only `mcp_oauth` and `static_bearer` auth types exist, both requiring the URL) and is injected at the Anthropic MCP gateway, never into the container. GitHub-push auth uses `resources[].authorization_token` directly on the `github_repository` resource — write-only at the API, rotatable via `Sessions.Resources.Update`, and cached across sessions that reuse the same URL. See [vaults docs](https://platform.claude.com/docs/en/managed-agents/vaults) and [GitHub docs](https://platform.claude.com/docs/en/managed-agents/github).
+8. **PR creation.** Open. Recommended default: orchestra host-side via the GitHub API, gated by `backend.managed_agents.open_pull_requests` (default false). Atomic with run completion, easy to pause/resume, doesn't require giving the agent extra GitHub permissions. The agent only ever pushes a branch. The alternative — declare the GitHub MCP (`https://api.githubcopilot.com/mcp/`) on the agent and let it open PRs — works but requires (a) a vault-credentialed `static_bearer` entry bound to that MCP URL and (b) setting `permission_policy: always_allow` on the `mcp_toolset` entry, since MCP toolsets default to `always_ask` and would otherwise block every tool call on `stop_reason: requires_action`.
 
 ---
 
@@ -660,10 +670,10 @@ Events not listed (multiagent thread events, outcome events) are persisted to th
 ## 17. Review checklist
 
 - [x] [SPIKE-ma-io.md](./SPIKE-ma-io.md) — completed; findings in [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md); §5 D5, §9.6, §10, §12.2, §13, §14, §16 amended (2026-04-18)
-- [ ] **P1.0.5 vault confirmation** (§13) — hard gate for P1.4
+- [x] ~~P1.0.5 vault confirmation~~ — resolved from docs (2026-04-18); vaults are MCP-only, GitHub auth via `resources[].authorization_token`
 - [ ] Spawner interface (§8) — sign-off on exported types
 - [ ] `state.json` schema (§10.2) — sign-off on `repository_artifacts[]` shape (no `artifacts[]`)
 - [ ] CLI surface (§12.1) — sign-off on new commands (including one-way `orchestra msg` behavior in §11)
-- [ ] Config schema (§12.2) — sign-off on `repository:` and `vault_ids` being effectively required under `managed_agents`, plus `open_pull_requests` default
+- [ ] Config schema (§12.2) — sign-off on `repository:` being required and `vault_ids` being optional (MCP-auth-only) under `managed_agents`, plus `open_pull_requests` default
 - [ ] Phase 1 ordering (§13) — confirm P1.5 ("Repo-backed artifact flow") replaces the deleted Files API chapter
 - [ ] Session exit lifecycle (§6 step 5) — confirm archive-by-default is the right call
