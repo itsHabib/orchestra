@@ -104,21 +104,15 @@ func (s *FileStore) ArchiveRun(ctx context.Context, runID string) error {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 
-	if runID == "" {
-		state, err := s.loadRunState()
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return nil
-			}
-			return err
-		}
-		runID = state.RunID
-	}
-	if runID == "" {
-		runID = time.Now().UTC().Format("20060102T150405Z")
+	resolved, err := s.resolveArchiveRunID(runID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
 	}
 
-	archiveDir := filepath.Join(s.workspacePath, "archive", safePathPart(runID))
+	archiveDir := filepath.Join(s.workspacePath, "archive", safePathPart(resolved))
 	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
 		return fmt.Errorf("creating archive directory: %w", err)
 	}
@@ -140,6 +134,25 @@ func (s *FileStore) ArchiveRun(ctx context.Context, runID string) error {
 		}
 	}
 	return nil
+}
+
+// resolveArchiveRunID returns the run ID to use as the archive directory
+// name. When the caller passed an explicit ID, it is used as-is. Otherwise
+// the active run's RunID is read; if that is also empty, a timestamp
+// stands in so the archive still has a unique path. Returns
+// store.ErrNotFound when there is no active run to archive.
+func (s *FileStore) resolveArchiveRunID(passed string) (string, error) {
+	if passed != "" {
+		return passed, nil
+	}
+	state, err := s.loadRunState()
+	if err != nil {
+		return "", err
+	}
+	if state.RunID != "" {
+		return state.RunID, nil
+	}
+	return time.Now().UTC().Format("20060102T150405Z"), nil
 }
 
 // AcquireRunLock takes a file-backed run lock for the workspace.

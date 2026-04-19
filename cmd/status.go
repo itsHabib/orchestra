@@ -30,25 +30,25 @@ var statusCmd = &cobra.Command{
 		}
 
 		state, err := ws.ReadState(context.Background())
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				fmt.Println()
-				fmt.Println("  No active run.")
-				fmt.Println()
-				return
-			}
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			fmt.Println()
+			fmt.Println("  No active run.")
+			fmt.Println()
+			return
+		case err != nil:
 			logger.Error("Failed to read state: %s", err)
 			os.Exit(1)
 		}
 
 		reg, err := ws.ReadRegistry()
-		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Println()
-				fmt.Println("  No active run.")
-				fmt.Println()
-				return
-			}
+		switch {
+		case os.IsNotExist(err):
+			fmt.Println()
+			fmt.Println("  No active run.")
+			fmt.Println()
+			return
+		case err != nil:
 			logger.Error("Failed to read registry: %s", err)
 			os.Exit(1)
 		}

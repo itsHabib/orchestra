@@ -89,10 +89,12 @@ func AcquireRunLock(ctx context.Context, path string, mode LockMode) (func(), er
 // ArchiveExistingRun moves a previous run's stateful workspace files under archive/.
 func ArchiveExistingRun(ctx context.Context, path string) error {
 	err := filestore.New(path).ArchiveRun(ctx, "")
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		return nil
+	default:
+		return err
 	}
-	return err
 }
 
 func (w *Workspace) registryPath() string { return filepath.Join(w.Path, "registry.json") }
