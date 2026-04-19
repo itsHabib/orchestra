@@ -412,7 +412,7 @@ func withEnvMutation(spec *EnvSpec, fn func(*EnvSpec)) EnvSpec {
 	return next
 }
 
-func testMAAgent(spec *AgentSpec, key string, id string, version int64) anthropic.BetaManagedAgentsAgent {
+func testMAAgent(spec *AgentSpec, key, id string, version int64) anthropic.BetaManagedAgentsAgent {
 	return anthropic.BetaManagedAgentsAgent{
 		ID:        id,
 		Name:      key,
@@ -424,7 +424,7 @@ func testMAAgent(spec *AgentSpec, key string, id string, version int64) anthropi
 	}
 }
 
-func testMAEnv(spec *EnvSpec, key string, id string) anthropic.BetaEnvironment {
+func testMAEnv(spec *EnvSpec, key, id string) anthropic.BetaEnvironment {
 	return anthropic.BetaEnvironment{
 		ID:       id,
 		Name:     key,
