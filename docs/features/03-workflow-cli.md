@@ -1,6 +1,6 @@
 # Feature: Workflow-first CLI surface
 
-Status: **Implemented**
+Status: **Shipped** (PR #7, commit 17ff4e2)
 Owner: @itsHabib
 
 ---

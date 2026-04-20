@@ -1,6 +1,6 @@
 # Feature: P1.3 — Registry cache (`EnsureAgent` / `EnsureEnvironment`)
 
-Status: **Proposed**
+Status: **Shipped** (PR #6, commit 3c6279c)
 Owner: @itsHabib
 Depends on: [00-store-interface.md](./00-store-interface.md)
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §9.1, §9.2, §13 phase P1.3.

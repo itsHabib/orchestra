@@ -1,8 +1,8 @@
 # Feature: P1.4 — MA session lifecycle (StartSession + Events + Send)
 
-Status: **Implemented in feature branch**
+Status: **Shipped** (PR #8, commit b56e066)
 Owner: @itsHabib
-Depends on: [00-store-interface.md](./00-store-interface.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md), P1.2 spawner scaffolding (existing in `pkg/spawner/`).
+Depends on: [00-store-interface.md](./00-store-interface.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md) (shipped), P1.2 spawner scaffolding (existing in `pkg/spawner/`).
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §6 (architecture), §8 (Spawner interface), §9.3 (`StartSession`), §9.4 (`Session.Events`), §10.2 (`state.json` schema), §13 phase P1.4, §16 (event mapping).
 Target: single-team end-to-end MA run producing a text-only deliverable. No repo resources, no resume, no steering.
 
