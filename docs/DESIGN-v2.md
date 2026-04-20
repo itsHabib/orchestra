@@ -2,8 +2,13 @@
 
 Status: **Proposed (spike complete 2026-04-18; amended)**
 Owner: @itsHabib
-Last updated: 2026-04-18
+Last updated: 2026-04-20
 Spike: [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md) — T1/T3/T4 executed live against MA (see `docs/spike-output/ma-io/` for raw evidence). Q1 answered negatively — the Files API has no session-scoped view of container-written files — and §5 D5, §9.6, §10, §12.2, §13, §14, §16 were rewritten accordingly. The artifact medium pivoted from Files API to GitHub. Q7 (credential injection) resolved from platform docs on 2026-04-18: vaults are MCP-auth-only and never reach the container; `github_repository` resources carry auth directly via `resources[].authorization_token`. No open gates remain.
+
+**Amendments (2026-04-20).**
+
+- **Package layout.** §7 (and D9's staging claim) revised: all new packages land under `internal/`, not `pkg/`. `pkg/` is off-limits until SDK extraction is real, scheduled work. See [features/02-pkg-to-internal.md](./features/02-pkg-to-internal.md).
+- **Phase ordering.** §13 revised: P1.6 text-only multi-team DAG (see [features/06-p16-multi-team-text-only.md](./features/06-p16-multi-team-text-only.md)) ships before P1.5 repo-backed artifact flow (see [features/05-p15-repo-artifact-flow.md](./features/05-p15-repo-artifact-flow.md)). Proves DAG orchestration under MA with upstream result summaries inlined into downstream prompts — no GitHub substrate needed for text deliverables. P1.5 layers GitHub on top for code-shaped deliverables.
 
 > **TL;DR.** v2 introduces a second backend — `backend: managed_agents` — that runs each DAG team as a Claude Managed Agents (MA) session. The existing `backend: local` (spawns `claude -p` subprocesses, supports team-with-members + coordinator + file-bus) is **unchanged**. The MA backend is deliberately narrower: DAG orchestration only. No members, no coordinator, no cross-team messaging. What MA gives us in return is durable cloud sessions, native steering, managed container infra, and a cleaner path to an embeddable Go SDK.
 >
@@ -98,7 +103,7 @@ Key implications for our design:
 | **D6** | **Durable resume via `session_id`.** `.orchestra/state.json` records each team's `session_id` + `last_event_id`. `orchestra resume` reconnects to each live session, dedupes events by ID, rebuilds in-memory state, continues the DAG. | MA gives us server-side durability. We just need to remember the IDs. |
 | **D7** | **Agents and environments are cached orchestra resources,** keyed by project + role + content hash. Stored in `~/.config/orchestra/agents.json` and per-run `registry.json`. On spec drift, `Update` the agent (bumps MA version). | Avoids re-creating identical agents every run (hits MA rate limits and loses lineage). |
 | **D8** | **Human steering via native MA events.** `orchestra msg <team> "..."` sends `user.message`. `orchestra interrupt <team>` sends `user.interrupt`. No custom tools, no file-bus, no polling. | Simplest possible story. MA's steering is strong enough that we don't need to build our own. |
-| **D9** | **Public Go SDK extraction is Phase 2**, not Phase 1. The code is organized during Phase 1 to make Phase 2 mechanical (new packages land under `pkg/` from the start), but the public surface isn't stabilized or documented until Phase 2. | Scope discipline. Ship the runtime first; package the library once it's proven. |
+| **D9** | **Public Go SDK extraction is Phase 2**, not Phase 1. ~~New packages land under `pkg/` from the start to make Phase 2 mechanical.~~ **Amended 2026-04-20:** new packages land under `internal/`; the `pkg/` → public-surface rename happens only when SDK extraction is real, scheduled work. See [features/02-pkg-to-internal.md](./features/02-pkg-to-internal.md). | Scope discipline: ship the runtime first, package the library once it's proven. The original pre-staging rationale assumed the rename cost was high; with fewer than a dozen packages and a single consumer, the rename is cheap and the fake-public-surface signal is worse than the eventual refactor. |
 
 ---
 
@@ -154,31 +159,35 @@ Shape of an MA-backend run:
 
 ## 7. Package layout
 
-Phase 1 targets this layout (final public surface is stabilized in Phase 2):
+**Amended 2026-04-20.** All new packages land under `internal/`, not `pkg/`. The prior version of this section staged future SDK-candidate packages under `pkg/` to make Phase 2 extraction mechanical; that staging has been reversed — with zero external consumers, publishing a stable-looking surface under `pkg/` costs more than the eventual rename saves. See [features/02-pkg-to-internal.md](./features/02-pkg-to-internal.md) for the full policy.
+
+Phase 1 target layout:
 
 ```
 orchestra/
 ├── cmd/                         # Cobra CLI
-├── pkg/                         # Public (Phase 2 stabilizes)
-│   ├── orchestra/               # Engine
-│   ├── config/
-│   ├── spawner/                 # Interface + backends
+├── internal/
+│   ├── orchestra/               # Engine (was pkg/orchestra in the prior draft)
+│   ├── config/                  # (was pkg/config)
+│   ├── spawner/                 # Interface + backends (was pkg/spawner)
 │   │   ├── spawner.go
 │   │   ├── event.go
-│   │   ├── local.go             # wraps internal/spawner (v1)
-│   │   └── managed_agents.go
-│   ├── state/
-│   └── dag/                     # moved from internal/
-├── internal/
-│   ├── prompt/                  # renamed from injection/
+│   │   ├── local.go             # local subprocess backend
+│   │   └── managed_agents.go    # Managed Agents backend
+│   ├── store/                   # Persistence interface + filestore/memstore (was pkg/store)
+│   ├── dag/
+│   ├── run/                     # Run-lifecycle service (shipped)
+│   ├── agents/                  # Agent/cache service (planned — features/04-agent-service.md)
+│   ├── ghhost/                  # Host-side GitHub client (P1.5 — features/05-p15-repo-artifact-flow.md)
+│   ├── injection/               # Prompt construction
 │   ├── messaging/               # local-backend file-bus (unchanged)
 │   ├── workspace/               # atomic I/O primitives
-│   ├── registry/                # ~/.config/orchestra/ cache
+│   ├── machost/                 # Anthropic client + API-key resolution
 │   ├── fsutil/
 │   └── log/
 ```
 
-The old `internal/spawner/` package is relocated under `pkg/spawner/local.go` so both backends sit behind the same interface. No code deleted in Phase 1 — v1 behavior is preserved bit-for-bit, just behind the interface.
+`pkg/store` and `pkg/spawner` are still in `pkg/` in the working tree and are on the migration list per [features/02-pkg-to-internal.md](./features/02-pkg-to-internal.md); execute when scheduled. No code is deleted; v1 behavior is preserved behind the Spawner interface regardless of where the package lives.
 
 ---
 
@@ -571,7 +580,9 @@ A v1 config without the `backend:` block defaults to `backend.kind: local`. No m
 
 ### Phase 1: MA backend (blocking ship)
 
-Each chapter is a mergeable PR. The spike is complete (see [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md)) and all open gates are resolved; P1.1 can start immediately.
+Each chapter is a mergeable PR. The spike is complete (see [SPIKE-ma-io-findings.md](./SPIKE-ma-io-findings.md)) and all open gates are resolved.
+
+**Execution order amended 2026-04-20.** P1.6 (text-only multi-team DAG) ships before P1.5 (repo-backed artifact flow). Reason: MA cross-team text flow via dependency-result injection is already wired by P1.4 (see `cmd/run_ma.go:teamPromptMA`). Shipping a multi-team fixture on top of that lets the DAG path prove itself independently of GitHub. P1.5 then layers the repo-backed path on top as additive capability for teams whose deliverable is code. See [features/06-p16-multi-team-text-only.md](./features/06-p16-multi-team-text-only.md) and [features/05-p15-repo-artifact-flow.md](./features/05-p15-repo-artifact-flow.md) for scoped designs.
 
 0. **~~P1.0.5 — Vault credential confirmation.~~** *Resolved from docs (2026-04-18); no live probe needed.* The [vaults docs](https://platform.claude.com/docs/en/managed-agents/vaults) state every credential in a vault binds to an `mcp_server_url` and is injected at the Anthropic MCP gateway — vaults never surface credentials inside the container. GitHub-push auth flows through `resources[].authorization_token` on the `github_repository` resource instead (see [GitHub docs](https://platform.claude.com/docs/en/managed-agents/github), §9.6, and §8 `ResourceRef`). P1.4+ is unblocked.
 1. **P1.1 — Spawner interface + relocate local backend.** Define `pkg/spawner.Spawner`, `Session`, `Event` union. Move `internal/spawner/` behind the interface as `pkg/spawner/local.go`. Migrate every call site that currently imports `github.com/itsHabib/orchestra/internal/spawner` (today: `cmd/run.go`, `cmd/spawn.go`, and any engine code in `cmd/` or a future `internal/engine/`) to the new package path. CLI keeps working with `backend: local` (default). Diff must be purely structural — zero behavior change, zero new tests required beyond what exists; `make test && make vet` green. *Spike-independent.*
@@ -579,8 +590,8 @@ Each chapter is a mergeable PR. The spike is complete (see [SPIKE-ma-io-findings
 3. **P1.3 — `ManagedAgentsSpawner.EnsureAgent` + `EnsureEnvironment`.** Registry cache in `~/.config/orchestra/` with `gofrs/flock`. Spec-hash-based drift detection. List-and-adopt reconcile on cache miss (§9.1 step 4). `orchestra agents ls` / `prune` commands. Cross-platform concurrency test (spawn two goroutines both doing `EnsureAgent` on the same role; assert one creates, one adopts). *Spike-independent.*
 4. **P1.1.5 — Prompt builder refactor.** *Spike-dependent; sized post-spike.* Refactor `internal/injection/builder.go` so the prompt is built from a `Capabilities` struct: `{HasFileBus, HasMembers, ArtifactPublishMode}`. Local backend passes `{true, team.HasMembers(), none}`; MA backend passes `{false, false, <mode>}` where `<mode>` comes from spike findings (likely `none` if Q1 works, `bash-upload` if Q2 needs explicit publish). Current prompt sections about `/loop` polling, file-bus bash recipes, and teammate assignment become conditional on the relevant capability being true. All v1 tests must still pass (prompts under `backend: local` are byte-identical).
 5. **~~P1.4 — `StartSession` + `Events` + `Send` + watchdog.~~** Implemented as the hard-timeout session lifecycle slice from [features/p14-ma-session-lifecycle.md](./features/p14-ma-session-lifecycle.md): single-team text fixture, stream-first ordering, raw NDJSON logs, final `agent.message` persisted to `.orchestra/results/<team>/summary.md`. Implementation caveats surfaced by the pinned SDK: `BetaSessionEventListParams` does not currently expose the proposed `after` cursor, so reconnect backfill lists chronologically and dedupes by in-memory event ID; `cost_usd` is preserved if present in `span.model_request_end` raw JSON, but observed SDK usage shapes are token-first.
-6. **P1.5 — Repo-backed artifact flow.** Wire `github_repository` resources into `StartSession`. After a team reaches `idle + end_turn`, resolve the expected feature branch via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`); on success, record `repository_artifacts[]` (url, branch, base_sha, commit_sha) in `state.json`; on missing branch, mark `failed` with `last_error`. Mount the upstream's pushed branch on each downstream session as a `github_repository` resource at `/workspace/upstream/<team>/`. If `open_pull_requests: true`, open a PR via the GitHub API. Fixture: an `examples/` project where team A modifies a file in `/workspace/repo`, pushes branch `orchestra/<team>-<run-id>`, and team B reads from that branch. No Files API calls in this chapter — that path no longer exists.
-7. **P1.6 — Multi-team DAG runs.** Full tier-parallel orchestration under MA. Port a concrete picklist of examples (see *Test fixtures* below). For each, document `members:` sections that get ignored and any prompt edits needed for MA. Rate-limit retry and burst semaphore exercised under load.
+6. **P1.6 — Multi-team DAG runs (text-only, ships first).** Two-or-more MA teams with `depends_on` edges, each producing a text deliverable inlined into downstream prompts via the already-wired `injection.BuildPrompt(..., state, ...)` path. Adds the 20-slot `StartSession` semaphore (`defaults.ma_concurrent_sessions`), a two-team planner→analyst fixture, an opt-in live-MA integration test, and drops the "in P1.4" phase pin on `members:` / `coordinator:` warnings. No GitHub, no repo mounts. See [features/06-p16-multi-team-text-only.md](./features/06-p16-multi-team-text-only.md).
+7. **P1.5 — Repo-backed artifact flow (ships after P1.6).** Wire `github_repository` resources into `StartSession` for teams whose deliverable is code. After a team reaches `idle + end_turn`, resolve the expected feature branch via the GitHub API (`GET /repos/{owner}/{repo}/branches/{branch}`); on success, record `repository_artifacts[]` (url, branch, base_sha, commit_sha) in `state.json`; on missing branch, mark `failed` with `last_error`. Mount each upstream's pushed branch on downstream sessions as a `github_repository` resource at `/workspace/upstream/<team>/`. If `open_pull_requests: true`, open a PR via the GitHub API. Fixture: team A modifies a file in `/workspace/repo`, pushes branch `orchestra/<team>-<run-id>`, and team B reads from that branch. No Files API calls — that path no longer exists. See [features/05-p15-repo-artifact-flow.md](./features/05-p15-repo-artifact-flow.md).
 8. **P1.7 — Validation warnings.** `orchestra validate` emits warnings for `members:` and `coordinator:` under MA backend. `orchestra validate` auto-migrates v1 configs by inserting a minimal `backend: local` block and prints the diff. Refuses to write if the YAML has comments that would be lost; prints the intended diff and exits.
 9. **P1.8 — `orchestra resume`.** Read state, probe sessions via `Sessions.Get`, dedupe events, continue DAG. Handles archived + terminated + mid-tool-confirmation cases (§10.3d). Artifact re-download uses SHA verification not just existence check.
 10. **P1.9 — Human steering CLI.** `orchestra msg`, `orchestra interrupt`, `orchestra sessions ls`, `orchestra sessions rm`. `msg`/`interrupt` are strictly one-way to MA (§11); `sessions rm` is the explicit destructive counterpart to archive-by-default on run exit.
