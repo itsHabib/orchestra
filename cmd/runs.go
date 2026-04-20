@@ -270,7 +270,7 @@ func printRunDetail(record runRecord, now time.Time) {
 			formatTier(ts.Tier),
 			firstDisplay(ts.Status, "pending"),
 			formatCost(ts.CostUSD),
-			formatDuration(teamDuration(ts, now)),
+			formatDuration(teamDuration(&ts, now)),
 			firstDisplay(ts.AgentID, "-"),
 			formatAgentVersion(ts.AgentVersion),
 			firstDisplay(ts.SessionID, "-"),
@@ -309,7 +309,8 @@ func aggregateRunStatus(state *store.RunState) string {
 		return "unknown"
 	}
 	counts := make(map[string]int)
-	for _, ts := range state.Teams {
+	for name := range state.Teams {
+		ts := state.Teams[name]
 		status := firstDisplay(ts.Status, "pending")
 		counts[status]++
 	}
@@ -335,9 +336,10 @@ func isRunTerminal(record runRecord) bool {
 	if record.state == nil || len(record.state.Teams) == 0 {
 		return false
 	}
-	for _, ts := range record.state.Teams {
+	for name := range record.state.Teams {
+		ts := record.state.Teams[name]
 		switch firstDisplay(ts.Status, "pending") {
-		case "done", "failed", "terminated", "canceled", "cancelled", "skipped":
+		case "done", "failed", "terminated", "canceled", "skipped":
 		default:
 			return false
 		}
@@ -350,8 +352,8 @@ func totalRunCost(state *store.RunState) float64 {
 	if state == nil {
 		return total
 	}
-	for _, ts := range state.Teams {
-		total += ts.CostUSD
+	for name := range state.Teams {
+		total += state.Teams[name].CostUSD
 	}
 	return total
 }
@@ -371,11 +373,12 @@ func runDuration(record runRecord, now time.Time) time.Duration {
 		}
 	}
 	var maxDuration time.Duration
-	for _, ts := range state.Teams {
-		if ts.DurationMs <= 0 {
+	for name := range state.Teams {
+		dur := state.Teams[name].DurationMs
+		if dur <= 0 {
 			continue
 		}
-		d := time.Duration(ts.DurationMs) * time.Millisecond
+		d := time.Duration(dur) * time.Millisecond
 		if d > maxDuration {
 			maxDuration = d
 		}
@@ -385,15 +388,16 @@ func runDuration(record runRecord, now time.Time) time.Duration {
 
 func latestTeamEnd(state *store.RunState) time.Time {
 	var end time.Time
-	for _, ts := range state.Teams {
-		if ts.EndedAt.After(end) {
-			end = ts.EndedAt
+	for name := range state.Teams {
+		ended := state.Teams[name].EndedAt
+		if ended.After(end) {
+			end = ended
 		}
 	}
 	return end
 }
 
-func teamDuration(ts store.TeamState, now time.Time) time.Duration {
+func teamDuration(ts *store.TeamState, now time.Time) time.Duration {
 	if ts.DurationMs > 0 {
 		return (time.Duration(ts.DurationMs) * time.Millisecond).Round(time.Second)
 	}
@@ -411,8 +415,8 @@ func teamCountLabel(state *store.RunState) string {
 		return "0"
 	}
 	done := 0
-	for _, ts := range state.Teams {
-		if ts.Status == "done" {
+	for name := range state.Teams {
+		if state.Teams[name].Status == "done" {
 			done++
 		}
 	}
@@ -536,13 +540,14 @@ func collectRunAgentRefs(records []runRecord, now time.Time, olderThan time.Dura
 			started := record.startedAt()
 			protect = started.IsZero() || started.After(cutoff)
 		}
-		for _, ts := range record.state.Teams {
-			if ts.AgentID == "" {
+		for name := range record.state.Teams {
+			agentID := record.state.Teams[name].AgentID
+			if agentID == "" {
 				continue
 			}
-			refs.allAgentIDs[ts.AgentID] = struct{}{}
+			refs.allAgentIDs[agentID] = struct{}{}
 			if protect {
-				refs.protectedAgentIDs[ts.AgentID] = struct{}{}
+				refs.protectedAgentIDs[agentID] = struct{}{}
 			}
 		}
 	}

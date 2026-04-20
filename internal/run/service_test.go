@@ -63,9 +63,9 @@ func TestBeginSeedsTeamTiers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTeamTier(t, got.Teams["api"], 0)
-	assertTeamTier(t, got.Teams["docs"], 0)
-	assertTeamTier(t, got.Teams["web"], 1)
+	assertTeamTier(t, got.Teams["api"].Tier, 0)
+	assertTeamTier(t, got.Teams["docs"].Tier, 0)
+	assertTeamTier(t, got.Teams["web"].Tier, 1)
 }
 
 func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
@@ -351,12 +351,12 @@ func fixedClock() func() time.Time {
 	return func() time.Time { return now }
 }
 
-func assertTeamTier(t *testing.T, state store.TeamState, want int) {
+func assertTeamTier(t *testing.T, tier *int, want int) {
 	t.Helper()
-	if state.Tier == nil {
+	if tier == nil {
 		t.Fatalf("Tier=nil, want %d", want)
 	}
-	if *state.Tier != want {
-		t.Fatalf("Tier=%d, want %d", *state.Tier, want)
+	if *tier != want {
+		t.Fatalf("Tier=%d, want %d", *tier, want)
 	}
 }
