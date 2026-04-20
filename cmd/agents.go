@@ -2,29 +2,17 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/itsHabib/orchestra/internal/machost"
-	"github.com/itsHabib/orchestra/pkg/spawner"
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/filestore"
+	agentservice "github.com/itsHabib/orchestra/internal/agents"
 	"github.com/spf13/cobra"
 )
 
 const (
 	defaultAgentPruneAge = 30 * 24 * time.Hour
-	agentStatusWorkers   = 5
-	agentListPageLimit   = 100
-	agentMaxListPages    = 10
 )
 
 var (
@@ -76,246 +64,90 @@ func init() {
 	agentsCmd.AddCommand(agentsPruneCmd)
 }
 
-type agentRow struct {
-	record store.AgentRecord
-	status string
-	err    error
-}
-
-type orphanAgent struct {
-	key     string
-	agentID string
-	version int64
-	status  string
-}
+type agentRow = agentservice.Summary
+type orphanAgent = agentservice.Orphan
 
 func loadAgentRows(ctx context.Context, workspace string) ([]agentRow, error) {
-	st := filestore.New(workspace)
-	records, err := st.ListAgents(ctx)
+	_, svc, err := newAgentService(workspace)
 	if err != nil {
 		return nil, err
 	}
-	client, err := machost.NewClient()
+	summaries, err := svc.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return annotateAgentRows(ctx, &client, records), nil
-}
-
-func annotateAgentRows(ctx context.Context, client *anthropic.Client, records []store.AgentRecord) []agentRow {
-	rows := make([]agentRow, len(records))
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	workers := min(agentStatusWorkers, max(1, len(records)))
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range jobs {
-				rec := records[idx]
-				status, err := getAgentStatus(ctx, client, rec.AgentID)
-				rows[idx] = agentRow{record: rec, status: status, err: err}
-			}
-		}()
-	}
-	for i := range records {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
-	return rows
-}
-
-func getAgentStatus(ctx context.Context, client *anthropic.Client, agentID string) (string, error) {
-	agent, err := client.Beta.Agents.Get(ctx, agentID, anthropic.BetaAgentGetParams{})
-	switch {
-	case spawner.IsAPIStatus(err, http.StatusNotFound):
-		return "missing", nil
-	case err != nil:
-		return "unreachable", err
-	case !agent.ArchivedAt.IsZero():
-		return "archived", nil
-	default:
-		return "active", nil
-	}
+	return summaries, nil
 }
 
 func printAgentRows(rows []agentRow) {
 	fmt.Printf("%-32s  %-28s  %-7s  %-16s  %s\n", "KEY", "AGENT ID", "VERSION", "LAST USED", "MA STATUS")
 	for i := range rows {
 		row := &rows[i]
-		status := row.status
-		if row.err != nil {
-			status = status + " (" + compactError(row.err) + ")"
+		status := string(row.Status)
+		if row.Err != nil {
+			status = status + " (" + compactError(row.Err) + ")"
 		}
 		fmt.Printf("%-32s  %-28s  %-7d  %-16s  %s\n",
-			row.record.Key,
-			row.record.AgentID,
-			row.record.Version,
-			formatCacheTime(row.record.LastUsed),
+			row.Record.Key,
+			row.Record.AgentID,
+			row.Record.Version,
+			formatCacheTime(row.Record.LastUsed),
 			status,
 		)
 	}
 }
 
 func runAgentsPrune(ctx context.Context) error {
-	st := filestore.New(agentsWorkspaceFlag)
-	records, err := st.ListAgents(ctx)
+	st, svc, err := newAgentService(agentsWorkspaceFlag)
 	if err != nil {
 		return err
 	}
-	client, err := machost.NewClient()
+	report, err := svc.Prune(ctx, agentservice.PruneOpts{
+		Apply:  agentsPruneApply,
+		MaxAge: agentsPruneOlder,
+	})
 	if err != nil {
 		return err
 	}
-	rows := annotateAgentRows(ctx, &client, records)
-	now := time.Now().UTC()
-	stale := staleAgentRows(rows, now, agentsPruneOlder)
-
-	if err := printOrApplyStaleAgents(ctx, st, stale, now); err != nil {
-		return err
-	}
+	printStaleAgentReport(report, agentsPruneApply, "No stale cached agents.", "")
 
 	if agentsReconcile {
-		if err := reportOrphanAgents(ctx, st, &client, records, stale); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// reportOrphanAgents prints MA agents tagged for orchestra that don't match
-// any cache record. If --apply just deleted records, the record set is
-// reloaded first so just-pruned keys don't mask fresh orphans.
-func reportOrphanAgents(
-	ctx context.Context,
-	st store.Store,
-	client *anthropic.Client,
-	records []store.AgentRecord,
-	stale []agentRow,
-) error {
-	current := records
-	if agentsPruneApply && len(stale) > 0 {
-		refreshed, err := st.ListAgents(ctx)
+		records, err := st.ListAgents(ctx)
 		if err != nil {
 			return err
 		}
-		current = refreshed
+		orphaned, err := svc.Orphans(ctx, excludeCacheRecords(records))
+		if err != nil {
+			return err
+		}
+		printOrphanAgents(orphaned)
 	}
-	orphaned, err := listOrphanAgents(ctx, client, current)
-	if err != nil {
-		return err
-	}
-	printOrphanAgents(orphaned)
 	return nil
 }
 
-func printOrApplyStaleAgents(ctx context.Context, st store.Store, stale []agentRow, now time.Time) error {
-	return pruneAndPrintStale(ctx, st, stale, now, agentsPruneOlder, agentsPruneApply, "No stale cached agents.", "")
-}
-
-func pruneAndPrintStale(
-	ctx context.Context,
-	st store.Store,
-	stale []agentRow,
-	now time.Time,
-	olderThan time.Duration,
+func printStaleAgentReport(
+	report *agentservice.PruneReport,
 	apply bool,
 	emptyMessage string,
 	entryPrefix string,
-) error {
-	if len(stale) == 0 {
+) {
+	if len(report.Stale) == 0 {
 		fmt.Println(emptyMessage)
-		return nil
+		return
 	}
 
 	action := "Would delete"
 	if apply {
 		action = "Deleted"
 	}
-	for i := range stale {
-		row := &stale[i]
-		reason := staleReason(row, now, olderThan)
-		if apply {
-			if err := st.DeleteAgent(ctx, row.record.Key); err != nil && !errors.Is(err, store.ErrNotFound) {
-				return err
-			}
-		}
-		fmt.Printf("%s %s%s (%s)\n", action, entryPrefix, row.record.Key, reason)
+	for i := range report.Stale {
+		row := report.Stale[i]
+		reason := agentservice.StaleReason(row, report.Now, report.MaxAge)
+		fmt.Printf("%s %s%s (%s)\n", action, entryPrefix, row.Record.Key, reason)
 	}
 	if !apply {
 		fmt.Println("Dry run only. Re-run with --apply to delete these cache records.")
 	}
-	return nil
-}
-
-func staleAgentRows(rows []agentRow, now time.Time, olderThan time.Duration) []agentRow {
-	var out []agentRow
-	for i := range rows {
-		if staleReason(&rows[i], now, olderThan) != "" {
-			out = append(out, rows[i])
-		}
-	}
-	return out
-}
-
-func staleReason(row *agentRow, now time.Time, olderThan time.Duration) string {
-	switch row.status {
-	case "missing":
-		return "MA 404"
-	case "archived":
-		return "archived on MA"
-	}
-	if olderThan > 0 && (row.record.LastUsed.IsZero() || row.record.LastUsed.Before(now.Add(-olderThan))) {
-		return "last used older than " + olderThan.String()
-	}
-	return ""
-}
-
-func listOrphanAgents(ctx context.Context, client *anthropic.Client, records []store.AgentRecord) ([]orphanAgent, error) {
-	cached := make(map[string]string, len(records))
-	for i := range records {
-		rec := &records[i]
-		cached[rec.Key] = rec.AgentID
-	}
-
-	params := anthropic.BetaAgentListParams{
-		Limit:           anthropic.Int(agentListPageLimit),
-		IncludeArchived: anthropic.Bool(true),
-	}
-	var out []orphanAgent
-	for pageNum := 0; pageNum < agentMaxListPages; pageNum++ {
-		page, err := client.Beta.Agents.List(ctx, params)
-		if err != nil {
-			return nil, err
-		}
-		for i := range page.Data {
-			agent := &page.Data[i]
-			key, ok := spawner.AgentCacheKeyFromMetadata(agent.Metadata)
-			if !ok {
-				continue
-			}
-			if cached[key] == agent.ID {
-				continue
-			}
-			status := "active"
-			if !agent.ArchivedAt.IsZero() {
-				status = "archived"
-			}
-			out = append(out, orphanAgent{
-				key:     key,
-				agentID: agent.ID,
-				version: agent.Version,
-				status:  status,
-			})
-		}
-		if page.NextPage == "" {
-			break
-		}
-		params.Page = param.NewOpt(page.NextPage)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
-	return out, nil
 }
 
 func printOrphanAgents(orphaned []orphanAgent) {
@@ -326,7 +158,7 @@ func printOrphanAgents(orphaned []orphanAgent) {
 	fmt.Println("Orchestra-tagged MA agents missing from cache:")
 	fmt.Printf("%-32s  %-28s  %-7s  %s\n", "KEY", "AGENT ID", "VERSION", "MA STATUS")
 	for _, agent := range orphaned {
-		fmt.Printf("%-32s  %-28s  %-7d  %s\n", agent.key, agent.agentID, agent.version, agent.status)
+		fmt.Printf("%-32s  %-28s  %-7d  %s\n", agent.Key, agent.AgentID, agent.Version, agent.Status)
 	}
 }
 

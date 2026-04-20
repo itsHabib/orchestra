@@ -3,14 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/itsHabib/orchestra/internal/machost"
-	"github.com/itsHabib/orchestra/pkg/spawner"
-	"github.com/itsHabib/orchestra/pkg/store/filestore"
+	agentservice "github.com/itsHabib/orchestra/internal/agents"
 )
 
 func runRunsPrune(ctx context.Context) error {
@@ -21,7 +16,7 @@ func runRunsPrune(ctx context.Context) error {
 	now := time.Now().UTC()
 	refs := collectRunAgentRefs(runRecords, now, runsPruneOlder)
 
-	st := filestore.New(runsWorkspaceFlag)
+	st := newAgentStore(runsWorkspaceFlag)
 	records, err := st.ListAgents(ctx)
 	if err != nil {
 		return err
@@ -31,24 +26,22 @@ func runRunsPrune(ctx context.Context) error {
 		return nil
 	}
 
-	var client anthropic.Client
-	if len(records) > 0 || runsReconcile {
-		client, err = machost.NewClient()
-		if err != nil {
-			return err
-		}
-	}
-
-	var rows []agentRow
-	if len(records) > 0 {
-		rows = annotateAgentRows(ctx, &client, records)
-	}
-	stale := staleRunAgentRows(rows, refs, now, runsPruneOlder)
-	if err := pruneAndPrintStale(ctx, st, stale, now, runsPruneOlder, runsPruneApply, "No stale cached agents eligible for workflow prune.", "cache record "); err != nil {
+	svc, err := newAgentServiceFromStore(st)
+	if err != nil {
 		return err
 	}
+	report, err := svc.Prune(ctx, agentservice.PruneOpts{
+		Apply:   runsPruneApply,
+		MaxAge:  runsPruneOlder,
+		Protect: protectRunAgentRefs(refs),
+	})
+	if err != nil {
+		return err
+	}
+	report.Now = now
+	printStaleAgentReport(report, runsPruneApply, "No stale cached agents eligible for workflow prune.", "cache record ")
 	if runsReconcile {
-		orphaned, err := listAgentsMissingFromRuns(ctx, &client, refs)
+		orphaned, err := svc.Orphans(ctx, excludeRunAgentRefs(refs))
 		if err != nil {
 			return err
 		}
@@ -83,67 +76,18 @@ func collectRunAgentRefs(records []runRecord, now time.Time, olderThan time.Dura
 	return refs
 }
 
-func staleRunAgentRows(rows []agentRow, refs runAgentRefs, now time.Time, olderThan time.Duration) []agentRow {
-	var stale []agentRow
-	for i := range rows {
-		row := &rows[i]
-		if _, protected := refs.protectedAgentIDs[row.record.AgentID]; protected {
-			continue
-		}
-		if staleReason(row, now, olderThan) != "" {
-			stale = append(stale, rows[i])
-		}
+func protectRunAgentRefs(refs runAgentRefs) func(key, agentID string) bool {
+	return func(_ string, agentID string) bool {
+		_, protected := refs.protectedAgentIDs[agentID]
+		return protected
 	}
-	return stale
 }
 
-func listAgentsMissingFromRuns(
-	ctx context.Context,
-	client *anthropic.Client,
-	refs runAgentRefs,
-) ([]orphanAgent, error) {
-	params := anthropic.BetaAgentListParams{
-		Limit:           anthropic.Int(agentListPageLimit),
-		IncludeArchived: anthropic.Bool(true),
+func excludeRunAgentRefs(refs runAgentRefs) func(key, agentID string) bool {
+	return func(_ string, agentID string) bool {
+		_, referenced := refs.allAgentIDs[agentID]
+		return referenced
 	}
-	var out []orphanAgent
-	for pageNum := 0; pageNum < agentMaxListPages; pageNum++ {
-		page, err := client.Beta.Agents.List(ctx, params)
-		if err != nil {
-			return nil, err
-		}
-		for i := range page.Data {
-			agent := &page.Data[i]
-			key, ok := spawner.AgentCacheKeyFromMetadata(agent.Metadata)
-			if !ok {
-				continue
-			}
-			if _, referenced := refs.allAgentIDs[agent.ID]; referenced {
-				continue
-			}
-			status := "active"
-			if !agent.ArchivedAt.IsZero() {
-				status = "archived"
-			}
-			out = append(out, orphanAgent{
-				key:     key,
-				agentID: agent.ID,
-				version: agent.Version,
-				status:  status,
-			})
-		}
-		if page.NextPage == "" {
-			break
-		}
-		params.Page = param.NewOpt(page.NextPage)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].key != out[j].key {
-			return out[i].key < out[j].key
-		}
-		return out[i].agentID < out[j].agentID
-	})
-	return out, nil
 }
 
 func printRunOrphanAgents(orphaned []orphanAgent) {
@@ -154,6 +98,6 @@ func printRunOrphanAgents(orphaned []orphanAgent) {
 	fmt.Println("Orchestra-tagged MA agents not referenced by known workflow runs:")
 	fmt.Printf("%-32s  %-28s  %-7s  %s\n", "KEY", "AGENT ID", "VERSION", "MA STATUS")
 	for _, agent := range orphaned {
-		fmt.Printf("%-32s  %-28s  %-7d  %s\n", agent.key, agent.agentID, agent.version, agent.status)
+		fmt.Printf("%-32s  %-28s  %-7d  %s\n", agent.Key, agent.AgentID, agent.Version, agent.Status)
 	}
 }

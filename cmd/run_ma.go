@@ -10,7 +10,6 @@ import (
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/injection"
-	"github.com/itsHabib/orchestra/internal/machost"
 	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/pkg/spawner"
 	"github.com/itsHabib/orchestra/pkg/store"
@@ -98,11 +97,10 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 }
 
 func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, state *store.RunState, logWriter io.Writer) (*spawner.Session, <-chan spawner.Event, error) {
-	client, err := machost.NewClient()
+	ma, err := spawner.NewHostManagedAgentsSpawner(r.runService.Store())
 	if err != nil {
 		return nil, nil, err
 	}
-	ma := spawner.NewManagedAgentsSpawner(r.runService.Store(), &client)
 
 	agent, err := ma.EnsureAgent(ctx, r.managedAgentSpec(team))
 	if err != nil {

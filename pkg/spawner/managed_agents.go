@@ -1,9 +1,10 @@
 // Package spawner — Managed Agents backend.
 //
-// The ManagedAgentsSpawner keeps a local cache of the Anthropic Managed Agents
-// resources it has provisioned so that the same AgentSpec/EnvSpec does not
-// trigger a fresh API round trip on every invocation. Two layers back the
-// cache:
+// The ManagedAgentsSpawner owns Managed Agents environment and session
+// lifecycle. Agent cache policy lives in internal/agents.Service, which this
+// spawner delegates to for EnsureAgent. Environment resources still keep a
+// local cache here so the same EnvSpec does not trigger a fresh API round trip
+// on every invocation. Two layers back the cache:
 //
 //  1. A persistent record in the Store (keyed by project+role or project+name)
 //     remembers which MA resource was created and the hash of the spec that
@@ -13,8 +14,8 @@
 //     cache ever disappears, we can scan MA for an existing resource that
 //     matches the cache key and adopt it instead of creating a duplicate.
 //
-// EnsureAgent / EnsureEnvironment are the entry points. Each acquires a
-// per-key lock via the Store and then runs this pipeline:
+// EnsureAgent delegates to internal/agents.Service. EnsureEnvironment acquires
+// a per-key lock via the Store and then runs this pipeline:
 //
 //	resolveAgentFromCache  →  hit:  reuse (or update-in-place on spec drift)
 //	                         miss: reconcileAgent
@@ -27,7 +28,6 @@
 // The implementation is split across several files in this package:
 //
 //   - managed_agents.go       — this file: types, constructor, public API shells
-//   - managed_agents_agent.go — agent Ensure pipeline (cache → reconcile → create/adopt)
 //   - managed_agents_env.go   — env Ensure pipeline (mirror, with archive-and-recreate on drift)
 //   - managed_agents_cache.go — cache record writers, key builders, metadata tag helpers, handle converters
 //   - managed_agents_hash.go  — deterministic spec hashing
@@ -46,6 +46,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/pagination"
+	agentservice "github.com/itsHabib/orchestra/internal/agents"
+	"github.com/itsHabib/orchestra/internal/machost"
 	"github.com/itsHabib/orchestra/pkg/store"
 )
 
@@ -109,10 +111,14 @@ type managedEnvironmentAPI interface {
 	List(context.Context, anthropic.BetaEnvironmentListParams, ...option.RequestOption) (*pagination.PageCursor[anthropic.BetaEnvironment], error)
 }
 
+type agentEnsurer interface {
+	EnsureAgent(context.Context, AgentSpec) (AgentHandle, error)
+}
+
 // ManagedAgentsSpawner creates and reuses Anthropic Managed Agents resources.
 type ManagedAgentsSpawner struct {
 	store         store.Store
-	agents        managedAgentAPI
+	agentService  agentEnsurer
 	environments  managedEnvironmentAPI
 	sessions      managedSessionAPI
 	sessionEvents managedSessionEventsAPI
@@ -131,6 +137,15 @@ func NewManagedAgentsSpawner(st store.Store, client *anthropic.Client, opts ...M
 		sdkSessionEventsAPI{events: &client.Beta.Sessions.Events},
 		opts...,
 	)
+}
+
+// NewHostManagedAgentsSpawner returns a host-authenticated managed-agents spawner.
+func NewHostManagedAgentsSpawner(st store.Store, opts ...ManagedAgentsOption) (*ManagedAgentsSpawner, error) {
+	client, err := machost.NewClient()
+	if err != nil {
+		return nil, err
+	}
+	return NewManagedAgentsSpawner(st, &client, opts...), nil
 }
 
 func newManagedAgentsSpawner(
@@ -152,7 +167,6 @@ func newManagedAgentsSpawnerWithSessions(
 ) *ManagedAgentsSpawner {
 	s := &ManagedAgentsSpawner{
 		store:         st,
-		agents:        agents,
 		environments:  environments,
 		sessions:      sessions,
 		sessionEvents: sessionEvents,
@@ -198,6 +212,14 @@ func newManagedAgentsSpawnerWithSessions(
 	if s.clock == nil {
 		s.clock = func() time.Time { return time.Now().UTC() }
 	}
+	s.agentService = agentservice.New(st, agents,
+		agentservice.WithLogger(s.logger),
+		agentservice.WithClock(agentservice.Clock(s.clock)),
+		agentservice.WithConfig(agentservice.Config{
+			MaxListPages:     s.cfg.MaxListPages,
+			AgentLockTimeout: s.cfg.AgentLockTimeout,
+		}),
+	)
 	return s
 }
 
@@ -221,33 +243,11 @@ func withManagedAgentsClock(clock ManagedAgentsClock) ManagedAgentsOption {
 	}
 }
 
-// EnsureAgent returns an active managed-agent resource for spec.
-//
-//nolint:gocritic // Spawner interface intentionally takes AgentSpec by value.
 func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) (AgentHandle, error) {
-	normalizeAgentSpec(&spec)
-	key, err := agentCacheKey(&spec)
-	if err != nil {
-		return AgentHandle{}, err
+	if s.agentService == nil {
+		return AgentHandle{}, ErrUnsupported
 	}
-	hash, err := specHash(&spec)
-	if err != nil {
-		return AgentHandle{}, fmt.Errorf("%w: %w", store.ErrInvalidArgument, err)
-	}
-
-	var handle AgentHandle
-	err = s.withAgentLock(ctx, key, func(ctx context.Context) error {
-		h, err := s.ensureAgentLocked(ctx, key, hash, &spec)
-		if err != nil {
-			return err
-		}
-		handle = h
-		return nil
-	})
-	if err != nil {
-		return AgentHandle{}, err
-	}
-	return handle, nil
+	return s.agentService.EnsureAgent(ctx, spec)
 }
 
 // EnsureEnvironment returns an active managed-agents environment resource for spec.
