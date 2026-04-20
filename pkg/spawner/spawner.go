@@ -30,6 +30,8 @@ type Spawner interface {
 
 // AgentSpec describes the backend agent resource to create or reuse.
 type AgentSpec struct {
+	Project      string
+	Role         string
 	Name         string
 	Model        string
 	SystemPrompt string
@@ -65,6 +67,7 @@ type Skill struct {
 
 // EnvSpec describes a backend environment resource.
 type EnvSpec struct {
+	Project    string
 	Name       string
 	Packages   PackageSpec
 	Networking NetworkSpec

@@ -24,4 +24,5 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(spawnCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(agentsCmd)
 }
