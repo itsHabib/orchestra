@@ -1,10 +1,12 @@
 # Feature: P1.5 — Repo-backed artifact flow
 
-Status: **Proposed**
+Status: **Proposed — deferred until after P1.6 text-only**
 Owner: @itsHabib
-Depends on: [p14-ma-session-lifecycle.md](./p14-ma-session-lifecycle.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md) (shipped)
+Depends on: [p14-ma-session-lifecycle.md](./p14-ma-session-lifecycle.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md) (shipped), [06-p16-multi-team-text-only.md](./06-p16-multi-team-text-only.md) (proposed — lands first)
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §5 D5, §6, §9.6, §10.2, §13 phase P1.5, §14 Q8.
-Target: multi-team DAG runs under `backend: managed_agents` where team A's deliverable is a branch push and team B reads it. Unlocks P1.6 (multi-team orchestration) and P1.10 (flipping the MA examples).
+Target: multi-team DAG runs under `backend: managed_agents` where team A's deliverable is a branch push and team B reads it. Layered on top of the text-only multi-team DAG shipped by P1.6.
+
+**Ordering note (2026-04-20).** DESIGN-v2 §13 sequenced P1.5 before P1.6. That ordering has been reversed: [06-p16-multi-team-text-only.md](./06-p16-multi-team-text-only.md) proves multi-team DAG under MA using text-only deliverables first. This chapter layers GitHub-backed artifact flow on top as additive capability for teams whose deliverable is code. Text-only teams keep using the summary path. DESIGN-v2 amendments to reflect the reordering are pending.
 
 ---
 
