@@ -1,0 +1,136 @@
+package cmd
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/itsHabib/orchestra/pkg/store"
+)
+
+func TestLoadRunRecordsReadsActiveAndArchive(t *testing.T) {
+	workspace := t.TempDir()
+	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
+	activeTier := 0
+	writeRunState(t, filepath.Join(workspace, "state.json"), &store.RunState{
+		Project:   "active-project",
+		RunID:     "active-run",
+		StartedAt: now,
+		Teams: map[string]store.TeamState{
+			"api": {Status: "running", Tier: &activeTier, StartedAt: now.Add(-2 * time.Minute)},
+		},
+	})
+	archiveDir := filepath.Join(workspace, "archive", "old-run")
+	oldTier := 0
+	writeRunState(t, filepath.Join(archiveDir, "state.json"), &store.RunState{
+		Project:   "old-project",
+		RunID:     "old-run",
+		StartedAt: now.Add(-2 * time.Hour),
+		Teams: map[string]store.TeamState{
+			"worker": {
+				Status:     "done",
+				Tier:       &oldTier,
+				StartedAt:  now.Add(-2 * time.Hour),
+				EndedAt:    now.Add(-90 * time.Minute),
+				CostUSD:    1.25,
+				DurationMs: int64((30 * time.Minute) / time.Millisecond),
+			},
+		},
+	})
+
+	records, err := loadRunRecords(workspace)
+	if err != nil {
+		t.Fatalf("loadRunRecords: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("len(records)=%d, want 2", len(records))
+	}
+	if records[0].id != "active-run" || !records[0].active {
+		t.Fatalf("first record=%+v, want active-run active", records[0])
+	}
+	if records[1].id != "old-run" || records[1].active {
+		t.Fatalf("second record=%+v, want archived old-run", records[1])
+	}
+}
+
+func TestAggregateRunStatus(t *testing.T) {
+	cases := []struct {
+		name  string
+		teams map[string]store.TeamState
+		want  string
+	}{
+		{
+			name:  "all done",
+			teams: map[string]store.TeamState{"a": {Status: "done"}, "b": {Status: "done"}},
+			want:  "done",
+		},
+		{
+			name:  "failed wins",
+			teams: map[string]store.TeamState{"a": {Status: "done"}, "b": {Status: "failed"}},
+			want:  "failed",
+		},
+		{
+			name:  "running wins over pending",
+			teams: map[string]store.TeamState{"a": {Status: "running"}, "b": {Status: "pending"}},
+			want:  "running",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := aggregateRunStatus(&store.RunState{Teams: tt.teams})
+			if got != tt.want {
+				t.Fatalf("aggregateRunStatus=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStaleRunAgentRowsProtectsRecentRunReferences(t *testing.T) {
+	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
+	rows := []agentRow{
+		{
+			record: store.AgentRecord{
+				Key:      "project__active",
+				AgentID:  "agent-active",
+				LastUsed: now.Add(-60 * 24 * time.Hour),
+			},
+			status: "active",
+		},
+		{
+			record: store.AgentRecord{
+				Key:      "project__old",
+				AgentID:  "agent-old",
+				LastUsed: now.Add(-60 * 24 * time.Hour),
+			},
+			status: "active",
+		},
+	}
+	refs := runAgentRefs{
+		allAgentIDs:       map[string]struct{}{"agent-active": {}, "agent-old": {}},
+		protectedAgentIDs: map[string]struct{}{"agent-active": {}},
+	}
+
+	stale := staleRunAgentRows(rows, refs, now, 30*24*time.Hour)
+	if len(stale) != 1 {
+		t.Fatalf("len(stale)=%d, want 1", len(stale))
+	}
+	if stale[0].record.AgentID != "agent-old" {
+		t.Fatalf("stale agent=%q, want agent-old", stale[0].record.AgentID)
+	}
+}
+
+func writeRunState(t *testing.T, path string, state *store.RunState) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

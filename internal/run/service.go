@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/messaging"
 	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/pkg/store"
@@ -117,9 +118,12 @@ func (s *Service) Begin(ctx context.Context, cfg *config.Config) (*Active, error
 		return nil, err
 	}
 
-	state := s.seedState(cfg)
-	if err := s.store.SaveRunState(ctx, state); err != nil {
+	state, err := s.seedState(cfg)
+	if err != nil {
 		return nil, fmt.Errorf("run.Begin seed state: %w", err)
+	}
+	if err := s.store.SaveRunState(ctx, state); err != nil {
+		return nil, fmt.Errorf("run.Begin save state: %w", err)
 	}
 
 	bus, err := s.seedWorkspaceFiles(ws, cfg)
@@ -295,7 +299,7 @@ func (s *Service) ensureWorkspace() (*workspace.Workspace, error) {
 	return s.workspace, nil
 }
 
-func (s *Service) seedState(cfg *config.Config) *store.RunState {
+func (s *Service) seedState(cfg *config.Config) (*store.RunState, error) {
 	now := s.clock().UTC()
 	backend := cfg.Backend.Kind
 	if backend == "" {
@@ -308,10 +312,24 @@ func (s *Service) seedState(cfg *config.Config) *store.RunState {
 		StartedAt: now,
 		Teams:     make(map[string]store.TeamState, len(cfg.Teams)),
 	}
-	for i := range cfg.Teams {
-		state.Teams[cfg.Teams[i].Name] = store.TeamState{Status: "pending"}
+	tiers, err := dag.BuildTiers(cfg.Teams)
+	if err != nil {
+		return nil, err
 	}
-	return state
+	tierByTeam := make(map[string]int, len(cfg.Teams))
+	for tierIdx, names := range tiers {
+		for _, name := range names {
+			tierByTeam[name] = tierIdx
+		}
+	}
+	for i := range cfg.Teams {
+		tier := tierByTeam[cfg.Teams[i].Name]
+		state.Teams[cfg.Teams[i].Name] = store.TeamState{
+			Status: "pending",
+			Tier:   &tier,
+		}
+	}
+	return state, nil
 }
 
 func (s *Service) seedWorkspaceFiles(ws *workspace.Workspace, cfg *config.Config) (*messaging.Bus, error) {
