@@ -41,6 +41,33 @@ func TestBeginSeedsStateAndHoldsLock(t *testing.T) {
 	}
 }
 
+func TestBeginSeedsTeamTiers(t *testing.T) {
+	ctx := context.Background()
+	svc := New(memstore.New(), WithClock(fixedClock()))
+	cfg := &config.Config{
+		Name: "tiered",
+		Teams: []config.Team{
+			{Name: "api"},
+			{Name: "web", DependsOn: []string{"api"}},
+			{Name: "docs"},
+		},
+	}
+
+	active, err := svc.Begin(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = svc.End(active) }()
+
+	got, err := svc.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTeamTier(t, got.Teams["api"], 0)
+	assertTeamTier(t, got.Teams["docs"], 0)
+	assertTeamTier(t, got.Teams["web"], 1)
+}
+
 func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 	ctx := context.Background()
 	base := memstore.New()
@@ -322,4 +349,14 @@ func testConfig() *config.Config {
 func fixedClock() func() time.Time {
 	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
 	return func() time.Time { return now }
+}
+
+func assertTeamTier(t *testing.T, state store.TeamState, want int) {
+	t.Helper()
+	if state.Tier == nil {
+		t.Fatalf("Tier=nil, want %d", want)
+	}
+	if *state.Tier != want {
+		t.Fatalf("Tier=%d, want %d", *state.Tier, want)
+	}
 }

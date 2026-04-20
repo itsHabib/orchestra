@@ -15,6 +15,7 @@ type RunState struct {
 // TeamState captures the persisted execution state for one team.
 type TeamState struct {
 	Status     string    `json:"status"`
+	Tier       *int      `json:"tier,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	EndedAt    time.Time `json:"ended_at,omitempty"`
 	DurationMs int64     `json:"duration_ms,omitempty"`

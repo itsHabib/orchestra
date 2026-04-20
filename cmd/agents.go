@@ -36,7 +36,7 @@ var (
 
 var agentsCmd = &cobra.Command{
 	Use:   "agents",
-	Short: "Manage the user-scoped Managed Agents cache",
+	Short: "Inspect the user-scoped Managed Agents cache",
 }
 
 var agentsLsCmd = &cobra.Command{

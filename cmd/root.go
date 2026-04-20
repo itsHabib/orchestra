@@ -24,5 +24,6 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(spawnCmd)
 	rootCmd.AddCommand(statusCmd)
-	rootCmd.AddCommand(agentsCmd)
+	rootCmd.AddCommand(runsCmd)
+	rootCmd.AddCommand(debugCmd)
 }
