@@ -298,13 +298,9 @@ Cross-repo dependencies (team in repo X depends on team in repo Y) are explicitl
 
 Today a team pushes one branch per run. Future cases (multiple artifacts in one session, or resume-then-retry creating a fresh branch) argue for a slice. Slice cost is tiny; singleton would force a schema change later.
 
-### 5.7 GitHub client is internal, not under `pkg/`
+### 5.7 GitHub client is internal
 
-`internal/ghhost/` — not `pkg/github/`. Reasons:
-
-1. P1.5 is not an SDK concern; no external consumer needs a GitHub client from orchestra.
-2. The surface is narrow and problem-specific (branch resolution, PR open). Exposing it as a library would over-promise.
-3. Keeps the "SDK-candidate primitives under `pkg/`, single-consumer glue under `internal/`" split clean (see 02-pkg-to-internal audit).
+`internal/ghhost/`. Consistent with the repo-wide policy (see [02-pkg-to-internal.md](./02-pkg-to-internal.md)): everything lives under `internal/` until SDK extraction is real work.
 
 ### 5.8 PAT in `ResourceRef` is passed through; lifetime equals StartSession
 

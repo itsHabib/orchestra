@@ -11,14 +11,21 @@ Owner: @itsHabib
 
 When an SDK story is actually on the table (see DESIGN-v2 future phases), the packages can move back to `pkg/` — or to a dedicated `pkg/orchestra/` SDK surface — with a single rename. The move is cheap in either direction; the signal is not.
 
+**Policy (2026-04-20):** this is the repo-wide direction going forward. Every new package lands under `internal/`; `pkg/` is off-limits until SDK extraction is a real, scheduled work item. This supersedes the placement guidance in [DESIGN-v2.md](../DESIGN-v2.md) §7 and D9 — those sections stage new packages under `pkg/` to make Phase 2 mechanical, but the cost of that staging (signaling a stable surface that does not exist) outweighs the saved refactor. DESIGN-v2 amendments to reflect this are pending.
+
 ## 2. Scope
 
-- `pkg/store/` → `internal/store/` (including `memstore/` and `filestore/` subpackages)
-- `pkg/spawner/` → `internal/spawner/`
-- Update imports across `cmd/`, `internal/run/`, `internal/workspace/`, `internal/injection/`, and any tests that reference the moved packages.
+Mechanical moves (shipped as a single PR):
+
+- `pkg/store/` → `internal/store/` (including `memstore/`, `filestore/`, `storetest/` subpackages)
+- `pkg/spawner/` → `internal/spawner/` (currently an empty leftover directory; remove before the move)
+- Update imports across ~31 files: `cmd/*.go`, `internal/run/`, `internal/workspace/`, `internal/injection/`, tests, and the moved packages' own internal references.
 - Update `.claude/CLAUDE.md` and `AGENTS.md` project-structure sections.
+- Update `docs/DESIGN-v2.md` §7 and D9 to reflect the `internal/`-first policy.
 
 Out of scope: any interface change, any behavior change.
+
+Applies to new packages too. Any feature doc that proposes `pkg/<x>/` (e.g. an earlier draft of this document's reasoning, or DESIGN-v2 §7's `pkg/orchestra/`, `pkg/spawner/`, `pkg/state/`, `pkg/dag/`) is superseded — use `internal/<x>/`. Current design docs that already follow the policy: [04-agent-service.md](./04-agent-service.md), [05-p15-repo-artifact-flow.md](./05-p15-repo-artifact-flow.md).
 
 ## 3. Validation
 
