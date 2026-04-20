@@ -120,7 +120,7 @@ func (s *Service) Begin(ctx context.Context, cfg *config.Config) (*Active, error
 		return nil, fmt.Errorf("run.Begin seed state: %w", err)
 	}
 	if err := s.store.SaveRunState(ctx, state); err != nil {
-		return nil, fmt.Errorf("run.Begin seed state: %w", err)
+		return nil, fmt.Errorf("run.Begin save state: %w", err)
 	}
 
 	bus, err := s.seedWorkspaceFiles(ws, cfg)

@@ -212,7 +212,7 @@ func (r runRecord) startedAt() time.Time {
 
 func findRunRecord(records []runRecord, id string) (runRecord, bool) {
 	for _, record := range records {
-		if record.id == id || id == "active" && record.active {
+		if record.id == id || (id == "active" && record.active) {
 			return record, true
 		}
 	}
@@ -365,8 +365,11 @@ func runDuration(record runRecord, now time.Time) time.Duration {
 	}
 	if !state.StartedAt.IsZero() {
 		end := latestTeamEnd(state)
-		if end.IsZero() || !isRunTerminal(record) {
+		switch {
+		case record.active && (end.IsZero() || !isRunTerminal(record)):
 			end = now
+		case !record.active && end.IsZero():
+			end = record.modifiedAt
 		}
 		if end.After(state.StartedAt) {
 			return end.Sub(state.StartedAt).Round(time.Second)
@@ -445,10 +448,10 @@ func formatCost(cost float64) string {
 }
 
 func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
 	if d <= 0 {
 		return "-"
 	}
-	d = d.Round(time.Second)
 	hours := int(d.Hours())
 	mins := int(d.Minutes()) % 60
 	secs := int(d.Seconds()) % 60
@@ -515,7 +518,7 @@ func runRunsPrune(ctx context.Context) error {
 		rows = annotateAgentRows(ctx, &client, records)
 	}
 	stale := staleRunAgentRows(rows, refs, now, runsPruneOlder)
-	if err := printOrApplyStaleRunAgents(ctx, st, stale, now); err != nil {
+	if err := pruneAndPrintStale(ctx, st, stale, now, runsPruneOlder, runsPruneApply, "No stale cached agents eligible for workflow prune.", "cache record "); err != nil {
 		return err
 	}
 	if runsReconcile {
@@ -535,7 +538,7 @@ func collectRunAgentRefs(records []runRecord, now time.Time, olderThan time.Dura
 	}
 	cutoff := now.Add(-olderThan)
 	for _, record := range records {
-		protect := !isRunTerminal(record)
+		protect := record.active && !isRunTerminal(record)
 		if !protect && olderThan > 0 {
 			started := record.startedAt()
 			protect = started.IsZero() || started.After(cutoff)
@@ -566,32 +569,6 @@ func staleRunAgentRows(rows []agentRow, refs runAgentRefs, now time.Time, olderT
 		}
 	}
 	return stale
-}
-
-func printOrApplyStaleRunAgents(ctx context.Context, st store.Store, stale []agentRow, now time.Time) error {
-	if len(stale) == 0 {
-		fmt.Println("No stale cached agents eligible for workflow prune.")
-		return nil
-	}
-
-	action := "Would delete"
-	if runsPruneApply {
-		action = "Deleted"
-	}
-	for i := range stale {
-		row := &stale[i]
-		reason := staleReason(row, now, runsPruneOlder)
-		if runsPruneApply {
-			if err := st.DeleteAgent(ctx, row.record.Key); err != nil && !errors.Is(err, store.ErrNotFound) {
-				return err
-			}
-		}
-		fmt.Printf("%s cache record %s (%s)\n", action, row.record.Key, reason)
-	}
-	if !runsPruneApply {
-		fmt.Println("Dry run only. Re-run with --apply to delete these cache records.")
-	}
-	return nil
 }
 
 func listAgentsMissingFromRuns(

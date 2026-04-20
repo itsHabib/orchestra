@@ -211,26 +211,39 @@ func reportOrphanAgents(
 }
 
 func printOrApplyStaleAgents(ctx context.Context, st store.Store, stale []agentRow, now time.Time) error {
+	return pruneAndPrintStale(ctx, st, stale, now, agentsPruneOlder, agentsPruneApply, "No stale cached agents.", "")
+}
+
+func pruneAndPrintStale(
+	ctx context.Context,
+	st store.Store,
+	stale []agentRow,
+	now time.Time,
+	olderThan time.Duration,
+	apply bool,
+	emptyMessage string,
+	entryPrefix string,
+) error {
 	if len(stale) == 0 {
-		fmt.Println("No stale cached agents.")
+		fmt.Println(emptyMessage)
 		return nil
 	}
 
 	action := "Would delete"
-	if agentsPruneApply {
+	if apply {
 		action = "Deleted"
 	}
 	for i := range stale {
 		row := &stale[i]
-		reason := staleReason(row, now, agentsPruneOlder)
-		if agentsPruneApply {
+		reason := staleReason(row, now, olderThan)
+		if apply {
 			if err := st.DeleteAgent(ctx, row.record.Key); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
 		}
-		fmt.Printf("%s %s (%s)\n", action, row.record.Key, reason)
+		fmt.Printf("%s %s%s (%s)\n", action, entryPrefix, row.record.Key, reason)
 	}
-	if !agentsPruneApply {
+	if !apply {
 		fmt.Println("Dry run only. Re-run with --apply to delete these cache records.")
 	}
 	return nil
