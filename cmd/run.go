@@ -60,13 +60,12 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 		return err
 	}
 
+	if cfg.Backend.Kind == "managed_agents" && cfg.Coordinator.Enabled {
+		logger.Warn("coordinator is ignored for backend.kind=managed_agents in P1.4")
+	}
 	var coordHandle *spawner.CoordinatorHandle
 	var coordLog io.Closer
-	if cfg.Backend.Kind == "managed_agents" {
-		if cfg.Coordinator.Enabled {
-			logger.Warn("coordinator is ignored for backend.kind=managed_agents in P1.4")
-		}
-	} else {
+	if cfg.Backend.Kind != "managed_agents" {
 		coordHandle, coordLog, err = run.startCoordinator(ctx, tiers)
 		if err != nil {
 			return err

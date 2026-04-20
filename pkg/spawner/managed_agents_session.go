@@ -67,7 +67,7 @@ func (a sdkSessionEventsAPI) StreamEvents(ctx context.Context, sessionID string,
 	return &sdkEventStream{stream: a.events.StreamEvents(ctx, sessionID, params, opts...)}
 }
 
-func (a sdkSessionEventsAPI) ListAutoPaging(ctx context.Context, sessionID string, params anthropic.BetaSessionEventListParams, opts ...option.RequestOption) eventPager {
+func (a sdkSessionEventsAPI) ListAutoPaging(ctx context.Context, sessionID string, params anthropic.BetaSessionEventListParams, opts ...option.RequestOption) eventPager { //nolint:gocritic // signature matches SDK value-type parameter
 	return &sdkEventPager{pager: a.events.ListAutoPaging(ctx, sessionID, params, opts...)}
 }
 
@@ -187,10 +187,6 @@ func (p *PendingSession) Stream(ctx context.Context) (*Session, <-chan Event, er
 	if stream == nil {
 		return nil, nil, errors.New("events: nil stream")
 	}
-	if err := stream.Err(); err != nil {
-		_ = stream.Close()
-		return nil, nil, fmt.Errorf("events: %w", err)
-	}
 
 	streamCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan Event, 64)
@@ -305,11 +301,11 @@ func (s *Session) Usage(ctx context.Context) (Usage, error) {
 	if err != nil {
 		return Usage{}, err
 	}
-	return usageFromMASession(ma.Usage), nil
+	return usageFromMASession(&ma.Usage), nil
 }
 
 // Send delivers a user.message or user.interrupt to MA.
-func (s *Session) Send(ctx context.Context, event UserEvent) error {
+func (s *Session) Send(ctx context.Context, event *UserEvent) error {
 	params, err := toSessionEventSendParams(event)
 	if err != nil {
 		return err
@@ -361,7 +357,7 @@ func (s *Session) DownloadFile(context.Context, FileRef, io.Writer) error {
 
 // Interrupt sends a user.interrupt event.
 func (s *Session) Interrupt(ctx context.Context) error {
-	return s.Send(ctx, UserEvent{Type: UserEventTypeInterrupt})
+	return s.Send(ctx, &UserEvent{Type: UserEventTypeInterrupt})
 }
 
 // Cancel closes the local stream reader. It does not archive the MA session.
@@ -385,56 +381,86 @@ func (s *Session) run(ctx context.Context, stream eventStream) {
 
 	attempt := 1
 	for {
-		for stream.Next() {
-			attempt = 1
-			terminal, err := s.process(ctx, stream.Current())
-			if err != nil {
-				s.setErr(err)
-				return
-			}
-			if terminal {
-				return
-			}
-		}
-
-		if err := ctx.Err(); err != nil {
+		outcome, err := s.consumeStream(ctx, stream)
+		if err != nil {
 			s.setErr(err)
 			return
 		}
-
-		err := stream.Err()
-		if err == nil {
+		if outcome.Terminal {
 			return
 		}
-		if !isRetryableMAError(err) || attempt >= s.retryAttempts() {
-			wrapped := fmt.Errorf("events: %w", err)
-			_ = s.failTeam(context.Background(), "", time.Time{}, wrapped.Error())
-			s.setErr(wrapped)
-			return
+		if outcome.Processed {
+			attempt = 1
 		}
-		if waitErr := s.waitRetry(ctx, err, attempt); waitErr != nil {
-			s.setErr(waitErr)
+		streamErr := stream.Err()
+		if streamErr == nil {
 			return
 		}
 
-		_ = stream.Close()
-		stream = s.events.StreamEvents(ctx, s.id, anthropic.BetaSessionEventStreamParams{})
-		if stream == nil {
-			s.setErr(errors.New("events: nil stream on reconnect"))
-			return
-		}
-		s.setStream(stream)
-
-		terminal, backfillErr := s.backfill(ctx)
-		if backfillErr != nil {
-			s.setErr(backfillErr)
+		nextStream, terminal, err := s.reconnect(ctx, stream, streamErr, attempt)
+		if err != nil {
+			s.setErr(err)
 			return
 		}
 		if terminal {
 			return
 		}
+		stream = nextStream
 		attempt++
 	}
+}
+
+// streamOutcome reports how consumeStream exited. Terminal means a terminal
+// event was observed; Processed means at least one event was received from
+// the stream before it ended.
+type streamOutcome struct {
+	Terminal  bool
+	Processed bool
+}
+
+// consumeStream drains events from the stream until it returns terminal, an
+// error, or the stream ends.
+func (s *Session) consumeStream(ctx context.Context, stream eventStream) (streamOutcome, error) {
+	var out streamOutcome
+	for stream.Next() {
+		out.Processed = true
+		terminal, err := s.process(ctx, stream.Current())
+		if err != nil {
+			return out, err
+		}
+		if terminal {
+			out.Terminal = true
+			return out, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *Session) reconnect(ctx context.Context, stream eventStream, streamErr error, attempt int) (eventStream, bool, error) {
+	if !isRetryableMAError(streamErr) || attempt >= s.retryAttempts() {
+		wrapped := fmt.Errorf("events: %w", streamErr)
+		_ = s.failTeam(context.WithoutCancel(ctx), "", time.Time{}, wrapped.Error())
+		return nil, false, wrapped
+	}
+	if waitErr := s.waitRetry(ctx, streamErr, attempt); waitErr != nil {
+		return nil, false, waitErr
+	}
+
+	_ = stream.Close()
+	next := s.events.StreamEvents(ctx, s.id, anthropic.BetaSessionEventStreamParams{})
+	if next == nil {
+		return nil, false, errors.New("events: nil stream on reconnect")
+	}
+	s.setStream(next)
+
+	terminal, backfillErr := s.backfill(ctx)
+	if backfillErr != nil {
+		return nil, false, backfillErr
+	}
+	return next, terminal, nil
 }
 
 func (s *Session) backfill(ctx context.Context) (bool, error) {
@@ -474,7 +500,7 @@ func (s *Session) process(ctx context.Context, ev managedEvent) (bool, error) {
 	}
 	if err := s.writeRawLog(raw); err != nil {
 		wrapped := fmt.Errorf("log_write: %w", err)
-		_ = s.failTeam(context.Background(), parsed.ID, parsed.ProcessedAt, wrapped.Error())
+		_ = s.failTeam(context.WithoutCancel(ctx), parsed.ID, parsed.ProcessedAt, wrapped.Error())
 		return true, wrapped
 	}
 
@@ -484,10 +510,10 @@ func (s *Session) process(ctx context.Context, ev managedEvent) (bool, error) {
 		return true, ctx.Err()
 	}
 
-	return s.apply(ctx, translated, parsed)
+	return s.apply(ctx, translated, &parsed)
 }
 
-func (s *Session) apply(ctx context.Context, event Event, raw maEvent) (bool, error) {
+func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, error) {
 	switch ev := event.(type) {
 	case AgentMessageEvent:
 		if ev.Text != "" {
@@ -507,7 +533,7 @@ func (s *Session) apply(ctx context.Context, event Event, raw maEvent) (bool, er
 			ts.LastError = ""
 		})
 	case SessionStatusIdleEvent:
-		return s.applyIdle(ctx, ev, raw)
+		return s.applyIdle(ctx, &ev, raw)
 	case SessionStatusTerminatedEvent:
 		return true, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.TeamState) {
 			ts.Status = "terminated"
@@ -536,7 +562,7 @@ func (s *Session) apply(ctx context.Context, event Event, raw maEvent) (bool, er
 	}
 }
 
-func (s *Session) applyIdle(ctx context.Context, ev SessionStatusIdleEvent, raw maEvent) (bool, error) {
+func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw *maEvent) (bool, error) {
 	reason := ev.Status.StopReason.Type
 	switch reason {
 	case "end_turn":
@@ -597,13 +623,14 @@ func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.T
 		return nil
 	}
 	msg := "state_write: " + err.Error()
+	fallbackCtx := context.WithoutCancel(ctx)
 	fallbackErr := func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
-		return s.store.UpdateTeamState(context.Background(), s.teamName, func(ts *store.TeamState) {
+		return s.store.UpdateTeamState(fallbackCtx, s.teamName, func(ts *store.TeamState) {
 			ts.Status = "failed"
 			ts.EndedAt = s.now()
 			ts.LastError = msg
@@ -713,6 +740,8 @@ func (s *Session) retryMaxDelay() time.Duration {
 }
 
 // StartSession wraps Beta.Sessions.New. No prompt is sent here.
+//
+//nolint:gocritic // signature matches Spawner interface
 func (s *ManagedAgentsSpawner) StartSession(ctx context.Context, req StartSessionRequest) (*PendingSession, error) {
 	if req.Agent.ID == "" {
 		return nil, fmt.Errorf("%w: missing agent id", store.ErrInvalidArgument)
@@ -721,7 +750,7 @@ func (s *ManagedAgentsSpawner) StartSession(ctx context.Context, req StartSessio
 		return nil, fmt.Errorf("%w: missing environment id", store.ErrInvalidArgument)
 	}
 	var created *anthropic.BetaManagedAgentsSession
-	params := toSessionNewParams(req)
+	params := toSessionNewParams(&req)
 	err := s.withRetry(ctx, "start_session", func(ctx context.Context) error {
 		var err error
 		created, err = s.sessions.New(ctx, params)
@@ -829,16 +858,8 @@ func isRetryableMAError(err error) bool {
 }
 
 func retryDelay(err error, attempt int, baseDelay, maxDelay time.Duration) time.Duration {
-	var apiErr *anthropic.Error
-	if errors.As(err, &apiErr) && apiErr.Response != nil {
-		if h := apiErr.Response.Header.Get("Retry-After"); h != "" {
-			if secs, parseErr := strconv.Atoi(h); parseErr == nil && secs >= 0 {
-				return time.Duration(secs) * time.Second
-			}
-			if t, parseErr := http.ParseTime(h); parseErr == nil {
-				return time.Until(t)
-			}
-		}
+	if d, ok := retryAfterDelay(err); ok {
+		return d
 	}
 	pow := math.Pow(2, float64(max(0, attempt-1)))
 	delay := time.Duration(float64(baseDelay) * pow)
@@ -851,7 +872,25 @@ func retryDelay(err error, attempt int, baseDelay, maxDelay time.Duration) time.
 	return delay
 }
 
-func toSessionNewParams(req StartSessionRequest) anthropic.BetaSessionNewParams {
+func retryAfterDelay(err error) (time.Duration, bool) {
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) || apiErr.Response == nil {
+		return 0, false
+	}
+	h := apiErr.Response.Header.Get("Retry-After")
+	if h == "" {
+		return 0, false
+	}
+	if secs, parseErr := strconv.Atoi(h); parseErr == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, parseErr := http.ParseTime(h); parseErr == nil {
+		return time.Until(t), true
+	}
+	return 0, false
+}
+
+func toSessionNewParams(req *StartSessionRequest) anthropic.BetaSessionNewParams {
 	params := anthropic.BetaSessionNewParams{
 		Agent: anthropic.BetaSessionNewParamsAgentUnion{
 			OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
@@ -928,7 +967,7 @@ func toSessionRepoCheckout(checkout *RepoCheckout) anthropic.BetaManagedAgentsGi
 	}
 }
 
-func toSessionEventSendParams(event UserEvent) (anthropic.BetaSessionEventSendParams, error) {
+func toSessionEventSendParams(event *UserEvent) (anthropic.BetaSessionEventSendParams, error) {
 	switch event.Type {
 	case UserEventTypeMessage:
 		if event.Message == "" {
@@ -967,7 +1006,7 @@ func sessionStatusFromMA(session *anthropic.BetaManagedAgentsSession) SessionSta
 	}
 }
 
-func usageFromMASession(usage anthropic.BetaManagedAgentsSessionUsage) Usage {
+func usageFromMASession(usage *anthropic.BetaManagedAgentsSessionUsage) Usage {
 	return Usage{
 		InputTokens:              usage.InputTokens,
 		OutputTokens:             usage.OutputTokens,
@@ -1041,37 +1080,54 @@ func translateMAEvent(raw []byte, now time.Time) (Event, maEvent, error) {
 		Type:        EventType(ev.Type),
 		ProcessedAt: ev.ProcessedAt,
 	}
+	if translated, ok := translateAgentEvent(base, &ev); ok {
+		return translated, ev, nil
+	}
+	if translated, ok := translateSessionEvent(base, &ev); ok {
+		return translated, ev, nil
+	}
+	base.Type = EventTypeUnknown
+	return UnknownEvent{BaseEvent: base, Payload: json.RawMessage(raw)}, ev, nil
+}
+
+func translateAgentEvent(base BaseEvent, ev *maEvent) (Event, bool) {
 	switch EventType(ev.Type) {
 	case EventTypeAgentMessage:
 		text := contentText(ev.Content)
-		return AgentMessageEvent{BaseEvent: base, Role: "assistant", Content: toContentBlocks(ev.Content), Text: text}, ev, nil
+		return AgentMessageEvent{BaseEvent: base, Role: "assistant", Content: toContentBlocks(ev.Content), Text: text}, true
 	case EventTypeAgentThinking:
-		return AgentThinkingEvent{BaseEvent: base}, ev, nil
+		return AgentThinkingEvent{BaseEvent: base}, true
 	case EventTypeAgentToolUse:
-		return AgentToolUseEvent{BaseEvent: base, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, ev, nil
+		return AgentToolUseEvent{BaseEvent: base, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, true
 	case EventTypeAgentToolResult:
-		return AgentToolResultEvent{BaseEvent: base, ToolResult: ToolResult{ToolUseID: ev.ToolUseID, Content: contentTextOrRaw(ev.Content), Error: toolError(ev.IsError)}}, ev, nil
+		return AgentToolResultEvent{BaseEvent: base, ToolResult: ToolResult{ToolUseID: ev.ToolUseID, Content: contentTextOrRaw(ev.Content), Error: toolError(ev.IsError)}}, true
 	case EventTypeAgentMCPToolUse:
-		return AgentMCPToolUseEvent{BaseEvent: base, ServerName: ev.MCPServerName, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, ev, nil
+		return AgentMCPToolUseEvent{BaseEvent: base, ServerName: ev.MCPServerName, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, true
 	case EventTypeAgentMCPToolResult:
-		return AgentMCPToolResultEvent{BaseEvent: base, ServerName: ev.MCPServerName, ToolResult: ToolResult{ToolUseID: firstNonEmpty(ev.MCPToolUseID, ev.ToolUseID), Content: contentTextOrRaw(ev.Content), Error: toolError(ev.IsError)}}, ev, nil
+		return AgentMCPToolResultEvent{BaseEvent: base, ServerName: ev.MCPServerName, ToolResult: ToolResult{ToolUseID: firstNonEmpty(ev.MCPToolUseID, ev.ToolUseID), Content: contentTextOrRaw(ev.Content), Error: toolError(ev.IsError)}}, true
 	case EventTypeAgentCustomToolUse:
-		return AgentCustomToolUseEvent{BaseEvent: base, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, ev, nil
+		return AgentCustomToolUseEvent{BaseEvent: base, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, true
 	case EventTypeAgentThreadContextCompacted:
-		return AgentThreadContextCompactedEvent{BaseEvent: base, Summary: contentText(ev.Content)}, ev, nil
+		return AgentThreadContextCompactedEvent{BaseEvent: base, Summary: contentText(ev.Content)}, true
+	default:
+		return nil, false
+	}
+}
+
+func translateSessionEvent(base BaseEvent, ev *maEvent) (Event, bool) {
+	switch EventType(ev.Type) {
 	case EventTypeSessionStatusRunning:
-		return SessionStatusRunningEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateRunning, UpdatedAt: ev.ProcessedAt}}, ev, nil
+		return SessionStatusRunningEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateRunning, UpdatedAt: ev.ProcessedAt}}, true
 	case EventTypeSessionStatusIdle:
-		return SessionStatusIdleEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateIdle, StopReason: StopReason{Type: ev.StopReason.Type, EventIDs: eventIDs(ev.StopReason.EventIDs)}, UpdatedAt: ev.ProcessedAt, Message: ev.ErrorMessage()}}, ev, nil
+		return SessionStatusIdleEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateIdle, StopReason: StopReason{Type: ev.StopReason.Type, EventIDs: eventIDs(ev.StopReason.EventIDs)}, UpdatedAt: ev.ProcessedAt, Message: ev.ErrorMessage()}}, true
 	case EventTypeSessionStatusRescheduled:
-		return SessionStatusRescheduledEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateRescheduling, UpdatedAt: ev.ProcessedAt}}, ev, nil
+		return SessionStatusRescheduledEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateRescheduling, UpdatedAt: ev.ProcessedAt}}, true
 	case EventTypeSessionStatusTerminated:
-		return SessionStatusTerminatedEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateTerminated, UpdatedAt: ev.ProcessedAt}}, ev, nil
+		return SessionStatusTerminatedEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateTerminated, UpdatedAt: ev.ProcessedAt}}, true
 	case EventTypeSessionError:
-		msg := ev.ErrorMessage()
-		return SessionErrorEvent{BaseEvent: base, Message: msg, Code: ev.ErrorCode()}, ev, nil
+		return SessionErrorEvent{BaseEvent: base, Message: ev.ErrorMessage(), Code: ev.ErrorCode()}, true
 	case EventTypeSpanModelRequestStart:
-		return SpanModelRequestStartEvent{BaseEvent: base}, ev, nil
+		return SpanModelRequestStartEvent{BaseEvent: base}, true
 	case EventTypeSpanModelRequestEnd:
 		return SpanModelRequestEndEvent{BaseEvent: base, Usage: Usage{
 			InputTokens:              ev.ModelUsage.InputTokens,
@@ -1079,14 +1135,13 @@ func translateMAEvent(raw []byte, now time.Time) (Event, maEvent, error) {
 			CacheCreationInputTokens: ev.ModelUsage.CacheCreationInputTokens,
 			CacheReadInputTokens:     ev.ModelUsage.CacheReadInputTokens,
 			CostUSD:                  ev.ModelUsage.CostUSD,
-		}}, ev, nil
+		}}, true
 	default:
-		base.Type = EventTypeUnknown
-		return UnknownEvent{BaseEvent: base, Payload: json.RawMessage(raw)}, ev, nil
+		return nil, false
 	}
 }
 
-func (e maEvent) ErrorMessage() string {
+func (e *maEvent) ErrorMessage() string {
 	if len(e.Error) == 0 {
 		return ""
 	}
@@ -1101,7 +1156,7 @@ func (e maEvent) ErrorMessage() string {
 	return firstNonEmpty(shaped.Message, shaped.Code, shaped.Type, string(e.Error))
 }
 
-func (e maEvent) ErrorCode() string {
+func (e *maEvent) ErrorCode() string {
 	if len(e.Error) == 0 {
 		return ""
 	}

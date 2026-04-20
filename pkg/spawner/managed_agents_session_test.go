@@ -36,7 +36,7 @@ func TestManagedAgentsSession_StreamFirstOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if err := session.Send(ctx, UserEvent{Type: UserEventTypeMessage, Message: "hello"}); err != nil {
+	if err := session.Send(ctx, &UserEvent{Type: UserEventTypeMessage, Message: "hello"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -48,7 +48,7 @@ func TestManagedAgentsSession_StreamFirstOrdering(t *testing.T) {
 
 func TestManagedAgentsTranslator_EndTurnWritesSummaryAndDoneState(t *testing.T) {
 	ctx := context.Background()
-	st := seededSessionStore(t, "alpha")
+	st := seededSessionStore(t)
 	var log bytes.Buffer
 	var summaryTeam, summaryText string
 	events := &fakeSessionEventsAPI{
@@ -105,7 +105,7 @@ func TestManagedAgentsTranslator_EndTurnWritesSummaryAndDoneState(t *testing.T) 
 
 func TestManagedAgentsTranslator_DedupesBeforeLogAndState(t *testing.T) {
 	ctx := context.Background()
-	st := seededSessionStore(t, "alpha")
+	st := seededSessionStore(t)
 	var log bytes.Buffer
 	events := &fakeSessionEventsAPI{
 		stream: &fakeStream{events: []managedEvent{
@@ -145,7 +145,7 @@ func TestManagedAgentsTranslator_DedupesBeforeLogAndState(t *testing.T) {
 
 func TestManagedAgentsTranslator_ReconnectBackfillsWithoutDuplicates(t *testing.T) {
 	ctx := context.Background()
-	st := seededSessionStore(t, "alpha")
+	st := seededSessionStore(t)
 	var log bytes.Buffer
 	events := &fakeSessionEventsAPI{
 		streams: []eventStream{
@@ -214,7 +214,7 @@ func TestManagedAgentsTranslator_ReconnectBackfillsWithoutDuplicates(t *testing.
 
 func TestManagedAgentsTranslator_RequiresActionFails(t *testing.T) {
 	ctx := context.Background()
-	st := seededSessionStore(t, "alpha")
+	st := seededSessionStore(t)
 	events := &fakeSessionEventsAPI{
 		stream: &fakeStream{events: []managedEvent{
 			rawEvent(`{"id":"e1","type":"session.status_idle","processed_at":"2026-04-19T12:00:00Z","stop_reason":{"type":"requires_action","event_ids":["tool_1"]}}`),
@@ -248,7 +248,7 @@ func TestManagedAgentsTranslator_RequiresActionFails(t *testing.T) {
 
 func TestManagedAgentsTranslator_SummaryWriteFailureFailsTeam(t *testing.T) {
 	ctx := context.Background()
-	st := seededSessionStore(t, "alpha")
+	st := seededSessionStore(t)
 	events := &fakeSessionEventsAPI{
 		stream: &fakeStream{events: []managedEvent{
 			rawEvent(`{"id":"e1","type":"agent.message","processed_at":"2026-04-19T12:00:00Z","content":[{"type":"text","text":"summary"}]}`),
@@ -288,7 +288,7 @@ func TestManagedAgentsTranslator_SummaryWriteFailureFailsTeam(t *testing.T) {
 
 func TestManagedAgentsTranslator_StateWriteFailureExits(t *testing.T) {
 	ctx := context.Background()
-	base := seededSessionStore(t, "alpha")
+	base := seededSessionStore(t)
 	st := &failingUpdateStore{Store: base, panicValue: "boom"}
 	events := &fakeSessionEventsAPI{
 		stream: &fakeStream{events: []managedEvent{
@@ -355,14 +355,14 @@ func TestTranslateMAEvent_CoversKnownDesignRows(t *testing.T) {
 	}
 }
 
-func seededSessionStore(t *testing.T, team string) *memstore.MemStore {
+func seededSessionStore(t *testing.T) *memstore.MemStore {
 	t.Helper()
 	st := memstore.New()
 	if err := st.SaveRunState(context.Background(), &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
 		Teams: map[string]store.TeamState{
-			team: {Status: "pending"},
+			"alpha": {Status: "pending"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -390,7 +390,10 @@ func logEventIDs(t *testing.T, log string) []string {
 }
 
 func drain(ch <-chan Event) {
-	for range ch {
+	for {
+		if _, ok := <-ch; !ok {
+			return
+		}
 	}
 }
 

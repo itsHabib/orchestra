@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -44,7 +45,7 @@ func (b *Backend) UnmarshalYAML(value *yaml.Node) error {
 		*b = Backend(raw)
 		return nil
 	default:
-		return fmt.Errorf("backend must be a string or mapping")
+		return errors.New("backend must be a string or mapping")
 	}
 }
 

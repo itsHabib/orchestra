@@ -92,7 +92,7 @@ func TestBuildPrompt_TeamLeadWithMembers(t *testing.T) {
 			{Summary: "Build DB", Details: "Postgres", Verify: "go test"},
 		},
 	}
-	prompt := BuildPrompt(&team, "proj", nil, &config.Config{}, nil, "", "")
+	prompt := BuildPrompt(&team, "proj", nil, &config.Config{}, nil, ".orchestra/messages/backend", ".orchestra/messages")
 
 	if !strings.Contains(prompt, "You have 2 teammates") {
 		t.Error("missing team count")

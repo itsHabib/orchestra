@@ -49,10 +49,11 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		r.reportMAEvent(team.Name, event)
 	}
 
+	cleanupCtx := context.WithoutCancel(ctx)
 	if errors.Is(teamCtx.Err(), context.DeadlineExceeded) {
-		_ = session.Cancel(context.Background())
+		_ = session.Cancel(cleanupCtx)
 		msg := fmt.Sprintf("timeout: no events for %d minutes", r.cfg.Defaults.TimeoutMinutes)
-		if err := r.runService.Store().UpdateTeamState(context.Background(), team.Name, func(ts *store.TeamState) {
+		if err := r.runService.Store().UpdateTeamState(cleanupCtx, team.Name, func(ts *store.TeamState) {
 			ts.Status = "failed"
 			ts.EndedAt = time.Now().UTC()
 			ts.LastError = msg
@@ -63,7 +64,7 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		return nil, errors.New(msg)
 	}
 	if errors.Is(teamCtx.Err(), context.Canceled) {
-		_ = session.Cancel(context.Background())
+		_ = session.Cancel(cleanupCtx)
 		return nil, teamCtx.Err()
 	}
 	if err := session.Err(); err != nil {
@@ -73,7 +74,7 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		return nil, err
 	}
 
-	snapshot, err := r.runService.Snapshot(context.Background())
+	snapshot, err := r.runService.Snapshot(cleanupCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +112,7 @@ func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, s
 	if err != nil {
 		return nil, nil, fmt.Errorf("ensure_environment: %w", err)
 	}
-	if err := r.recordMAHandles(ctx, team.Name, agent, env); err != nil {
+	if err := r.recordMAHandles(ctx, team.Name, &agent, &env); err != nil {
 		return nil, nil, err
 	}
 
@@ -128,20 +129,20 @@ func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, s
 		return nil, nil, fmt.Errorf("start_session: %w", err)
 	}
 	if err := r.recordMASession(ctx, team.Name, pending.ID()); err != nil {
-		_ = pending.Cancel(context.Background())
+		_ = pending.Cancel(context.WithoutCancel(ctx))
 		return nil, nil, err
 	}
 
 	session, events, err := pending.Stream(ctx)
 	if err != nil {
-		_ = pending.Cancel(context.Background())
+		_ = pending.Cancel(context.WithoutCancel(ctx))
 		return nil, nil, fmt.Errorf("events: %w", err)
 	}
-	if err := session.Send(ctx, spawner.UserEvent{
+	if err := session.Send(ctx, &spawner.UserEvent{
 		Type:    spawner.UserEventTypeMessage,
 		Message: r.teamPromptMA(team, state),
 	}); err != nil {
-		_ = session.Cancel(context.Background())
+		_ = session.Cancel(context.WithoutCancel(ctx))
 		return nil, nil, fmt.Errorf("send_initial: %w", err)
 	}
 	return session, events, nil
@@ -189,7 +190,7 @@ func (r *orchestrationRun) teamPromptMA(team *config.Team, state *store.RunState
 	return b.String()
 }
 
-func (r *orchestrationRun) recordMAHandles(ctx context.Context, teamName string, agent spawner.AgentHandle, _ spawner.EnvHandle) error {
+func (r *orchestrationRun) recordMAHandles(ctx context.Context, teamName string, agent *spawner.AgentHandle, _ *spawner.EnvHandle) error {
 	return r.runService.Store().UpdateTeamState(ctx, teamName, func(ts *store.TeamState) {
 		ts.AgentID = agent.ID
 		ts.AgentVersion = agent.Version
