@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -360,18 +361,16 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	return s.Send(ctx, &UserEvent{Type: UserEventTypeInterrupt})
 }
 
-// Cancel closes the local stream reader. It does not archive the MA session.
+// Cancel stops the local stream reader. It does not archive the MA session;
+// the backend session keeps running until it idles on its own.
 func (s *Session) Cancel(context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	s.streamMu.Lock()
-	stream := s.stream
-	s.streamMu.Unlock()
-	if stream == nil {
-		return nil
+	if s.done != nil {
+		<-s.done
 	}
-	return stream.Close()
+	return nil
 }
 
 func (s *Session) run(ctx context.Context, stream eventStream) {
@@ -464,24 +463,30 @@ func (s *Session) reconnect(ctx context.Context, stream eventStream, streamErr e
 }
 
 func (s *Session) backfill(ctx context.Context) (bool, error) {
-	params := anthropic.BetaSessionEventListParams{
-		Limit: anthropic.Int(100),
-		Order: anthropic.BetaSessionEventListParamsOrderAsc,
-	}
-	pager := s.events.ListAutoPaging(ctx, s.id, params)
-	for pager.Next() {
-		terminal, err := s.process(ctx, pager.Current())
-		if err != nil || terminal {
-			return terminal, err
+	var terminal bool
+	err := s.withRetry(ctx, "events_backfill", func(ctx context.Context) error {
+		terminal = false
+		params := anthropic.BetaSessionEventListParams{
+			Limit: anthropic.Int(100),
+			Order: anthropic.BetaSessionEventListParamsOrderAsc,
 		}
-	}
-	if err := pager.Err(); err != nil {
-		if isRetryableMAError(err) {
-			return false, fmt.Errorf("events backfill: %w", err)
+		pager := s.events.ListAutoPaging(ctx, s.id, params)
+		for pager.Next() {
+			t, err := s.process(ctx, pager.Current())
+			if err != nil {
+				return err
+			}
+			if t {
+				terminal = true
+				return nil
+			}
 		}
-		return false, err
+		return pager.Err()
+	})
+	if err != nil {
+		return false, fmt.Errorf("events backfill: %w", err)
 	}
-	return false, nil
+	return terminal, nil
 }
 
 func (s *Session) process(ctx context.Context, ev managedEvent) (bool, error) {
@@ -864,12 +869,13 @@ func retryDelay(err error, attempt int, baseDelay, maxDelay time.Duration) time.
 	pow := math.Pow(2, float64(max(0, attempt-1)))
 	delay := time.Duration(float64(baseDelay) * pow)
 	if delay > maxDelay {
-		return maxDelay
+		delay = maxDelay
 	}
-	if delay < 0 {
+	if delay <= 0 {
 		return 0
 	}
-	return delay
+	jitter := 1.0 + (rand.Float64()-0.5)*0.5
+	return time.Duration(float64(delay) * jitter)
 }
 
 func retryAfterDelay(err error) (time.Duration, bool) {
@@ -1117,13 +1123,13 @@ func translateAgentEvent(base BaseEvent, ev *maEvent) (Event, bool) {
 func translateSessionEvent(base BaseEvent, ev *maEvent) (Event, bool) {
 	switch EventType(ev.Type) {
 	case EventTypeSessionStatusRunning:
-		return SessionStatusRunningEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateRunning, UpdatedAt: ev.ProcessedAt}}, true
+		return SessionStatusRunningEvent{BaseEvent: base, Status: SessionStatus{State: SessionStateRunning, UpdatedAt: ev.ProcessedAt}}, true
 	case EventTypeSessionStatusIdle:
-		return SessionStatusIdleEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateIdle, StopReason: StopReason{Type: ev.StopReason.Type, EventIDs: eventIDs(ev.StopReason.EventIDs)}, UpdatedAt: ev.ProcessedAt, Message: ev.ErrorMessage()}}, true
+		return SessionStatusIdleEvent{BaseEvent: base, Status: SessionStatus{State: SessionStateIdle, StopReason: StopReason{Type: ev.StopReason.Type, EventIDs: eventIDs(ev.StopReason.EventIDs)}, UpdatedAt: ev.ProcessedAt, Message: ev.ErrorMessage()}}, true
 	case EventTypeSessionStatusRescheduled:
-		return SessionStatusRescheduledEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateRescheduling, UpdatedAt: ev.ProcessedAt}}, true
+		return SessionStatusRescheduledEvent{BaseEvent: base, Status: SessionStatus{State: SessionStateRescheduling, UpdatedAt: ev.ProcessedAt}}, true
 	case EventTypeSessionStatusTerminated:
-		return SessionStatusTerminatedEvent{BaseEvent: base, Status: SessionStatus{ID: ev.ID, State: SessionStateTerminated, UpdatedAt: ev.ProcessedAt}}, true
+		return SessionStatusTerminatedEvent{BaseEvent: base, Status: SessionStatus{State: SessionStateTerminated, UpdatedAt: ev.ProcessedAt}}, true
 	case EventTypeSessionError:
 		return SessionErrorEvent{BaseEvent: base, Message: ev.ErrorMessage(), Code: ev.ErrorCode()}, true
 	case EventTypeSpanModelRequestStart:
@@ -1235,17 +1241,20 @@ func durationMillis(start, end time.Time) int64 {
 	return end.Sub(start).Milliseconds()
 }
 
+// seenSet deduplicates event IDs across the primary stream and reconnect
+// backfill. The backfill replays events from the beginning (the pinned Go SDK
+// does not expose an `after` cursor on the event list endpoint), so the set
+// must retain every ID observed during the session — an LRU eviction would let
+// early events get re-applied on a late reconnect, double-counting usage.
 type seenSet struct {
-	limit int
-	order []string
-	set   map[string]struct{}
+	set map[string]struct{}
 }
 
-func newSeenSet(limit int) *seenSet {
-	if limit <= 0 {
-		limit = defaultSessionSeenLimit
+func newSeenSet(hint int) *seenSet {
+	if hint <= 0 {
+		hint = defaultSessionSeenLimit
 	}
-	return &seenSet{limit: limit, set: make(map[string]struct{}, limit)}
+	return &seenSet{set: make(map[string]struct{}, hint)}
 }
 
 func (s *seenSet) Has(id string) bool {
@@ -1254,15 +1263,8 @@ func (s *seenSet) Has(id string) bool {
 }
 
 func (s *seenSet) Push(id string) {
-	if id == "" || s.Has(id) {
+	if id == "" {
 		return
-	}
-	if len(s.order) >= s.limit {
-		delete(s.set, s.order[0])
-		copy(s.order, s.order[1:])
-		s.order[len(s.order)-1] = id
-	} else {
-		s.order = append(s.order, id)
 	}
 	s.set[id] = struct{}{}
 }

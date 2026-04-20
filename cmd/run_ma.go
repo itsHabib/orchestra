@@ -52,10 +52,10 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 	cleanupCtx := context.WithoutCancel(ctx)
 	if errors.Is(teamCtx.Err(), context.DeadlineExceeded) {
 		_ = session.Cancel(cleanupCtx)
-		msg := fmt.Sprintf("timeout: no events for %d minutes", r.cfg.Defaults.TimeoutMinutes)
+		msg := fmt.Sprintf("hard timeout after %d minutes", r.cfg.Defaults.TimeoutMinutes)
 		if err := r.runService.Store().UpdateTeamState(cleanupCtx, team.Name, func(ts *store.TeamState) {
 			ts.Status = "failed"
-			ts.EndedAt = time.Now().UTC()
+			ts.EndedAt = r.runService.Now().UTC()
 			ts.LastError = msg
 			ts.SessionID = session.ID()
 		}); err != nil {

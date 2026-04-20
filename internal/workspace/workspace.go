@@ -53,16 +53,16 @@ func Open(path string) (*Workspace, error) {
 
 func (w *Workspace) registryPath() string { return filepath.Join(w.Path, "registry.json") }
 func (w *Workspace) resultPath(name string) string {
-	return filepath.Join(w.Path, "results", name+".json")
+	return filepath.Join(w.Path, "results", safeWorkspacePathPart(name)+".json")
 }
 func (w *Workspace) summaryPath(name string) string {
 	return filepath.Join(w.Path, "results", safeWorkspacePathPart(name), "summary.md")
 }
 func (w *Workspace) logPath(name string) string {
-	return filepath.Join(w.Path, "logs", name+".log")
+	return filepath.Join(w.Path, "logs", safeWorkspacePathPart(name)+".log")
 }
 func (w *Workspace) ndjsonLogPath(name string) string {
-	return filepath.Join(w.Path, "logs", name+".ndjson")
+	return filepath.Join(w.Path, "logs", safeWorkspacePathPart(name)+".ndjson")
 }
 
 // MessagesPath returns the path to the messages directory.
@@ -187,5 +187,9 @@ func safeWorkspacePathPart(s string) string {
 			out = append(out, '_')
 		}
 	}
-	return string(out)
+	safe := string(out)
+	if safe == "" || safe == "." || safe == ".." {
+		return "default"
+	}
+	return safe
 }

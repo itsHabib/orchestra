@@ -267,7 +267,11 @@ func (r *orchestrationRun) markTeamFailed(ctx context.Context, teamName string, 
 }
 
 func (r *orchestrationRun) recordTeamResult(ctx context.Context, teamName string, result *workspace.TeamResult) error {
-	r.logger.TeamMsg(teamName, "Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
+	if result.NumTurns > 0 {
+		r.logger.TeamMsg(teamName, "Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
+	} else {
+		r.logger.TeamMsg(teamName, "Done (%s in / %s out)", fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
+	}
 	if err := r.ws.WriteResult(result); err != nil {
 		return fmt.Errorf("writing result for %s: %w", teamName, err)
 	}

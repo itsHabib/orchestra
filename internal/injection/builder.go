@@ -225,6 +225,17 @@ func writeInstructions(b *strings.Builder, hasMembers, hasMessageBus bool) {
 4. When all tasks pass verification, provide your summary
 `)
 	} else {
+		if hasMessageBus {
+			b.WriteString(`1. Start your /loop inbox monitor (see Message Bus section above)
+2. Work through your tasks in order. After completing each task, run its
+   verify command to confirm it works.
+3. When all tasks are done, provide a brief summary of what you accomplished
+   and list all files created/modified.
+4. IMPORTANT: When you are completely done, cancel your /loop inbox monitor
+   using CronDelete with the job ID from step 1. This allows your session to exit cleanly.
+`)
+			return
+		}
 		b.WriteString(`Work through your tasks in order. After completing each task, run its
 verify command to confirm it works. When all tasks are done, provide a
 brief summary of what you accomplished and list all files created/modified.

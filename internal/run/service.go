@@ -195,9 +195,13 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 
 	now := s.clock().UTC()
 	team := result.Team
+	var endedAt time.Time
 	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
 		ts.Status = "done"
-		ts.EndedAt = now
+		if ts.EndedAt.IsZero() {
+			ts.EndedAt = now
+		}
+		endedAt = ts.EndedAt
 		ts.SessionID = result.SessionID
 		ts.LastError = ""
 		ts.ResultSummary = result.Result
@@ -212,7 +216,7 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 	s.mirrorRegistry("RecordTeamComplete", team, func(e *workspace.RegistryEntry) {
 		e.Status = "done"
 		e.SessionID = result.SessionID
-		e.EndedAt = now
+		e.EndedAt = endedAt
 	})
 	return nil
 }

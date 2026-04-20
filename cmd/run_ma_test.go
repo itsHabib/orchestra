@@ -70,7 +70,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	}
 
 	_, err = r.runTeamMA(ctx, team, &store.RunState{})
-	if err == nil || !strings.Contains(err.Error(), "timeout: no events for 0 minutes") {
+	if err == nil || !strings.Contains(err.Error(), "hard timeout after 0 minutes") {
 		t.Fatalf("runTeamMA err=%v, want timeout", err)
 	}
 	if !fake.canceled {

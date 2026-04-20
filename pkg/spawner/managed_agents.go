@@ -77,7 +77,10 @@ type ManagedAgentsConfig struct {
 	AgentLockTimeout time.Duration
 	EnvLockTimeout   time.Duration
 
-	// SessionEventSeenLimit bounds the in-memory event ID dedupe ring.
+	// SessionEventSeenLimit is the initial capacity hint for the event-ID
+	// dedupe map. The map grows unbounded over the life of a session — the
+	// reconnect backfill replays events from the start and must not re-apply
+	// any previously seen event.
 	SessionEventSeenLimit int
 
 	// API retry knobs for managed-agents API calls.
