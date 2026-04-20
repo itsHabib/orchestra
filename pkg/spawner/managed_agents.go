@@ -226,13 +226,8 @@ func (s *ManagedAgentsSpawner) ensureAgentLocked(ctx context.Context, key, hash 
 }
 
 // resolveAgentFromCache verifies a cached MA agent and either reuses it,
-// updates it in place when the spec drifted, or signals the caller to
-// reconcile.
-//
-// Returns:
-//   - (handle, nil)  cache entry is still valid (possibly after an in-place update)
-//   - (nil, nil)     cached agent is missing or archived — caller should reconcile
-//   - (nil, err)     API or store failure
+// updates it in place when the spec drifted, or returns a nil handle to
+// signal the caller should reconcile.
 func (s *ManagedAgentsSpawner) resolveAgentFromCache(
 	ctx context.Context,
 	key string,
