@@ -1,16 +1,52 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the top-level orchestra configuration.
 type Config struct {
 	Name        string      `yaml:"name"`
+	Backend     Backend     `yaml:"backend,omitempty"`
 	Defaults    Defaults    `yaml:"defaults"`
 	Coordinator Coordinator `yaml:"coordinator,omitempty"`
 	Teams       []Team      `yaml:"teams"`
+}
+
+// Backend selects the runtime backend. It accepts either:
+//
+//	backend: local
+//
+// or:
+//
+//	backend:
+//	  kind: managed_agents
+type Backend struct {
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+}
+
+// UnmarshalYAML accepts the older scalar backend spelling and the newer
+// object spelling used by the managed-agents design docs.
+func (b *Backend) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		b.Kind = strings.TrimSpace(value.Value)
+		return nil
+	case yaml.MappingNode:
+		type rawBackend Backend
+		var raw rawBackend
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		*b = Backend(raw)
+		return nil
+	default:
+		return errors.New("backend must be a string or mapping")
+	}
 }
 
 // Coordinator configures the top-level coordinator agent.
@@ -76,6 +112,9 @@ func (c *Config) TeamByName(name string) *Team {
 
 // ResolveDefaults fills zero-value fields with defaults.
 func (c *Config) ResolveDefaults() {
+	if c.Backend.Kind == "" {
+		c.Backend.Kind = "local"
+	}
 	if c.Defaults.Model == "" {
 		c.Defaults.Model = "sonnet"
 	}
@@ -130,6 +169,7 @@ func (c *Config) Validate() ([]Warning, error) {
 	teamValidation := c.validateTeams(nameValidation.seen)
 	warnings = append(warnings, teamValidation.warnings...)
 	errs = append(errs, teamValidation.errs...)
+	warnings = append(warnings, c.validateBackendWarnings()...)
 
 	// Check for cycles using DFS
 	if err := detectCycles(c.Teams); err != nil {
@@ -147,10 +187,38 @@ func (c *Config) validateTopLevel() []string {
 	if c.Name == "" {
 		errs = append(errs, "project name is required")
 	}
+	backend := c.Backend.Kind
+	if backend == "" {
+		backend = "local"
+	}
+	switch backend {
+	case "local", "managed_agents":
+	default:
+		errs = append(errs, fmt.Sprintf("backend.kind must be one of: local, managed_agents (got %q)", c.Backend.Kind))
+	}
 	if len(c.Teams) == 0 {
 		errs = append(errs, "at least one team is required")
 	}
 	return errs
+}
+
+func (c *Config) validateBackendWarnings() []Warning {
+	if c.Backend.Kind != "managed_agents" {
+		return nil
+	}
+	var warnings []Warning
+	if c.Coordinator.Enabled {
+		warnings = append(warnings, Warning{Message: "coordinator is ignored for backend.kind=managed_agents in P1.4"})
+	}
+	for i := range c.Teams {
+		if c.Teams[i].HasMembers() {
+			warnings = append(warnings, Warning{
+				Team:    c.Teams[i].Name,
+				Message: "members are ignored for backend.kind=managed_agents in P1.4",
+			})
+		}
+	}
+	return warnings
 }
 
 type teamNameValidation struct {

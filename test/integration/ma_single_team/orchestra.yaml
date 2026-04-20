@@ -1,0 +1,30 @@
+name: ma-single-team
+backend:
+  kind: managed_agents
+
+defaults:
+  model: sonnet
+  max_turns: 20
+  permission_mode: acceptEdits
+  timeout_minutes: 30
+
+teams:
+  - name: research-brief
+    lead:
+      role: "Research Brief Lead"
+    context: |
+      Fixed input:
+      Orchestra is adding an opt-in managed-agents backend. The P1.4 slice proves
+      session lifecycle plumbing only: create a session, open the event stream
+      before sending the first prompt, translate events into state, and persist
+      the final agent message as a markdown summary.
+    tasks:
+      - summary: "Write a concise markdown brief"
+        details: |
+          Produce a short markdown summary with:
+          - one sentence on the purpose of P1.4
+          - three bullets naming the lifecycle steps being exercised
+          - one caveat about the fixture being text-only
+        deliverables:
+          - ".orchestra/results/research-brief/summary.md"
+        verify: "summary has one sentence, three bullets, and one caveat"

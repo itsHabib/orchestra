@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"time"
+
+	"github.com/itsHabib/orchestra/pkg/store"
 )
 
 // ErrUnsupported is returned when a backend cannot support a spawner operation.
@@ -21,11 +23,11 @@ type Spawner interface {
 	EnsureEnvironment(ctx context.Context, spec EnvSpec) (EnvHandle, error)
 
 	// StartSession starts a new session. Initial prompt input is sent via
-	// Session.Send.
-	StartSession(ctx context.Context, req StartSessionRequest) (Session, error)
+	// PendingSession.Stream followed by Session.Send.
+	StartSession(ctx context.Context, req StartSessionRequest) (*PendingSession, error)
 
 	// ResumeSession reconnects to an existing backend session by ID.
-	ResumeSession(ctx context.Context, sessionID string) (Session, error)
+	ResumeSession(ctx context.Context, sessionID string) (*Session, error)
 }
 
 // AgentSpec describes the backend agent resource to create or reuse.
@@ -117,6 +119,13 @@ type StartSessionRequest struct {
 	VaultIDs  []string
 	Resources []ResourceRef
 	Metadata  map[string]string
+
+	// The remaining fields are host-side lifecycle sinks used by the managed
+	// agents translator. They are intentionally not sent to the backend.
+	TeamName      string
+	LogWriter     io.Writer
+	Store         store.Store
+	SummaryWriter func(teamName, text string) error
 }
 
 // ResourceRef describes a file or repository resource attached to a session.
@@ -139,23 +148,6 @@ type RepoCheckout struct {
 	Type string // "branch" | "commit"
 	Name string // branch name, when Type == "branch"
 	SHA  string // commit SHA, when Type == "commit"
-}
-
-// Session is a backend runtime for a single agent invocation.
-type Session interface {
-	ID() string
-	Status(ctx context.Context) (SessionStatus, error)
-	Usage(ctx context.Context) (Usage, error)
-
-	Send(ctx context.Context, event UserEvent) error
-	Events(ctx context.Context) (<-chan Event, error)
-	History(ctx context.Context, after EventID) ([]Event, error)
-
-	ListProducedFiles(ctx context.Context) ([]FileRef, error)
-	DownloadFile(ctx context.Context, ref FileRef, w io.Writer) error
-
-	Interrupt(ctx context.Context) error
-	Cancel(ctx context.Context) error
 }
 
 // SessionState is the backend-visible lifecycle state of a session.

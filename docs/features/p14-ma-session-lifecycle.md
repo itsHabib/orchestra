@@ -1,6 +1,6 @@
 # Feature: P1.4 — MA session lifecycle (StartSession + Events + Send)
 
-Status: **Proposed**
+Status: **Implemented in feature branch**
 Owner: @itsHabib
 Depends on: [00-store-interface.md](./00-store-interface.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md), P1.2 spawner scaffolding (existing in `pkg/spawner/`).
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §6 (architecture), §8 (Spawner interface), §9.3 (`StartSession`), §9.4 (`Session.Events`), §10.2 (`state.json` schema), §13 phase P1.4, §16 (event mapping).
@@ -57,7 +57,7 @@ Concretely, P1.4 lands:
 - Engine wiring: the `startTeamMA` helper that enforces stream-first ordering, wraps the event loop in a `context.WithTimeout`, and hands off to the per-team event loop.
 - State transitions: `running`, `idle`, `done`, `failed`, `terminated` — driven by events (§16) and by the team's context deadline (§5.5).
 - Result-summary capture: final `agent.message` text → `.orchestra/results/<team>/summary.md`.
-- Token/cost counter accumulation from `span.model_request_end`.
+- Token counter accumulation from `span.model_request_end`; `cost_usd` is accumulated when present in raw event JSON.
 - Unit tests for translator + timeout behavior + stream-first ordering.
 - Opt-in integration fixture exercising a single-team end-to-end MA run.
 
@@ -154,7 +154,7 @@ The full MA-event → orchestra-event mapping lives in DESIGN-v2 §16. P1.4 impl
 | `session.status_idle + error` | `team.status = "failed"`; `team.last_error = <event payload>` |
 | `session.status_terminated` | `team.status = "terminated"`; finalize counters |
 | `session.error` | `team.last_error = <message>` (status unchanged; next idle/terminated decides). **Caveat:** if `session.error` is followed by a stream drop that never reconnects, the team remains `running` until the per-team deadline fires (§4.3). |
-| `span.model_request_end` | accumulate `input_tokens`, `output_tokens`, `cache_{read,creation}_input_tokens`, `cost_usd` |
+| `span.model_request_end` | accumulate `input_tokens`, `output_tokens`, `cache_{read,creation}_input_tokens`, and `cost_usd` when present in raw event JSON |
 | `agent.*`, `session.status_rescheduled` | NDJSON log only; no state change |
 
 Every event (state-affecting or not) is NDJSON-logged first. The translator does not fork per-event goroutines.
@@ -186,9 +186,9 @@ append(e) to NDJSON
 translate(e)
 ```
 
-**Reopen choreography.** On transport error from `StreamEvents`, the retry layer (§2 F8) decides whether to retry. If it does, the reconnect path reopens the stream *and* calls `Beta.Sessions.Events.ListAutoPaging(after: last_event_id)` to backfill events emitted during the drop. Every event from the backfill goes through the same dedup gate; everything new on the reopened stream likewise. Duplicates are common across this boundary — that's why the seen-set exists.
+**Reopen choreography.** On transport error from `StreamEvents`, the retry layer (§2 F8) decides whether to retry. If it does, the reconnect path reopens the stream and backfills events emitted during the drop. The design originally called for `Beta.Sessions.Events.ListAutoPaging(after: last_event_id)`, but the pinned Go SDK's `BetaSessionEventListParams` does not currently expose an `after` cursor; P1.4 therefore lists chronologically and relies on the same seen-set gate to skip duplicates. Everything new on the reopened stream likewise goes through the gate. Duplicates are common across this boundary — that's why the seen-set exists.
 
-**Persistence for P1.8.** Every state-affecting event's ID is written to `team.last_event_id` in `state.json` via `UpdateTeamState` (the `session.*` and `span.model_request_end` rows in §4.2 all set it). On `orchestra resume` (P1.8), the engine reads `last_event_id` from `state.json`, seeds the seen-set with just that one ID, and calls `ListAutoPaging(after: last_event_id)` to replay. This closes Open Q #1 (yes, populate `last_event_id` in P1.4 even though the reader lands in P1.8 — the dedup story depends on it).
+**Persistence for P1.8.** Every state-affecting event's ID is written to `team.last_event_id` in `state.json` via `UpdateTeamState` (the `session.*` and `span.model_request_end` rows in §4.2 all set it). On `orchestra resume` (P1.8), the engine reads `last_event_id` from `state.json`, seeds the seen-set with just that one ID, and replays from the event list. If the SDK grows the missing `after` cursor by then, resume should pass it; otherwise it should use the same chronological-list + dedupe fallback P1.4 uses. This closes Open Q #1 (yes, populate `last_event_id` in P1.4 even though the reader lands in P1.8 — the dedup story depends on it).
 
 **What the seen-set does not protect against.** A session whose MA-side event log mutates retroactively (events renumbered, IDs reused). Neither the spec nor the SDK allows for this, so we treat it as out-of-scope. If it ever happens, duplicates become visible and we redesign.
 

@@ -24,7 +24,7 @@ func BuildPrompt(team *config.Team, projectName string, state *workspace.State, 
 	writeTeamMembers(&b, team)
 	writeDependencyContext(&b, team, state, cfg)
 	writeMessageBus(&b, inboxFolder, messagesPath, cfg.Defaults.InboxPollInterval)
-	writeInstructions(&b, team.HasMembers())
+	writeInstructions(&b, team.HasMembers(), inboxFolder != "" && messagesPath != "")
 
 	return b.String()
 }
@@ -191,10 +191,11 @@ func writeSendingInstructions(b *strings.Builder, inboxFolder, messagesPath stri
 	b.WriteString("```\n\n")
 }
 
-func writeInstructions(b *strings.Builder, hasMembers bool) {
+func writeInstructions(b *strings.Builder, hasMembers, hasMessageBus bool) {
 	b.WriteString("## Instructions\n")
 	if hasMembers {
-		b.WriteString(`1. Start your /loop inbox monitor (see Message Bus section above)
+		if hasMessageBus {
+			b.WriteString(`1. Start your /loop inbox monitor (see Message Bus section above)
 2. Use TeamCreate to create your team and assign tasks to teammates based on
    their focus areas. Give each teammate a detailed prompt — include technical
    context, specific tasks with verify commands, and relevant upstream results.
@@ -213,12 +214,31 @@ func writeInstructions(b *strings.Builder, hasMembers bool) {
 7. IMPORTANT: When you are completely done, cancel your /loop inbox monitor
    using CronDelete with the job ID from step 1. This allows your session to exit cleanly.
 `)
+			return
+		}
+		b.WriteString(`1. Use TeamCreate to create your team and assign tasks to teammates based on
+   their focus areas. Give each teammate a detailed prompt — include technical
+   context, specific tasks with verify commands, and relevant upstream results.
+   They cannot see your conversation, so the prompt is ALL they get.
+2. As results come back, run each task's verify command yourself to confirm
+3. If a verify fails, give the teammate specific feedback and have them fix it
+4. When all tasks pass verification, provide your summary
+`)
 	} else {
+		if hasMessageBus {
+			b.WriteString(`1. Start your /loop inbox monitor (see Message Bus section above)
+2. Work through your tasks in order. After completing each task, run its
+   verify command to confirm it works.
+3. When all tasks are done, provide a brief summary of what you accomplished
+   and list all files created/modified.
+4. IMPORTANT: When you are completely done, cancel your /loop inbox monitor
+   using CronDelete with the job ID from step 1. This allows your session to exit cleanly.
+`)
+			return
+		}
 		b.WriteString(`Work through your tasks in order. After completing each task, run its
 verify command to confirm it works. When all tasks are done, provide a
 brief summary of what you accomplished and list all files created/modified.
-IMPORTANT: When you are completely done, cancel your /loop inbox monitor
-using CronDelete with the job ID. This allows your session to exit cleanly.
 `)
 	}
 }

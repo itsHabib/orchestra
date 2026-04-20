@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/pkg/store"
 	"github.com/itsHabib/orchestra/pkg/store/memstore"
 )
@@ -99,6 +102,27 @@ func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 	}
 	if _, ok := got.Teams["old"]; ok {
 		t.Fatalf("fresh state retained old team: %+v", got.Teams)
+	}
+}
+
+func TestBeginManagedAgentsSkipsMessageBus(t *testing.T) {
+	ctx := context.Background()
+	wsPath := filepath.Join(t.TempDir(), ".orchestra")
+	svc := New(memstore.New(), WithWorkspace(workspace.ForPath(wsPath)))
+	cfg := testConfig()
+	cfg.Backend.Kind = "managed_agents"
+
+	active, err := svc.Begin(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = svc.End(active) }()
+
+	if active.Bus != nil {
+		t.Fatalf("Bus=%v, want nil for managed_agents", active.Bus)
+	}
+	if _, err := os.Stat(filepath.Join(wsPath, "messages")); !os.IsNotExist(err) {
+		t.Fatalf("messages dir err=%v, want not exist", err)
 	}
 }
 

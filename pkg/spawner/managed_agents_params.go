@@ -137,6 +137,11 @@ func builtinToolConfigs(tools []Tool) []anthropic.BetaManagedAgentsAgentToolConf
 		configs = append(configs, anthropic.BetaManagedAgentsAgentToolConfigParams{
 			Name:    anthropic.BetaManagedAgentsAgentToolConfigParamsName(tool.Name),
 			Enabled: anthropic.Bool(true),
+			PermissionPolicy: anthropic.BetaManagedAgentsAgentToolConfigParamsPermissionPolicyUnion{
+				OfAlwaysAllow: &anthropic.BetaManagedAgentsAlwaysAllowPolicyParam{
+					Type: anthropic.BetaManagedAgentsAlwaysAllowPolicyTypeAlwaysAllow,
+				},
+			},
 		})
 	}
 	return configs
