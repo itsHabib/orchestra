@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestValidate_ValidConfig(t *testing.T) {
@@ -183,11 +185,75 @@ func TestValidate_TaskQualityWarning(t *testing.T) {
 	}
 }
 
+func TestBackendYAMLForms(t *testing.T) {
+	tests := []struct {
+		name string
+		yml  string
+		want string
+	}{
+		{name: "scalar", yml: "backend: managed_agents\n", want: "managed_agents"},
+		{name: "mapping", yml: "backend:\n  kind: managed_agents\n", want: "managed_agents"},
+		{name: "missing", yml: "", want: "local"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg Config
+			if err := yaml.Unmarshal([]byte(tc.yml), &cfg); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			cfg.ResolveDefaults()
+			if cfg.Backend.Kind != tc.want {
+				t.Fatalf("Backend.Kind=%q, want %q", cfg.Backend.Kind, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidate_BackendKind(t *testing.T) {
+	cfg := &Config{
+		Name:    "p",
+		Backend: Backend{Kind: "bogus"},
+		Teams:   []Team{{Name: "a", Tasks: []Task{{Summary: "x"}}}},
+	}
+	_, err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "backend.kind") {
+		t.Fatalf("expected backend.kind validation error, got %v", err)
+	}
+}
+
+func TestValidate_ManagedAgentsWarnings(t *testing.T) {
+	cfg := &Config{
+		Name:        "p",
+		Backend:     Backend{Kind: "managed_agents"},
+		Coordinator: Coordinator{Enabled: true},
+		Teams: []Team{{
+			Name:    "a",
+			Members: []Member{{Role: "dev"}},
+			Tasks:   []Task{{Summary: "x", Details: "d", Verify: "v"}},
+		}},
+	}
+	warnings, err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	var coordinator, members bool
+	for _, w := range warnings {
+		coordinator = coordinator || strings.Contains(w.Message, "coordinator is ignored")
+		members = members || strings.Contains(w.Message, "members are ignored")
+	}
+	if !coordinator || !members {
+		t.Fatalf("warnings=%v, want coordinator and members warnings", warnings)
+	}
+}
+
 func TestResolveDefaults(t *testing.T) {
 	cfg := &Config{
 		Teams: []Team{{Name: "a", Lead: Lead{Role: "dev"}}},
 	}
 	cfg.ResolveDefaults()
+	if cfg.Backend.Kind != "local" {
+		t.Fatalf("expected local backend, got %s", cfg.Backend.Kind)
+	}
 	if cfg.Defaults.Model != "sonnet" {
 		t.Fatalf("expected sonnet, got %s", cfg.Defaults.Model)
 	}

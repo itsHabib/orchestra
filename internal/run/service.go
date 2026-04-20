@@ -82,6 +82,9 @@ func IsNotFound(err error) bool {
 // Workspace returns the workspace attached via WithWorkspace, or nil.
 func (s *Service) Workspace() *workspace.Workspace { return s.workspace }
 
+// Store returns the underlying state store.
+func (s *Service) Store() store.Store { return s.store }
+
 // Now returns the service clock reading. Callers use this to stamp times
 // consistently with the rest of the run lifecycle.
 func (s *Service) Now() time.Time { return s.clock() }
@@ -290,9 +293,13 @@ func (s *Service) ensureWorkspace() (*workspace.Workspace, error) {
 
 func (s *Service) seedState(cfg *config.Config) *store.RunState {
 	now := s.clock().UTC()
+	backend := cfg.Backend.Kind
+	if backend == "" {
+		backend = "local"
+	}
 	state := &store.RunState{
 		Project:   cfg.Name,
-		Backend:   "local",
+		Backend:   backend,
 		RunID:     now.Format("20060102T150405.000000000Z"),
 		StartedAt: now,
 		Teams:     make(map[string]store.TeamState, len(cfg.Teams)),
@@ -309,6 +316,9 @@ func (s *Service) seedWorkspaceFiles(ws *workspace.Workspace, cfg *config.Config
 	}
 	if err := ws.SeedRegistry(cfg); err != nil {
 		return nil, fmt.Errorf("run.Begin seed registry: %w", err)
+	}
+	if cfg.Backend.Kind == "managed_agents" {
+		return nil, nil
 	}
 
 	names := make([]string, len(cfg.Teams))

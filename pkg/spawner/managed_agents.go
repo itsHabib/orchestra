@@ -76,6 +76,14 @@ type ManagedAgentsConfig struct {
 	// ErrLockTimeout.
 	AgentLockTimeout time.Duration
 	EnvLockTimeout   time.Duration
+
+	// SessionEventSeenLimit bounds the in-memory event ID dedupe ring.
+	SessionEventSeenLimit int
+
+	// API retry knobs for managed-agents API calls.
+	APIMaxAttempts    int
+	APIRetryBaseDelay time.Duration
+	APIRetryMaxDelay  time.Duration
 }
 
 // ManagedAgentsOption customizes a ManagedAgentsSpawner.
@@ -100,17 +108,26 @@ type managedEnvironmentAPI interface {
 
 // ManagedAgentsSpawner creates and reuses Anthropic Managed Agents resources.
 type ManagedAgentsSpawner struct {
-	store        store.Store
-	agents       managedAgentAPI
-	environments managedEnvironmentAPI
-	logger       *slog.Logger
-	cfg          ManagedAgentsConfig
-	clock        ManagedAgentsClock
+	store         store.Store
+	agents        managedAgentAPI
+	environments  managedEnvironmentAPI
+	sessions      managedSessionAPI
+	sessionEvents managedSessionEventsAPI
+	logger        *slog.Logger
+	cfg           ManagedAgentsConfig
+	clock         ManagedAgentsClock
 }
 
 // NewManagedAgentsSpawner returns a managed-agents spawner backed by the given store and SDK client.
 func NewManagedAgentsSpawner(st store.Store, client *anthropic.Client, opts ...ManagedAgentsOption) *ManagedAgentsSpawner {
-	return newManagedAgentsSpawner(st, &client.Beta.Agents, &client.Beta.Environments, opts...)
+	return newManagedAgentsSpawnerWithSessions(
+		st,
+		&client.Beta.Agents,
+		&client.Beta.Environments,
+		&client.Beta.Sessions,
+		sdkSessionEventsAPI{events: &client.Beta.Sessions.Events},
+		opts...,
+	)
 }
 
 func newManagedAgentsSpawner(
@@ -119,15 +136,32 @@ func newManagedAgentsSpawner(
 	environments managedEnvironmentAPI,
 	opts ...ManagedAgentsOption,
 ) *ManagedAgentsSpawner {
+	return newManagedAgentsSpawnerWithSessions(st, agents, environments, unsupportedSessionAPI{}, unsupportedSessionEventsAPI{}, opts...)
+}
+
+func newManagedAgentsSpawnerWithSessions(
+	st store.Store,
+	agents managedAgentAPI,
+	environments managedEnvironmentAPI,
+	sessions managedSessionAPI,
+	sessionEvents managedSessionEventsAPI,
+	opts ...ManagedAgentsOption,
+) *ManagedAgentsSpawner {
 	s := &ManagedAgentsSpawner{
-		store:        st,
-		agents:       agents,
-		environments: environments,
-		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:         st,
+		agents:        agents,
+		environments:  environments,
+		sessions:      sessions,
+		sessionEvents: sessionEvents,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: ManagedAgentsConfig{
-			MaxListPages:     10,
-			AgentLockTimeout: 90 * time.Second,
-			EnvLockTimeout:   90 * time.Second,
+			MaxListPages:          10,
+			AgentLockTimeout:      90 * time.Second,
+			EnvLockTimeout:        90 * time.Second,
+			SessionEventSeenLimit: defaultSessionSeenLimit,
+			APIMaxAttempts:        defaultAPIMaxAttempts,
+			APIRetryBaseDelay:     defaultAPIRetryBase,
+			APIRetryMaxDelay:      defaultAPIRetryMax,
 		},
 		clock: func() time.Time { return time.Now().UTC() },
 	}
@@ -142,6 +176,18 @@ func newManagedAgentsSpawner(
 	}
 	if s.cfg.EnvLockTimeout <= 0 {
 		s.cfg.EnvLockTimeout = 90 * time.Second
+	}
+	if s.cfg.SessionEventSeenLimit <= 0 {
+		s.cfg.SessionEventSeenLimit = defaultSessionSeenLimit
+	}
+	if s.cfg.APIMaxAttempts <= 0 {
+		s.cfg.APIMaxAttempts = defaultAPIMaxAttempts
+	}
+	if s.cfg.APIRetryBaseDelay <= 0 {
+		s.cfg.APIRetryBaseDelay = defaultAPIRetryBase
+	}
+	if s.cfg.APIRetryMaxDelay <= 0 {
+		s.cfg.APIRetryMaxDelay = defaultAPIRetryMax
 	}
 	if s.logger == nil {
 		s.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -232,16 +278,6 @@ func (s *ManagedAgentsSpawner) EnsureEnvironment(ctx context.Context, spec EnvSp
 
 func (s *ManagedAgentsSpawner) now() time.Time {
 	return s.clock().UTC()
-}
-
-// StartSession is implemented in P1.4.
-func (s *ManagedAgentsSpawner) StartSession(context.Context, StartSessionRequest) (Session, error) {
-	return nil, ErrUnsupported
-}
-
-// ResumeSession is implemented in P1.8.
-func (s *ManagedAgentsSpawner) ResumeSession(context.Context, string) (Session, error) {
-	return nil, ErrUnsupported
 }
 
 // IsAPIStatus reports whether err is an Anthropic API error carrying the given

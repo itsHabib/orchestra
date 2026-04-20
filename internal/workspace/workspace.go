@@ -55,8 +55,14 @@ func (w *Workspace) registryPath() string { return filepath.Join(w.Path, "regist
 func (w *Workspace) resultPath(name string) string {
 	return filepath.Join(w.Path, "results", name+".json")
 }
+func (w *Workspace) summaryPath(name string) string {
+	return filepath.Join(w.Path, "results", safeWorkspacePathPart(name), "summary.md")
+}
 func (w *Workspace) logPath(name string) string {
 	return filepath.Join(w.Path, "logs", name+".log")
+}
+func (w *Workspace) ndjsonLogPath(name string) string {
+	return filepath.Join(w.Path, "logs", name+".ndjson")
 }
 
 // MessagesPath returns the path to the messages directory.
@@ -130,6 +136,15 @@ func (w *Workspace) WriteResult(r *TeamResult) error {
 	return atomicWrite(w.resultPath(r.Team), data)
 }
 
+// WriteSummary writes a text-only managed-agents deliverable atomically.
+func (w *Workspace) WriteSummary(teamName, text string) error {
+	path := w.summaryPath(teamName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return atomicWrite(path, []byte(text))
+}
+
 // ReadResult reads a team result by team name.
 func (w *Workspace) ReadResult(name string) (*TeamResult, error) {
 	data, err := os.ReadFile(w.resultPath(name))
@@ -146,4 +161,31 @@ func (w *Workspace) ReadResult(name string) (*TeamResult, error) {
 // LogWriter returns a writer for the team's log file.
 func (w *Workspace) LogWriter(teamName string) (io.WriteCloser, error) {
 	return os.Create(w.logPath(teamName))
+}
+
+// NDJSONLogWriter returns a raw event log writer for managed-agents streams.
+func (w *Workspace) NDJSONLogWriter(teamName string) (io.WriteCloser, error) {
+	return os.Create(w.ndjsonLogPath(teamName))
+}
+
+func safeWorkspacePathPart(s string) string {
+	if s == "" {
+		return "default"
+	}
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			out = append(out, r)
+		case r >= 'A' && r <= 'Z':
+			out = append(out, r)
+		case r >= '0' && r <= '9':
+			out = append(out, r)
+		case r == '-' || r == '_' || r == '.':
+			out = append(out, r)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
 }

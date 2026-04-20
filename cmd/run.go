@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,12 +60,20 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 		return err
 	}
 
-	coordHandle, coordLog, err := run.startCoordinator(ctx, tiers)
-	if err != nil {
-		return err
-	}
-	if coordLog != nil {
-		defer func() { _ = coordLog.Close() }()
+	var coordHandle *spawner.CoordinatorHandle
+	var coordLog io.Closer
+	if cfg.Backend.Kind == "managed_agents" {
+		if cfg.Coordinator.Enabled {
+			logger.Warn("coordinator is ignored for backend.kind=managed_agents in P1.4")
+		}
+	} else {
+		coordHandle, coordLog, err = run.startCoordinator(ctx, tiers)
+		if err != nil {
+			return err
+		}
+		if coordLog != nil {
+			defer func() { _ = coordLog.Close() }()
+		}
 	}
 
 	if err := run.runTiers(ctx, tiers); err != nil {
@@ -79,13 +88,14 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 }
 
 type orchestrationRun struct {
-	cfg          *config.Config
-	logger       *olog.Logger
-	runService   *runsvc.Service
-	ws           *workspace.Workspace
-	bus          *messaging.Bus
-	participants []messaging.Participant
-	inboxLookup  map[string]string
+	cfg                *config.Config
+	logger             *olog.Logger
+	runService         *runsvc.Service
+	ws                 *workspace.Workspace
+	bus                *messaging.Bus
+	participants       []messaging.Participant
+	inboxLookup        map[string]string
+	startTeamMAForTest startTeamMAFunc
 }
 
 type tierResult struct {
@@ -107,15 +117,21 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 	}
 	logger.Info("DAG: %d tiers", len(tiers))
 
-	if active.Bus == nil {
-		return nil, nil, errors.New("run began without message bus")
-	}
-	participants := messaging.BuildParticipants(teamNames(cfg.Teams))
-	inboxLookup := inboxLookup(participants)
-	logger.Success("Message bus initialized at %s", active.Bus.Path())
+	var participants []messaging.Participant
+	var lookup map[string]string
+	if cfg.Backend.Kind == "managed_agents" {
+		logger.Info("Managed-agents backend: file message bus and coordinator workspace are disabled in P1.4")
+	} else {
+		if active.Bus == nil {
+			return nil, nil, errors.New("run began without message bus")
+		}
+		participants = messaging.BuildParticipants(teamNames(cfg.Teams))
+		lookup = inboxLookup(participants)
+		logger.Success("Message bus initialized at %s", active.Bus.Path())
 
-	if err := os.MkdirAll(filepath.Join(ws.Path, "coordinator"), 0o755); err != nil {
-		return nil, nil, fmt.Errorf("creating coordinator decisions directory: %w", err)
+		if err := os.MkdirAll(filepath.Join(ws.Path, "coordinator"), 0o755); err != nil {
+			return nil, nil, fmt.Errorf("creating coordinator decisions directory: %w", err)
+		}
 	}
 
 	return &orchestrationRun{
@@ -125,7 +141,7 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 		ws:           ws,
 		bus:          active.Bus,
 		participants: participants,
-		inboxLookup:  inboxLookup,
+		inboxLookup:  lookup,
 	}, tiers, nil
 }
 
@@ -182,6 +198,10 @@ func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNam
 	}
 
 	r.logger.TeamMsg(teamName, "Starting %s", team.Lead.Role)
+	if r.cfg.Backend.Kind == "managed_agents" {
+		return r.runTeamMA(ctx, team, state)
+	}
+
 	if err := r.seedBootstrapMessages(team, state); err != nil {
 		return nil, err
 	}
