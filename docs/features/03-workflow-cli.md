@@ -1,6 +1,6 @@
 # Feature: Workflow-first CLI surface
 
-Status: **Proposed**
+Status: **Implemented**
 Owner: @itsHabib
 
 ---
@@ -43,6 +43,23 @@ only the CLI surface users see.
   prune should target *stale* or *orphaned*, not *old*.
 - Do we still need a low-level escape hatch for "show me every MA resource
   Orchestra touches"? Useful for debugging, but must not be the default UX.
+
+## 3.1 Implementation decisions
+
+- The canonical on-disk layout in this repo is flat active state plus
+  `.orchestra/archive/<run-id>/`, not `.orchestra/runs/<run-id>/`. The `runs`
+  CLI reads active `.orchestra/state.json` and archived `state.json` files
+  from that layout.
+- New run state persists each team's DAG tier so `orchestra runs show <run-id>`
+  can display tier information without reverse-engineering the original config.
+  Older archived states that predate this field show `-` for tier.
+- The low-level Managed Agents cache command is still available as
+  `orchestra debug agents ...` for support/debugging, but it is no longer a
+  top-level user-facing noun.
+- `runs prune` deletes only local stale cache records. It does not archive or
+  delete MA-side resources; MA-side cleanup remains an explicit future step
+  because the current cache records are reusable across runs and do not carry a
+  run ownership boundary.
 
 ## 4. Validation
 

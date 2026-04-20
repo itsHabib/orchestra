@@ -23,7 +23,9 @@ flowchart TB
         run["run"]
         spawn["spawn"]
         status["status"]
+        runs["runs"]
         plan["plan"]
+        debug["debug"]
     end
 
     yaml[/"orchestra.yaml"/] --> CLI
@@ -231,7 +233,11 @@ orchestra run orchestra.yaml
 | `orchestra run <config>` | Full orchestration: build DAG, execute all tiers, print summary. |
 | `orchestra spawn <config> --team <name>` | Spawn a single named team. Prints raw `TeamResult` JSON. |
 | `orchestra status [--workspace <path>]` | Print workspace status table (team, status, tokens, duration). Shows summary counts, live duration for running teams, and token totals. |
+| `orchestra runs ls [--workspace <path>]` | List recent active and archived workflow runs with status, cost, duration, and start time. |
+| `orchestra runs show <run-id> [--workspace <path>]` | Show one run's teams, DAG tier, cached MA agent/environment IDs, and session IDs. |
+| `orchestra runs prune [--workspace <path>] [--older-than 720h] [--apply] [--reconcile]` | Dry-run stale Managed Agents cache pruning in a workflow context; `--apply` deletes eligible cache records. |
 | `orchestra plan <config>` | Preview DAG execution order without running anything. |
+| `orchestra debug agents ls/prune` | Low-level Managed Agents cache inspection for debugging. |
 
 ### `plan` flags
 
@@ -425,6 +431,8 @@ Running `orchestra run` creates an `.orchestra/` directory:
 │   └── <team>.json     # Full TeamResult per completed team
 ├── logs/
 │   └── <team>.log      # Raw NDJSON stream from claude subprocess
+├── archive/
+│   └── <run-id>/       # Prior active run state, results, logs, messages
 └── messages/
     ├── 0-human/inbox/  # Messages for the human operator
     ├── 1-coordinator/  # Messages for the coordinator agent

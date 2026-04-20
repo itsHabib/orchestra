@@ -15,7 +15,7 @@ Requires Go 1.22+.
 
 ## Project Structure
 
-- `cmd/` — Cobra CLI commands (run, plan, spawn, validate, init, status)
+- `cmd/` — Cobra CLI commands (run, runs, plan, spawn, validate, init, status, debug)
 - `internal/config/` — YAML parsing and validation
 - `internal/dag/` — Topological sort (Kahn's algorithm) → execution tiers
 - `internal/spawner/` — Spawns `claude -p --output-format stream-json` subprocesses
