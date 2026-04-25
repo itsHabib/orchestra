@@ -459,11 +459,14 @@ func acquireFileLock(ctx context.Context, path string, mode store.LockMode, body
 	if !locked {
 		return nil, lockError(path, body, store.ErrLockTimeout)
 	}
-	// Refresh holder metadata for both modes so a stale exclusive record
+	// Refresh holder metadata in a sibling file so a stale exclusive record
 	// from a prior holder cannot mislead lockError after an
 	// exclusive→released→shared transition. For concurrent shared holders
 	// this is last-writer-wins, which is fine for best-effort diagnostics.
-	if err := os.WriteFile(path, []byte(lockBody(body)), 0o644); err != nil {
+	// The metadata lives next to the lockfile (not in it) because Windows
+	// LockFileEx is mandatory: any other handle — including one in the same
+	// process — is blocked from writing to the locked byte range.
+	if err := os.WriteFile(holderPath(path), []byte(lockBody(body)), 0o644); err != nil {
 		_ = f.Unlock()
 		return nil, fmt.Errorf("writing lockfile %s: %w", path, err)
 	}
@@ -504,11 +507,15 @@ func lockError(path, body string, err error) error {
 }
 
 func readHolder(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(holderPath(path))
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func holderPath(path string) string {
+	return path + ".holder"
 }
 
 func lockBody(body string) string {
