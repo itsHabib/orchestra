@@ -266,6 +266,7 @@ orchestra run orchestra.yaml
 | `permission_mode` | `acceptEdits` | Permission mode for claude subprocess |
 | `timeout_minutes` | `30` | Timeout per team spawn |
 | `inbox_poll_interval` | `5m` | How often team leads poll their inbox for messages (Go duration format, e.g. `2m`, `30s`) |
+| `ma_concurrent_sessions` | `20` | Max in-flight `Beta.Sessions.New` calls under `backend: managed_agents`. Bounds the create rate against MA's 60/min org limit; ignored under `backend: local`. |
 
 ### `teams[]`
 
@@ -308,6 +309,33 @@ When enabled, the coordinator monitors team progress, relays messages between te
 ### Timeouts and force-kill
 
 Each team has a per-spawn timeout set by `defaults.timeout_minutes`. When a team exceeds its timeout, the process is cancelled. If it doesn't exit within 60 seconds of cancellation, it is force-killed to prevent hung processes from blocking tier progression.
+
+## Backends
+
+Orchestra runs teams on one of two backends, selected by the top-level `backend` field. The default is `local`.
+
+### `backend: local` (default)
+
+Each team is a `claude -p` subprocess running on the host. The cross-team file message bus and the optional coordinator agent both live here.
+
+### `backend: managed_agents`
+
+Each team is a [Managed Agents](https://platform.claude.com/docs/en/managed-agents) session — a sandboxed container provisioned through the Anthropic Beta SDK. Requires `ANTHROPIC_API_KEY`. Cross-team data flows through dependency-result injection: each team's final `agent.message` is persisted under `.orchestra/results/<team>/summary.md` and inlined into downstream prompts the same way the local backend does it.
+
+```yaml
+backend:
+  kind: managed_agents
+defaults:
+  ma_concurrent_sessions: 20  # default; cap on in-flight Beta.Sessions.New
+```
+
+A canonical multi-team example lives under [`examples/ma_multi_team/`](examples/ma_multi_team/orchestra.yaml) — a `planner` team writes an outline that the dependent `analyst` team expands. An opt-in live-MA smoke fixture lives under [`test/integration/ma_multi_team/`](test/integration/ma_multi_team/README.md).
+
+Caveats under `managed_agents`:
+
+- `members:` and `coordinator:` are not supported (validation emits a warning and the orchestration ignores them).
+- The file message bus is disabled — teams cannot read each other's inboxes mid-run.
+- Repo-backed artifact flow (pushing branches between teams) is the next chapter and not yet shipped.
 
 ## Message Bus
 

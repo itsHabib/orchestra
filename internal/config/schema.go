@@ -58,12 +58,18 @@ type Coordinator struct {
 
 // Defaults holds default values applied to all teams unless overridden.
 type Defaults struct {
-	Model             string `yaml:"model" json:"model"`
-	MaxTurns          int    `yaml:"max_turns" json:"max_turns"`
-	PermissionMode    string `yaml:"permission_mode" json:"permission_mode"`
-	TimeoutMinutes    int    `yaml:"timeout_minutes" json:"timeout_minutes"`
-	InboxPollInterval string `yaml:"inbox_poll_interval" json:"inbox_poll_interval"`
+	Model                string `yaml:"model" json:"model"`
+	MaxTurns             int    `yaml:"max_turns" json:"max_turns"`
+	PermissionMode       string `yaml:"permission_mode" json:"permission_mode"`
+	TimeoutMinutes       int    `yaml:"timeout_minutes" json:"timeout_minutes"`
+	InboxPollInterval    string `yaml:"inbox_poll_interval" json:"inbox_poll_interval"`
+	MAConcurrentSessions int    `yaml:"ma_concurrent_sessions,omitempty" json:"ma_concurrent_sessions,omitempty"`
 }
+
+// DefaultMAConcurrentSessions caps how many managed-agents StartSession calls
+// can be in flight at once. Bounds the create rate against MA's 60/min org
+// limit. Override via Defaults.MAConcurrentSessions.
+const DefaultMAConcurrentSessions = 20
 
 // Team represents a single team or solo agent in the orchestration.
 type Team struct {
@@ -129,6 +135,9 @@ func (c *Config) ResolveDefaults() {
 	}
 	if c.Defaults.InboxPollInterval == "" {
 		c.Defaults.InboxPollInterval = "5m"
+	}
+	if c.Defaults.MAConcurrentSessions == 0 {
+		c.Defaults.MAConcurrentSessions = DefaultMAConcurrentSessions
 	}
 	for i := range c.Teams {
 		if c.Teams[i].Lead.Model == "" {
@@ -199,6 +208,9 @@ func (c *Config) validateTopLevel() []string {
 	if len(c.Teams) == 0 {
 		errs = append(errs, "at least one team is required")
 	}
+	if c.Defaults.MAConcurrentSessions < 0 {
+		errs = append(errs, fmt.Sprintf("defaults.ma_concurrent_sessions must be >= 0 (got %d)", c.Defaults.MAConcurrentSessions))
+	}
 	return errs
 }
 
@@ -208,13 +220,13 @@ func (c *Config) validateBackendWarnings() []Warning {
 	}
 	var warnings []Warning
 	if c.Coordinator.Enabled {
-		warnings = append(warnings, Warning{Message: "coordinator is ignored for backend.kind=managed_agents in P1.4"})
+		warnings = append(warnings, Warning{Message: "coordinator is not supported under backend.kind=managed_agents"})
 	}
 	for i := range c.Teams {
 		if c.Teams[i].HasMembers() {
 			warnings = append(warnings, Warning{
 				Team:    c.Teams[i].Name,
-				Message: "members are ignored for backend.kind=managed_agents in P1.4",
+				Message: "members are not supported under backend.kind=managed_agents",
 			})
 		}
 	}

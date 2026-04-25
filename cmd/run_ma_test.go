@@ -2,12 +2,17 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	olog "github.com/itsHabib/orchestra/internal/log"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/store"
@@ -86,6 +91,227 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	}
 	if alpha.InputTokens != 10 {
 		t.Fatalf("partial counters were not preserved: %+v", alpha)
+	}
+}
+
+func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{
+		Project: "p",
+		Backend: "managed_agents",
+		Teams: map[string]store.TeamState{
+			"planner": {Status: "pending"},
+			"analyst": {Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Ensure(filepath.Join(t.TempDir(), ".orchestra"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Name:     "p",
+		Backend:  config.Backend{Kind: "managed_agents"},
+		Defaults: config.Defaults{TimeoutMinutes: 5},
+		Teams: []config.Team{
+			{Name: "planner", Lead: config.Lead{Role: "Planner"}, Tasks: []config.Task{{Summary: "plan"}}},
+			{Name: "analyst", Lead: config.Lead{Role: "Analyst"}, DependsOn: []string{"planner"}, Tasks: []config.Task{{Summary: "analyze"}}},
+		},
+	}
+	cfg.ResolveDefaults()
+
+	var (
+		mu              sync.Mutex
+		analystPrompt   string
+		analystSawState *store.RunState
+	)
+	r := &orchestrationRun{
+		cfg:        cfg,
+		logger:     olog.New(),
+		runService: runsvc.New(st),
+		ws:         ws,
+	}
+	r.startTeamMAForTest = func(ctx context.Context, team *config.Team, state *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+		if team.Name == "analyst" {
+			mu.Lock()
+			analystPrompt = r.teamPromptMA(team, state)
+			analystSawState = state
+			mu.Unlock()
+		}
+		if err := st.UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+			ts.Status = "done"
+			ts.ResultSummary = team.Name + " summary"
+		}); err != nil {
+			return nil, nil, err
+		}
+		ch := make(chan spawner.Event)
+		close(ch)
+		return &fakeManagedSession{id: "sess_" + team.Name}, ch, nil
+	}
+
+	if err := r.runTiers(ctx, [][]string{{"planner"}, {"analyst"}}); err != nil {
+		t.Fatalf("runTiers: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if analystSawState == nil {
+		t.Fatal("analyst substitute never invoked")
+	}
+	plannerInState := analystSawState.Teams["planner"]
+	if plannerInState.Status != "done" || plannerInState.ResultSummary != "planner summary" {
+		t.Fatalf("analyst saw planner state=%+v, want done+summary", plannerInState)
+	}
+	if !strings.Contains(analystPrompt, "planner summary") {
+		t.Fatalf("analyst prompt missing planner summary:\n%s", analystPrompt)
+	}
+}
+
+func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{
+		Project: "p",
+		Backend: "managed_agents",
+		Teams: map[string]store.TeamState{
+			"a": {Status: "pending"},
+			"b": {Status: "pending"},
+			"c": {Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Ensure(filepath.Join(t.TempDir(), ".orchestra"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Name:     "p",
+		Backend:  config.Backend{Kind: "managed_agents"},
+		Defaults: config.Defaults{TimeoutMinutes: 5},
+		Teams: []config.Team{
+			{Name: "a", Lead: config.Lead{Role: "A"}, Tasks: []config.Task{{Summary: "x"}}},
+			{Name: "b", Lead: config.Lead{Role: "B"}, Tasks: []config.Task{{Summary: "x"}}},
+			{Name: "c", Lead: config.Lead{Role: "C"}, Tasks: []config.Task{{Summary: "x"}}},
+		},
+	}
+	cfg.ResolveDefaults()
+
+	var arrived atomic.Int32
+	const expected = 3
+	barrier := make(chan struct{})
+
+	r := &orchestrationRun{
+		cfg:        cfg,
+		logger:     olog.New(),
+		runService: runsvc.New(st),
+		ws:         ws,
+	}
+	r.startTeamMAForTest = func(ctx context.Context, team *config.Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+		if arrived.Add(1) == expected {
+			close(barrier)
+		}
+		select {
+		case <-barrier:
+		case <-time.After(2 * time.Second):
+			return nil, nil, errors.New("timed out waiting for sibling teams to start in parallel")
+		}
+		if err := st.UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+			ts.Status = "done"
+			ts.ResultSummary = team.Name
+		}); err != nil {
+			return nil, nil, err
+		}
+		ch := make(chan spawner.Event)
+		close(ch)
+		return &fakeManagedSession{id: "sess_" + team.Name}, ch, nil
+	}
+
+	if err := r.runTier(ctx, 0, []string{"a", "b", "c"}); err != nil {
+		t.Fatalf("runTier: %v", err)
+	}
+	if got := arrived.Load(); got != expected {
+		t.Fatalf("teams that reached barrier=%d, want %d", got, expected)
+	}
+}
+
+func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{
+		Project: "p",
+		Backend: "managed_agents",
+		Teams: map[string]store.TeamState{
+			"a": {Status: "pending"},
+			"b": {Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Ensure(filepath.Join(t.TempDir(), ".orchestra"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Name:     "p",
+		Backend:  config.Backend{Kind: "managed_agents"},
+		Defaults: config.Defaults{TimeoutMinutes: 5},
+		Teams: []config.Team{
+			{Name: "a", Lead: config.Lead{Role: "A"}, Tasks: []config.Task{{Summary: "x"}}},
+			{Name: "b", Lead: config.Lead{Role: "B"}, DependsOn: []string{"a"}, Tasks: []config.Task{{Summary: "x"}}},
+		},
+	}
+	cfg.ResolveDefaults()
+
+	var (
+		mu      sync.Mutex
+		invoked = map[string]bool{}
+	)
+	r := &orchestrationRun{
+		cfg:        cfg,
+		logger:     olog.New(),
+		runService: runsvc.New(st),
+		ws:         ws,
+	}
+	r.startTeamMAForTest = func(ctx context.Context, team *config.Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+		mu.Lock()
+		invoked[team.Name] = true
+		mu.Unlock()
+		if team.Name == "a" {
+			return nil, nil, errors.New("simulated failure")
+		}
+		if err := st.UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) { ts.Status = "done" }); err != nil {
+			return nil, nil, err
+		}
+		ch := make(chan spawner.Event)
+		close(ch)
+		return &fakeManagedSession{id: "sess_" + team.Name}, ch, nil
+	}
+
+	if err := r.runTiers(ctx, [][]string{{"a"}, {"b"}}); err == nil {
+		t.Fatal("runTiers: expected failure on tier 0, got nil")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !invoked["a"] {
+		t.Fatal("team a substitute never invoked")
+	}
+	if invoked["b"] {
+		t.Fatal("team b substitute invoked despite tier 0 failure")
+	}
+
+	state, err := st.LoadRunState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Teams["a"].Status != "failed" {
+		t.Fatalf("team a status=%q, want failed", state.Teams["a"].Status)
+	}
+	if state.Teams["b"].Status != "pending" {
+		t.Fatalf("team b status=%q, want pending", state.Teams["b"].Status)
 	}
 }
 

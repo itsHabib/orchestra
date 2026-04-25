@@ -1,6 +1,6 @@
 # Feature: Move `pkg/` into `internal/`
 
-Status: **Proposed**
+Status: **Shipped** (PR #10, commit 3c6a863)
 Owner: @itsHabib
 
 ---

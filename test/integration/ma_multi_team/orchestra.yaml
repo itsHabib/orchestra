@@ -1,0 +1,50 @@
+name: ma-multi-team
+backend:
+  kind: managed_agents
+
+defaults:
+  model: sonnet
+  max_turns: 20
+  permission_mode: acceptEdits
+  timeout_minutes: 30
+  # ma_concurrent_sessions defaults to 20; lower it for cost-bounded test runs.
+  ma_concurrent_sessions: 4
+
+teams:
+  - name: planner
+    lead:
+      role: "Sourdough Outline Planner"
+    context: |
+      Fixed input: a beginner-friendly blog post about sourdough.
+      Output rules:
+        - exactly three bullets
+        - each bullet starts with "- "
+        - each bullet is a single sentence under 20 words
+        - no preamble, no closing remarks, no headers
+      Downstream teams will read your bulleted output verbatim.
+    tasks:
+      - summary: "Outline a beginner sourdough post in three bullets"
+        details: |
+          Return only the bulleted list. Each bullet names one section.
+          Sections cover: starter culture, mixing/proofing, baking.
+        deliverables:
+          - ".orchestra/results/planner/summary.md"
+        verify: "exactly three bullets, each on its own line, each starting with '- '"
+
+  - name: analyst
+    depends_on: [planner]
+    lead:
+      role: "Sourdough Outline Expander"
+    context: |
+      Read the planner team's outline (delivered as its result summary in your
+      "Context from Previous Teams" section). Expand each bullet into one
+      paragraph of ~80-120 words. Preserve the bullet order. Do not invent
+      new sections or merge bullets.
+    tasks:
+      - summary: "Expand the planner's outline into paragraphs"
+        details: |
+          For each of the planner's three bullets, write one paragraph and
+          place a "## " header above each paragraph echoing the bullet text.
+        deliverables:
+          - ".orchestra/results/analyst/summary.md"
+        verify: "exactly three paragraphs, each preceded by a '## ' header"

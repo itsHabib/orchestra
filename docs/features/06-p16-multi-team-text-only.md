@@ -1,6 +1,6 @@
 # Feature: P1.6 (text-only) — Multi-team DAG under Managed Agents
 
-Status: **Proposed**
+Status: **Shipped** (PR #12, commit ccfac18)
 Owner: @itsHabib
 Depends on: [p14-ma-session-lifecycle.md](./p14-ma-session-lifecycle.md) (shipped)
 Supersedes ordering in: [DESIGN-v2.md](../DESIGN-v2.md) §13 — P1.6 runs **before** P1.5 (repo-backed artifact flow). See §1.
