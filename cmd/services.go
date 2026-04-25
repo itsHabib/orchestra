@@ -2,8 +2,8 @@ package cmd
 
 import (
 	agentservice "github.com/itsHabib/orchestra/internal/agents"
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/filestore"
+	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/store/filestore"
 )
 
 func newAgentService(workspace string) (store.Store, *agentservice.Service, error) {

@@ -12,8 +12,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/pagination"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/memstore"
+	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/store/memstore"
 )
 
 func TestEnsureAgent_DelegatesToService(t *testing.T) {

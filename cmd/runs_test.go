@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 func TestLoadRunRecordsReadsActiveAndArchive(t *testing.T) {

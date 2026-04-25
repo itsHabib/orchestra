@@ -10,9 +10,9 @@ import (
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/injection"
+	"github.com/itsHabib/orchestra/internal/spawner"
+	"github.com/itsHabib/orchestra/internal/store"
 	"github.com/itsHabib/orchestra/internal/workspace"
-	"github.com/itsHabib/orchestra/pkg/spawner"
-	"github.com/itsHabib/orchestra/pkg/store"
 )
 
 type managedSession interface {

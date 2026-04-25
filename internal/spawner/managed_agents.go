@@ -46,7 +46,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/pagination"
 	agentservice "github.com/itsHabib/orchestra/internal/agents"
 	"github.com/itsHabib/orchestra/internal/machost"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 const (
@@ -235,6 +235,7 @@ func WithManagedAgentsConfig(cfg ManagedAgentsConfig) ManagedAgentsOption {
 	}
 }
 
+//nolint:unused // Reserved for future test-only clock injection; cleanup tracked separately.
 func withManagedAgentsClock(clock ManagedAgentsClock) ManagedAgentsOption {
 	return func(s *ManagedAgentsSpawner) {
 		s.clock = clock

@@ -16,9 +16,9 @@ import (
 	olog "github.com/itsHabib/orchestra/internal/log"
 	"github.com/itsHabib/orchestra/internal/messaging"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
+	"github.com/itsHabib/orchestra/internal/spawner"
+	"github.com/itsHabib/orchestra/internal/store"
 	"github.com/itsHabib/orchestra/internal/workspace"
-	"github.com/itsHabib/orchestra/pkg/spawner"
-	"github.com/itsHabib/orchestra/pkg/store"
 	"github.com/spf13/cobra"
 )
 

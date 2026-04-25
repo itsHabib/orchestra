@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"github.com/itsHabib/orchestra/internal/injection"
-	"github.com/itsHabib/orchestra/pkg/spawner"
+	"github.com/itsHabib/orchestra/internal/spawner"
 )
 
 // startCoordinator spawns the coordinator agent (if enabled). The returned

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 func printRunRows(records []runRecord, limit int, now time.Time) {

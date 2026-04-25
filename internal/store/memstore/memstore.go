@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 // MemStore is an in-memory Store implementation for tests.

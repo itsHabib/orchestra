@@ -80,7 +80,7 @@ import (
 
     "github.com/itsHabib/orchestra/internal/config"
     "github.com/itsHabib/orchestra/internal/messaging"
-    "github.com/itsHabib/orchestra/pkg/store"
+    "github.com/itsHabib/orchestra/internal/store"
 )
 
 // Service owns the run lifecycle: lock, archive, seed, team transitions,
@@ -133,7 +133,7 @@ package agentcache
 import (
     "context"
 
-    "github.com/itsHabib/orchestra/pkg/store"
+    "github.com/itsHabib/orchestra/internal/store"
 )
 
 // MAClient is the minimal surface agentcache needs from the Managed

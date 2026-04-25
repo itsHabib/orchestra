@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/messaging"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 func teamNames(teams []config.Team) []string {

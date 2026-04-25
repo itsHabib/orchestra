@@ -113,7 +113,7 @@ Key implications for our design:
                            orchestra CLI (local process)
                                      │
                        ┌─────────────┴──────────────┐
-                       │   pkg/orchestra.Engine      │
+                       │   internal/orchestra.Engine │
                        │   - loads Config            │
                        │   - builds DAG              │
                        │   - drives tiers            │
@@ -187,7 +187,7 @@ orchestra/
 │   └── log/
 ```
 
-`pkg/store` and `pkg/spawner` are still in `pkg/` in the working tree and are on the migration list per [features/02-pkg-to-internal.md](./features/02-pkg-to-internal.md); execute when scheduled. No code is deleted; v1 behavior is preserved behind the Spawner interface regardless of where the package lives.
+The `pkg/store` → `internal/store` and `pkg/spawner` → `internal/spawner` migration described in [features/02-pkg-to-internal.md](./features/02-pkg-to-internal.md) has shipped; the working tree no longer contains a `pkg/` directory. No code was deleted; v1 behavior is preserved behind the Spawner interface regardless of where the package lives.
 
 ---
 
@@ -287,7 +287,7 @@ Event union (tagged structs) mirrors MA's shape exactly. Appendix §14 has the f
 
 ## 9. Managed Agents backend details
 
-`pkg/spawner/managed_agents.go` uses `github.com/anthropics/anthropic-sdk-go` (Go SDK supports all MA endpoints: `Beta.Agents`, `Beta.Environments`, `Beta.Sessions`, `Beta.Sessions.Events`, `Beta.Files`).
+`internal/spawner/managed_agents.go` uses `github.com/anthropics/anthropic-sdk-go` (Go SDK supports all MA endpoints: `Beta.Agents`, `Beta.Environments`, `Beta.Sessions`, `Beta.Sessions.Events`, `Beta.Files`).
 
 **SDK version pin.** `go.mod` pins to a specific tag (not `latest`) so MA shape changes don't drift us unexpectedly. Phase 1 uses the latest available tag as of P1.2 (record the exact version in `go.mod` and reference it in a doc comment on the spawner package). SDK upgrades are deliberate PRs, reviewed against any MA-docs changes.
 

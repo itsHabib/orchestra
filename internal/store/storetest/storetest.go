@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 // RunConformance runs the shared behavior suite for a Store implementation.
