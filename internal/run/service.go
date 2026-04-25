@@ -213,6 +213,7 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 		ts.DurationMs = result.DurationMs
 		ts.InputTokens = result.InputTokens
 		ts.OutputTokens = result.OutputTokens
+		ts.NumTurns = result.NumTurns
 	}); err != nil {
 		return fmt.Errorf("run.RecordTeamComplete %s: %w", team, err)
 	}

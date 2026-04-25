@@ -1,4 +1,4 @@
-package cmd
+package orchestra
 
 import (
 	"context"
@@ -22,9 +22,9 @@ type managedSession interface {
 	Cancel(context.Context) error
 }
 
-type startTeamMAFunc func(context.Context, *config.Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
+type startTeamMAFunc func(context.Context, *Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
 
-func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, state *store.RunState) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) runTeamMA(ctx context.Context, team *Team, state *store.RunState) (*workspace.TeamResult, error) {
 	logWriter, err := r.ws.NDJSONLogWriter(team.Name)
 	if err != nil {
 		return nil, err
@@ -34,13 +34,7 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 	teamCtx, cancel := context.WithTimeout(ctx, time.Duration(r.cfg.Defaults.TimeoutMinutes)*time.Minute)
 	defer cancel()
 
-	var session managedSession
-	var events <-chan spawner.Event
-	if r.startTeamMAForTest != nil {
-		session, events, err = r.startTeamMAForTest(teamCtx, team, state, logWriter)
-	} else {
-		session, events, err = r.startTeamMA(teamCtx, team, state, logWriter)
-	}
+	session, events, err := r.startTeamMASession(teamCtx, team, state, logWriter)
 	if err != nil {
 		return nil, err
 	}
@@ -49,19 +43,20 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		r.reportMAEvent(team.Name, event)
 	}
 
-	cleanupCtx := context.WithoutCancel(ctx)
+	return r.finalizeMATeam(ctx, teamCtx, team, session)
+}
+
+func (r *orchestrationRun) startTeamMASession(ctx context.Context, team *Team, state *store.RunState, logWriter io.Writer) (managedSession, <-chan spawner.Event, error) {
+	if r.startTeamMAForTest != nil {
+		return r.startTeamMAForTest(ctx, team, state, logWriter)
+	}
+	return r.startTeamMA(ctx, team, state, logWriter)
+}
+
+func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, team *Team, session managedSession) (*workspace.TeamResult, error) {
+	cleanupCtx := context.WithoutCancel(parentCtx)
 	if errors.Is(teamCtx.Err(), context.DeadlineExceeded) {
-		_ = session.Cancel(cleanupCtx)
-		msg := fmt.Sprintf("hard timeout after %d minutes", r.cfg.Defaults.TimeoutMinutes)
-		if err := r.runService.Store().UpdateTeamState(cleanupCtx, team.Name, func(ts *store.TeamState) {
-			ts.Status = "failed"
-			ts.EndedAt = r.runService.Now().UTC()
-			ts.LastError = msg
-			ts.SessionID = session.ID()
-		}); err != nil {
-			return nil, err
-		}
-		return nil, errors.New(msg)
+		return nil, r.handleMATimeout(cleanupCtx, team, session)
 	}
 	if errors.Is(teamCtx.Err(), context.Canceled) {
 		_ = session.Cancel(cleanupCtx)
@@ -86,6 +81,10 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		}
 		return nil, fmt.Errorf("managed-agents session ended with status %q", ts.Status)
 	}
+	// NumTurns is propagated for symmetry with the local backend even
+	// though MA doesn't currently emit per-turn signals — leaving it off
+	// would let RecordTeamComplete zero out anything a future event
+	// counter manages to record.
 	return &workspace.TeamResult{
 		Team:         team.Name,
 		Status:       "success",
@@ -95,22 +94,33 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		SessionID:    ts.SessionID,
 		InputTokens:  ts.InputTokens,
 		OutputTokens: ts.OutputTokens,
+		NumTurns:     ts.NumTurns,
 	}, nil
 }
 
-func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, state *store.RunState, logWriter io.Writer) (*spawner.Session, <-chan spawner.Event, error) {
+func (r *orchestrationRun) handleMATimeout(ctx context.Context, team *Team, session managedSession) error {
+	_ = session.Cancel(ctx)
+	msg := fmt.Sprintf("hard timeout after %d minutes", r.cfg.Defaults.TimeoutMinutes)
+	if err := r.runService.Store().UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+		ts.Status = "failed"
+		ts.EndedAt = r.runService.Now().UTC()
+		ts.LastError = msg
+		ts.SessionID = session.ID()
+	}); err != nil {
+		return err
+	}
+	return errors.New(msg)
+}
+
+func (r *orchestrationRun) startTeamMA(ctx context.Context, team *Team, state *store.RunState, logWriter io.Writer) (managedSession, <-chan spawner.Event, error) {
 	ma := r.maSpawner
 	if ma == nil {
 		return nil, nil, errors.New("managed-agents spawner not initialized")
 	}
 
-	agent, err := ma.EnsureAgent(ctx, r.managedAgentSpec(team))
+	agent, env, err := r.ensureManagedResources(ctx, team)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ensure_agent: %w", err)
-	}
-	env, err := ma.EnsureEnvironment(ctx, r.managedEnvSpec())
-	if err != nil {
-		return nil, nil, fmt.Errorf("ensure_environment: %w", err)
+		return nil, nil, err
 	}
 	if err := r.recordMAHandles(ctx, team.Name, &agent, &env); err != nil {
 		return nil, nil, err
@@ -153,7 +163,20 @@ func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, s
 	return session, events, nil
 }
 
-func (r *orchestrationRun) managedAgentSpec(team *config.Team) spawner.AgentSpec {
+func (r *orchestrationRun) ensureManagedResources(ctx context.Context, team *Team) (spawner.AgentHandle, spawner.EnvHandle, error) {
+	ma := r.maSpawner
+	agent, err := ma.EnsureAgent(ctx, r.managedAgentSpec(team))
+	if err != nil {
+		return spawner.AgentHandle{}, spawner.EnvHandle{}, fmt.Errorf("ensure_agent: %w", err)
+	}
+	env, err := ma.EnsureEnvironment(ctx, r.managedEnvSpec())
+	if err != nil {
+		return spawner.AgentHandle{}, spawner.EnvHandle{}, fmt.Errorf("ensure_environment: %w", err)
+	}
+	return agent, env, nil
+}
+
+func (r *orchestrationRun) managedAgentSpec(team *Team) spawner.AgentSpec {
 	return spawner.AgentSpec{
 		Project:      r.cfg.Name,
 		Role:         team.Name,
@@ -184,7 +207,7 @@ func (r *orchestrationRun) managedEnvSpec() spawner.EnvSpec {
 	}
 }
 
-func (r *orchestrationRun) teamPromptMA(team *config.Team, state *store.RunState) string {
+func (r *orchestrationRun) teamPromptMA(team *Team, state *store.RunState) string {
 	maTeam := *team
 	maTeam.Members = nil
 	caps := injection.Capabilities{ArtifactPublish: r.artifactPublishSpec(team, state)}
@@ -199,7 +222,7 @@ func (r *orchestrationRun) teamPromptMA(team *config.Team, state *store.RunState
 // artifactPublishSpec returns the ArtifactPublishSpec for a managed-agents team
 // when the team's effective repository is configured. Returns nil for
 // text-only teams.
-func (r *orchestrationRun) artifactPublishSpec(team *config.Team, state *store.RunState) *injection.ArtifactPublishSpec {
+func (r *orchestrationRun) artifactPublishSpec(team *Team, state *store.RunState) *injection.ArtifactPublishSpec {
 	repo := team.EffectiveRepository(r.cfg)
 	if repo == nil || state == nil {
 		return nil
@@ -244,7 +267,7 @@ func upstreamMountPath(team string) string {
 // to a managed-agents session. Returns nil for text-only teams (no effective
 // repository). For teams with a repository it returns the team's working-copy
 // mount plus one mount per upstream that has recorded a repository artifact.
-func (r *orchestrationRun) buildSessionResources(team *config.Team, state *store.RunState) ([]spawner.ResourceRef, error) {
+func (r *orchestrationRun) buildSessionResources(team *Team, state *store.RunState) ([]spawner.ResourceRef, error) {
 	repo := team.EffectiveRepository(r.cfg)
 	if repo == nil {
 		return nil, nil
@@ -305,7 +328,7 @@ func (r *orchestrationRun) buildSessionResources(team *config.Team, state *store
 // surfaced as "no branch pushed" — the team is marked failed and the caller
 // reports the error via the snapshot status check. When OpenPullRequests is
 // set, a PR is opened (best-effort) and its URL is recorded.
-func (r *orchestrationRun) resolveTeamArtifact(ctx context.Context, team *config.Team) error {
+func (r *orchestrationRun) resolveTeamArtifact(ctx context.Context, team *Team) error {
 	if r.ghClient == nil {
 		return nil
 	}
@@ -376,7 +399,7 @@ func (r *orchestrationRun) markTeamMissingBranch(ctx context.Context, teamName, 
 	return nil
 }
 
-func (r *orchestrationRun) maybeOpenPullRequest(ctx context.Context, team *config.Team, _ *config.RepositorySpec, owner, repo, runID string, artifact *store.RepositoryArtifact) {
+func (r *orchestrationRun) maybeOpenPullRequest(ctx context.Context, team *Team, _ *config.RepositorySpec, owner, repo, runID string, artifact *store.RepositoryArtifact) {
 	if r.cfg.Backend.ManagedAgents == nil || !r.cfg.Backend.ManagedAgents.OpenPullRequests {
 		return
 	}
@@ -455,6 +478,8 @@ func managedAgentsModel(model string) string {
 		return "claude-sonnet-4-6"
 	case "opus":
 		return "claude-opus-4-7"
+	case "haiku":
+		return "claude-haiku-4-5-20251001"
 	default:
 		return model
 	}

@@ -1,4 +1,4 @@
-package cmd
+package orchestra
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/itsHabib/orchestra/internal/config"
 	olog "github.com/itsHabib/orchestra/internal/log"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/spawner"
@@ -21,14 +20,14 @@ import (
 )
 
 func TestTeamPromptMAIgnoresMembersAndMessageBus(t *testing.T) {
-	r := &orchestrationRun{cfg: &config.Config{Name: "p"}}
-	team := &config.Team{
+	r := &orchestrationRun{cfg: &Config{Name: "p"}}
+	team := &Team{
 		Name: "alpha",
-		Lead: config.Lead{Role: "Research Lead"},
-		Members: []config.Member{
+		Lead: Lead{Role: "Research Lead"},
+		Members: []Member{
 			{Role: "Analyst", Focus: "notes"},
 		},
-		Tasks: []config.Task{{Summary: "Summarize input"}},
+		Tasks: []Task{{Summary: "Summarize input"}},
 	}
 
 	prompt := r.teamPromptMA(team, &store.RunState{Teams: map[string]store.TeamState{}})
@@ -47,7 +46,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	st := memstore.New()
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
-		Backend: "managed_agents",
+		Backend: BackendManagedAgents,
 		Teams: map[string]store.TeamState{
 			"alpha": {Status: "running", InputTokens: 10},
 		},
@@ -58,13 +57,13 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	team := &config.Team{Name: "alpha", Lead: config.Lead{Role: "Lead"}, Tasks: []config.Task{{Summary: "x"}}}
+	team := &Team{Name: "alpha", Lead: Lead{Role: "Lead"}, Tasks: []Task{{Summary: "x"}}}
 	fake := &fakeManagedSession{id: "sess_timeout"}
 	r := &orchestrationRun{
-		cfg:        &config.Config{Name: "p", Defaults: config.Defaults{TimeoutMinutes: 0}},
+		cfg:        &Config{Name: "p", Defaults: Defaults{TimeoutMinutes: 0}},
 		runService: runsvc.New(st),
 		ws:         ws,
-		startTeamMAForTest: func(ctx context.Context, _ *config.Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+		startTeamMAForTest: func(ctx context.Context, _ *Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
 			ch := make(chan spawner.Event)
 			go func() {
 				<-ctx.Done()
@@ -99,7 +98,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 	st := memstore.New()
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
-		Backend: "managed_agents",
+		Backend: BackendManagedAgents,
 		Teams: map[string]store.TeamState{
 			"planner": {Status: "pending"},
 			"analyst": {Status: "pending"},
@@ -111,13 +110,13 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{
+	cfg := &Config{
 		Name:     "p",
-		Backend:  config.Backend{Kind: "managed_agents"},
-		Defaults: config.Defaults{TimeoutMinutes: 5},
-		Teams: []config.Team{
-			{Name: "planner", Lead: config.Lead{Role: "Planner"}, Tasks: []config.Task{{Summary: "plan"}}},
-			{Name: "analyst", Lead: config.Lead{Role: "Analyst"}, DependsOn: []string{"planner"}, Tasks: []config.Task{{Summary: "analyze"}}},
+		Backend:  Backend{Kind: BackendManagedAgents},
+		Defaults: Defaults{TimeoutMinutes: 5},
+		Teams: []Team{
+			{Name: "planner", Lead: Lead{Role: "Planner"}, Tasks: []Task{{Summary: "plan"}}},
+			{Name: "analyst", Lead: Lead{Role: "Analyst"}, DependsOn: []string{"planner"}, Tasks: []Task{{Summary: "analyze"}}},
 		},
 	}
 	cfg.ResolveDefaults()
@@ -133,7 +132,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 		runService: runsvc.New(st),
 		ws:         ws,
 	}
-	r.startTeamMAForTest = func(ctx context.Context, team *config.Team, state *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+	r.startTeamMAForTest = func(ctx context.Context, team *Team, state *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
 		if team.Name == "analyst" {
 			mu.Lock()
 			analystPrompt = r.teamPromptMA(team, state)
@@ -174,7 +173,7 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 	st := memstore.New()
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
-		Backend: "managed_agents",
+		Backend: BackendManagedAgents,
 		Teams: map[string]store.TeamState{
 			"a": {Status: "pending"},
 			"b": {Status: "pending"},
@@ -187,14 +186,14 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{
+	cfg := &Config{
 		Name:     "p",
-		Backend:  config.Backend{Kind: "managed_agents"},
-		Defaults: config.Defaults{TimeoutMinutes: 5},
-		Teams: []config.Team{
-			{Name: "a", Lead: config.Lead{Role: "A"}, Tasks: []config.Task{{Summary: "x"}}},
-			{Name: "b", Lead: config.Lead{Role: "B"}, Tasks: []config.Task{{Summary: "x"}}},
-			{Name: "c", Lead: config.Lead{Role: "C"}, Tasks: []config.Task{{Summary: "x"}}},
+		Backend:  Backend{Kind: BackendManagedAgents},
+		Defaults: Defaults{TimeoutMinutes: 5},
+		Teams: []Team{
+			{Name: "a", Lead: Lead{Role: "A"}, Tasks: []Task{{Summary: "x"}}},
+			{Name: "b", Lead: Lead{Role: "B"}, Tasks: []Task{{Summary: "x"}}},
+			{Name: "c", Lead: Lead{Role: "C"}, Tasks: []Task{{Summary: "x"}}},
 		},
 	}
 	cfg.ResolveDefaults()
@@ -209,7 +208,7 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 		runService: runsvc.New(st),
 		ws:         ws,
 	}
-	r.startTeamMAForTest = func(ctx context.Context, team *config.Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+	r.startTeamMAForTest = func(ctx context.Context, team *Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
 		if arrived.Add(1) == expected {
 			close(barrier)
 		}
@@ -242,7 +241,7 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 	st := memstore.New()
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
-		Backend: "managed_agents",
+		Backend: BackendManagedAgents,
 		Teams: map[string]store.TeamState{
 			"a": {Status: "pending"},
 			"b": {Status: "pending"},
@@ -254,13 +253,13 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{
+	cfg := &Config{
 		Name:     "p",
-		Backend:  config.Backend{Kind: "managed_agents"},
-		Defaults: config.Defaults{TimeoutMinutes: 5},
-		Teams: []config.Team{
-			{Name: "a", Lead: config.Lead{Role: "A"}, Tasks: []config.Task{{Summary: "x"}}},
-			{Name: "b", Lead: config.Lead{Role: "B"}, DependsOn: []string{"a"}, Tasks: []config.Task{{Summary: "x"}}},
+		Backend:  Backend{Kind: BackendManagedAgents},
+		Defaults: Defaults{TimeoutMinutes: 5},
+		Teams: []Team{
+			{Name: "a", Lead: Lead{Role: "A"}, Tasks: []Task{{Summary: "x"}}},
+			{Name: "b", Lead: Lead{Role: "B"}, DependsOn: []string{"a"}, Tasks: []Task{{Summary: "x"}}},
 		},
 	}
 	cfg.ResolveDefaults()
@@ -275,7 +274,7 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 		runService: runsvc.New(st),
 		ws:         ws,
 	}
-	r.startTeamMAForTest = func(ctx context.Context, team *config.Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+	r.startTeamMAForTest = func(ctx context.Context, team *Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
 		mu.Lock()
 		invoked[team.Name] = true
 		mu.Unlock()

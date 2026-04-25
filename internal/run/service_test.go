@@ -163,6 +163,9 @@ func TestRecordTeamTransitions(t *testing.T) {
 	if alpha.InputTokens != 100 || alpha.OutputTokens != 50 || alpha.DurationMs != 1500 {
 		t.Fatalf("unexpected alpha counters: %+v", alpha)
 	}
+	if alpha.NumTurns != 3 {
+		t.Fatalf("alpha.NumTurns=%d, want 3", alpha.NumTurns)
+	}
 	if alpha.StartedAt.IsZero() || alpha.EndedAt.IsZero() {
 		t.Fatalf("expected start/end timestamps: %+v", alpha)
 	}

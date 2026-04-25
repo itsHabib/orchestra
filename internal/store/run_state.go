@@ -37,6 +37,7 @@ type TeamState struct {
 	OutputTokens             int64   `json:"output_tokens,omitempty"`
 	CacheCreationInputTokens int64   `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int64   `json:"cache_read_input_tokens,omitempty"`
+	NumTurns                 int     `json:"num_turns,omitempty"`
 
 	Artifacts []string `json:"artifacts,omitempty"`
 }

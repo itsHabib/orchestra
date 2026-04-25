@@ -224,6 +224,45 @@ orchestra plan orchestra.yaml --json           # structured JSON output
 orchestra run orchestra.yaml
 ```
 
+## Use as a Go library
+
+Orchestra exposes an experimental Go SDK at [`pkg/orchestra`](./pkg/orchestra). It is the same code path the CLI uses — `orchestra run` is now a thin wrapper around `orchestra.Run`. The SDK lets you drive a workflow from another Go program: load (or construct) a `Config`, call `Run`, inspect per-team results.
+
+```go
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/itsHabib/orchestra/pkg/orchestra"
+)
+
+func main() {
+    cfg, warnings, err := orchestra.LoadConfig("orchestra.yaml")
+    for _, w := range warnings {
+        fmt.Fprintln(os.Stderr, w)
+    }
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+
+    res, err := orchestra.Run(context.Background(), cfg,
+        orchestra.WithLogger(orchestra.NewCLILogger()),
+    )
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+    for name, team := range res.Teams {
+        fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
+            name, team.Status, team.NumTurns, team.CostUSD)
+    }
+}
+```
+
+The surface is currently labelled **experimental** — it may change without semver signaling until it is explicitly stabilized. See [CHANGELOG.md](./CHANGELOG.md) for the per-release surface change log.
+
 ## CLI Commands
 
 | Command | Description |
