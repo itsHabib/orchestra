@@ -8,11 +8,35 @@ import (
 	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
+// Capabilities carries optional rendering toggles for sections that are not
+// implicit in BuildPrompt's other arguments. Today it only signals
+// repository-backed artifact delivery for managed-agents teams; local-backend
+// callers pass the zero value.
+type Capabilities struct {
+	ArtifactPublish *ArtifactPublishSpec
+}
+
+// ArtifactPublishSpec instructs the team to commit and push to a specific
+// branch and lists any upstream branches mounted read-only under the session.
+type ArtifactPublishSpec struct {
+	MountPath      string
+	BranchName     string
+	UpstreamMounts []UpstreamMount
+}
+
+// UpstreamMount is a single upstream team's branch made available read-only.
+type UpstreamMount struct {
+	TeamName  string
+	MountPath string
+	Branch    string
+}
+
 // BuildPrompt constructs the full prompt for a team's claude -p session.
 // tierPeers is the list of all team names in the same tier (including self); pass nil for single-team spawns.
 // inboxFolder is this team's message bus folder name (e.g., "2-data-engine"); empty disables messaging.
 // messagesPath is the base path to the messages directory.
-func BuildPrompt(team *config.Team, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string, inboxFolder, messagesPath string) string {
+// caps carries optional toggles like ArtifactPublish; pass Capabilities{} for the local backend.
+func BuildPrompt(team *config.Team, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string, inboxFolder, messagesPath string, caps Capabilities) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are: %s\n", team.Lead.Role)
@@ -23,6 +47,7 @@ func BuildPrompt(team *config.Team, projectName string, state *workspace.State, 
 	writeTierPeers(&b, team, cfg, tierPeers)
 	writeTeamMembers(&b, team)
 	writeDependencyContext(&b, team, state, cfg)
+	writeArtifactPublish(&b, caps.ArtifactPublish)
 	writeMessageBus(&b, inboxFolder, messagesPath, cfg.Defaults.InboxPollInterval)
 	writeInstructions(&b, team.HasMembers(), inboxFolder != "" && messagesPath != "")
 
@@ -130,6 +155,25 @@ func writeDependencyContext(b *strings.Builder, team *config.Team, state *worksp
 		fmt.Fprintf(b, "Summary: %s\n", ts.ResultSummary)
 		if len(ts.Artifacts) > 0 {
 			fmt.Fprintf(b, "Artifacts: %s\n", strings.Join(ts.Artifacts, ", "))
+		}
+		b.WriteString("\n")
+	}
+}
+
+func writeArtifactPublish(b *strings.Builder, spec *ArtifactPublishSpec) {
+	if spec == nil || spec.BranchName == "" || spec.MountPath == "" {
+		return
+	}
+	b.WriteString("## Artifact delivery\n")
+	fmt.Fprintf(b, "Your working copy of the repo is at `%s`.\n\n", spec.MountPath)
+	b.WriteString("When your task is complete:\n")
+	fmt.Fprintf(b, "  1. Commit your changes on a new branch named `%s`.\n", spec.BranchName)
+	b.WriteString("  2. Push the branch to origin.\n")
+	b.WriteString("  3. Do NOT open a pull request; do NOT merge.\n\n")
+	if len(spec.UpstreamMounts) > 0 {
+		b.WriteString("Your upstream dependencies are mounted read-only at:\n")
+		for _, m := range spec.UpstreamMounts {
+			fmt.Fprintf(b, "  - %s: `%s` (branch `%s`)\n", m.TeamName, m.MountPath, m.Branch)
 		}
 		b.WriteString("\n")
 	}

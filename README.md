@@ -334,11 +334,30 @@ defaults:
 
 A canonical multi-team example lives under [`examples/ma_multi_team/`](examples/ma_multi_team/orchestra.yaml) — a `planner` team writes an outline that the dependent `analyst` team expands. An opt-in live-MA smoke fixture lives under [`test/integration/ma_multi_team/`](test/integration/ma_multi_team/README.md).
 
+#### Repo-backed artifacts
+
+Teams whose deliverable is code can push to a deterministic branch instead of returning a text summary. Add a `repository` block under `backend.managed_agents`:
+
+```yaml
+backend:
+  kind: managed_agents
+  managed_agents:
+    repository:
+      url: https://github.com/your-user/your-repo
+      mount_path: /workspace/repo  # default
+      default_branch: main          # default
+    open_pull_requests: false       # set true to also open PRs host-side
+```
+
+Per-team overrides go on `teams[i].environment_override.repository`. Orchestra resolves a GitHub PAT at startup (env `GITHUB_TOKEN` first, then `github_token` in `<user-config-dir>/orchestra/config.json`) and never persists it. Each team is told to push to `orchestra/<team>-<run-id>`; downstream teams have each upstream's pushed branch mounted read-only at `/workspace/upstream/<upstream-team>/`. After the session reaches `end_turn`, Orchestra reads the branch via the GitHub API and records a `repository_artifacts[]` entry on the team in `state.json`.
+
+A two-team example lives under [`examples/ma_repo_relay/`](examples/ma_repo_relay/orchestra.yaml). An opt-in live-MA + GitHub fixture lives under [`test/integration/ma_repo_relay/`](test/integration/ma_repo_relay/README.md).
+
 Caveats under `managed_agents`:
 
 - `members:` and `coordinator:` are not supported (validation emits a warning and the orchestration ignores them).
 - The file message bus is disabled — teams cannot read each other's inboxes mid-run.
-- Repo-backed artifact flow (pushing branches between teams) is the next chapter and not yet shipped.
+- Cross-repo dependencies (downstream team in a different repo than upstream) are out of scope; the validator emits a warning and the upstream branch is not mounted.
 
 ### Steering a run
 
