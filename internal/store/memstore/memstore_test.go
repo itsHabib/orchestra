@@ -3,9 +3,9 @@ package memstore_test
 import (
 	"testing"
 
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/memstore"
-	"github.com/itsHabib/orchestra/pkg/store/storetest"
+	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/store/memstore"
+	"github.com/itsHabib/orchestra/internal/store/storetest"
 )
 
 func TestConformance(t *testing.T) {

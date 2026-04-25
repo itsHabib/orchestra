@@ -18,7 +18,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 const (

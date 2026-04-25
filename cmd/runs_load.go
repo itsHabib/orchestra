@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 type runRecord struct {

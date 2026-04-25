@@ -46,7 +46,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/pagination"
 	agentservice "github.com/itsHabib/orchestra/internal/agents"
 	"github.com/itsHabib/orchestra/internal/machost"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 const (

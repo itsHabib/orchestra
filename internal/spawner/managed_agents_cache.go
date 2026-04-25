@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 func (s *ManagedAgentsSpawner) putEnvRecord(

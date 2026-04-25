@@ -12,8 +12,8 @@ import (
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/workspace"
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/memstore"
+	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/store/memstore"
 )
 
 func TestBeginSeedsStateAndHoldsLock(t *testing.T) {

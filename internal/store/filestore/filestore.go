@@ -15,7 +15,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/itsHabib/orchestra/internal/fsutil"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 const lockRetryDelay = 10 * time.Millisecond

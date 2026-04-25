@@ -13,8 +13,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/itsHabib/orchestra/pkg/store"
-	"github.com/itsHabib/orchestra/pkg/store/memstore"
+	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/store/memstore"
 )
 
 func TestManagedAgentsSession_StreamFirstOrdering(t *testing.T) {

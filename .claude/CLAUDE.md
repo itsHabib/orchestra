@@ -24,6 +24,7 @@ Requires Go 1.22+.
 - `internal/run/` — Run lifecycle service (lock, archive, seed state, team transitions)
 - `internal/messaging/` — File-based cross-team message bus
 - `internal/workspace/` — Atomic file I/O helpers for registry, results, logs
+- `internal/store/` — Persistence layer: run state, agent/env registries, run locks (memstore + filestore)
 - `internal/fsutil/` — Atomic file operations (write .tmp → os.Rename)
 - `internal/log/` — NDJSON logging
 - `examples/` — Complete example projects with orchestra.yaml configs

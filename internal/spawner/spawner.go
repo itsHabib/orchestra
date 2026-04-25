@@ -7,7 +7,7 @@ import (
 	"time"
 
 	agentservice "github.com/itsHabib/orchestra/internal/agents"
-	"github.com/itsHabib/orchestra/pkg/store"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 // ErrUnsupported is returned when a backend cannot support a spawner operation.

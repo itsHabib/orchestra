@@ -81,7 +81,7 @@ import (
     "time"
 
     "github.com/anthropics/anthropic-sdk-go"
-    "github.com/itsHabib/orchestra/pkg/store"
+    "github.com/itsHabib/orchestra/internal/store"
 )
 
 // MAClient is the subset of the Anthropic Managed Agents surface the

@@ -1,6 +1,6 @@
 package workspace
 
-import "github.com/itsHabib/orchestra/pkg/store"
+import "github.com/itsHabib/orchestra/internal/store"
 
 // State aliases the store run-state document for legacy workspace callers.
 type State = store.RunState
