@@ -2,6 +2,7 @@ package log
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/fatih/color"
 )
@@ -17,8 +18,10 @@ var teamColors = []*color.Color{
 	color.New(color.FgHiGreen),
 }
 
-// Logger provides colored, team-prefixed terminal logging.
+// Logger provides colored, team-prefixed terminal logging. Safe for concurrent
+// use across the goroutines spawned per team in a tier.
 type Logger struct {
+	mu       sync.Mutex
 	colorIdx int
 	colors   map[string]*color.Color
 }
@@ -31,6 +34,8 @@ func New() *Logger {
 }
 
 func (l *Logger) colorFor(team string) *color.Color {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if c, ok := l.colors[team]; ok {
 		return c
 	}
