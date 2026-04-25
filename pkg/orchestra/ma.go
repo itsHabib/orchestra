@@ -75,6 +75,10 @@ func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, te
 		}
 		return nil, fmt.Errorf("managed-agents session ended with status %q", ts.Status)
 	}
+	// NumTurns is propagated for symmetry with the local backend even
+	// though MA doesn't currently emit per-turn signals — leaving it off
+	// would let RecordTeamComplete zero out anything a future event
+	// counter manages to record.
 	return &workspace.TeamResult{
 		Team:         team.Name,
 		Status:       "success",
@@ -84,6 +88,7 @@ func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, te
 		SessionID:    ts.SessionID,
 		InputTokens:  ts.InputTokens,
 		OutputTokens: ts.OutputTokens,
+		NumTurns:     ts.NumTurns,
 	}, nil
 }
 
@@ -236,6 +241,8 @@ func managedAgentsModel(model string) string {
 		return "claude-sonnet-4-6"
 	case "opus":
 		return "claude-opus-4-7"
+	case "haiku":
+		return "claude-haiku-4-5-20251001"
 	default:
 		return model
 	}

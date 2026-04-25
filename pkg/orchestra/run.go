@@ -177,8 +177,11 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOption
 	}
 
 	runErr := run.execute(ctx, tiers)
-	result := run.buildResult(ctx, tiers, time.Since(wallStart))
-	return result, runErr
+	result, snapErr := run.buildResult(ctx, tiers, time.Since(wallStart))
+	if runErr != nil {
+		return result, runErr
+	}
+	return result, snapErr
 }
 
 func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error {
@@ -217,10 +220,19 @@ func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error 
 	return nil
 }
 
-func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, dur time.Duration) *Result {
-	state, err := r.runService.Snapshot(ctx)
-	if err != nil || state == nil {
-		return nil
+// buildResult snapshots the run state and packages it into the SDK
+// Result. Snapshot uses a context detached from ctx so that a canceled
+// caller context still produces a Result reflecting whatever state was
+// reached — matching Run's documented contract. A non-nil error from
+// here is a real Snapshot failure (e.g., disk I/O), not cancellation.
+func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, dur time.Duration) (*Result, error) {
+	snapCtx := context.WithoutCancel(ctx)
+	state, err := r.runService.Snapshot(snapCtx)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot run state: %w", err)
+	}
+	if state == nil {
+		return nil, errors.New("snapshot returned nil state")
 	}
 	teams := make(map[string]TeamResult, len(state.Teams))
 	for name := range state.Teams {
@@ -232,7 +244,7 @@ func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, du
 		Teams:      teams,
 		Tiers:      tiers,
 		DurationMs: dur.Milliseconds(),
-	}
+	}, nil
 }
 
 func newRunService(path string, logger Logger) *runsvc.Service {

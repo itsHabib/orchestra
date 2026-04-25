@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/itsHabib/orchestra/pkg/orchestra"
 )
@@ -229,6 +230,46 @@ func TestRun_TierZeroFailureReturnsResultAndError(t *testing.T) {
 	}
 	if team.Status != "failed" {
 		t.Errorf("Status=%q, want failed", team.Status)
+	}
+}
+
+// TestRun_ContextCancellationReturnsPartialResult proves the documented
+// "Result reflects whatever state was reached, even on error" contract
+// holds for context cancellation. The snapshot inside Run must run on a
+// detached context so a canceled caller still gets a populated Result.
+func TestRun_ContextCancellationReturnsPartialResult(t *testing.T) {
+	binDir := t.TempDir()
+	// Mock-claude that sleeps long enough for us to cancel mid-run.
+	writeMockClaude(t, binDir, mockSuccessStream(), nil, 0, 5_000)
+
+	workDir := t.TempDir()
+	configPath := writeOneTeamConfig(t, workDir)
+
+	cfg, _, err := orchestra.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPath(t, binDir)
+	chdir(t, workDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	res, err := orchestra.Run(ctx, cfg)
+	if err == nil {
+		t.Fatal("Run: expected error from canceled ctx, got nil")
+	}
+	if res == nil {
+		t.Fatal("Run: expected partial result on ctx cancellation, got nil")
+	}
+	if res.Project != "minimal-sdk" {
+		t.Errorf("Project=%q, want minimal-sdk", res.Project)
+	}
+	if _, ok := res.Teams["solo"]; !ok {
+		t.Errorf("solo team missing from canceled-run Result.Teams: %+v", res.Teams)
 	}
 }
 
