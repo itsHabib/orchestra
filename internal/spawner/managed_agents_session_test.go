@@ -373,6 +373,8 @@ func TestTranslateMAEvent_CoversKnownDesignRows(t *testing.T) {
 		{"session_error", `{"id":"e1","type":"session.error","error":{"message":"boom","code":"x"}}`, EventTypeSessionError},
 		{"span_start", `{"id":"e1","type":"span.model_request_start"}`, EventTypeSpanModelRequestStart},
 		{"span_end", `{"id":"e1","type":"span.model_request_end","model_usage":{"input_tokens":1}}`, EventTypeSpanModelRequestEnd},
+		{"user_message_echo", `{"id":"e1","type":"user.message","content":[{"type":"text","text":"steered"}]}`, EventTypeUserMessage},
+		{"user_interrupt_echo", `{"id":"e1","type":"user.interrupt"}`, EventTypeUserInterrupt},
 		{"unknown", `{"id":"e1","type":"session.deleted"}`, EventTypeUnknown},
 	}
 	for _, tc := range cases {
@@ -385,6 +387,64 @@ func TestTranslateMAEvent_CoversKnownDesignRows(t *testing.T) {
 				t.Fatalf("EventType=%s, want %s", got.EventType(), tc.want)
 			}
 		})
+	}
+}
+
+func TestManagedAgentsTranslator_UserEchoAdvancesLastEventOnly(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{
+		Project: "p",
+		Backend: "managed_agents",
+		Teams: map[string]store.TeamState{
+			"alpha": {
+				Status:       "running",
+				SessionID:    "sess_1",
+				InputTokens:  10,
+				OutputTokens: 5,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events := &fakeSessionEventsAPI{
+		stream: &fakeStream{events: []managedEvent{
+			rawEvent(`{"id":"e1","type":"user.message","processed_at":"2026-04-25T10:00:00Z","content":[{"type":"text","text":"use the JSON store"}]}`),
+			rawEvent(`{"id":"e2","type":"user.interrupt","processed_at":"2026-04-25T10:00:01Z"}`),
+		}},
+	}
+	sp := newManagedAgentsSpawnerWithSessions(st, newFakeAgentAPI(), newFakeEnvAPI(), &fakeSessionAPI{}, events)
+	pending, err := sp.StartSession(ctx, StartSessionRequest{
+		Agent:    AgentHandle{ID: "agent_1", Version: 1},
+		Env:      EnvHandle{ID: "env_1"},
+		TeamName: "alpha",
+		Store:    st,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ch, err := pending.Stream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(ch)
+
+	state, err := st.LoadRunState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := state.Teams["alpha"]
+	if alpha.Status != "running" {
+		t.Fatalf("Status=%q, want unchanged 'running' (echoes must not transition state)", alpha.Status)
+	}
+	if alpha.InputTokens != 10 || alpha.OutputTokens != 5 {
+		t.Fatalf("counters mutated: %+v", alpha)
+	}
+	if alpha.LastEventID != "e2" {
+		t.Fatalf("LastEventID=%q, want e2 (latest echo)", alpha.LastEventID)
+	}
+	if alpha.LastEventAt.IsZero() {
+		t.Fatalf("LastEventAt was not advanced")
 	}
 }
 

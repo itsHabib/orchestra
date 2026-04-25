@@ -564,6 +564,11 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 			ts.CostUSD += ev.Usage.CostUSD
 			ts.SessionID = s.id
 		})
+	case UserMessageEchoEvent, UserInterruptEchoEvent:
+		// Steering echoes advance LastEventID / LastEventAt only. Team
+		// status, tokens, and cost are unaffected — the human nudged the
+		// agent, but no orchestra-side lifecycle transition happened.
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
 	default:
 		return false, nil
 	}
@@ -1129,6 +1134,9 @@ func translateMAEvent(raw []byte, now time.Time) (Event, maEvent, error) {
 	if translated, ok := translateSessionEvent(base, &ev); ok {
 		return translated, ev, nil
 	}
+	if translated, ok := translateUserEvent(base, &ev); ok {
+		return translated, ev, nil
+	}
 	base.Type = EventTypeUnknown
 	return UnknownEvent{BaseEvent: base, Payload: json.RawMessage(raw)}, ev, nil
 }
@@ -1152,6 +1160,17 @@ func translateAgentEvent(base BaseEvent, ev *maEvent) (Event, bool) {
 		return AgentCustomToolUseEvent{BaseEvent: base, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, true
 	case EventTypeAgentThreadContextCompacted:
 		return AgentThreadContextCompactedEvent{BaseEvent: base, Summary: contentText(ev.Content)}, true
+	default:
+		return nil, false
+	}
+}
+
+func translateUserEvent(base BaseEvent, ev *maEvent) (Event, bool) {
+	switch EventType(ev.Type) {
+	case EventTypeUserMessage:
+		return UserMessageEchoEvent{BaseEvent: base, Text: contentText(ev.Content)}, true
+	case EventTypeUserInterrupt:
+		return UserInterruptEchoEvent{BaseEvent: base}, true
 	default:
 		return nil, false
 	}

@@ -26,4 +26,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(runsCmd)
 	rootCmd.AddCommand(debugCmd)
+	rootCmd.AddCommand(msgCmd)
+	rootCmd.AddCommand(interruptCmd)
+	rootCmd.AddCommand(sessionsCmd)
 }

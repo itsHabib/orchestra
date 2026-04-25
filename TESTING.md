@@ -37,6 +37,7 @@ E2E fixtures are **opt-in** and **cost real money**. They are not part of `make 
 | `make e2e-ma` | All live MA fixtures | Manual; costs tokens |
 | `make e2e-ma-single` | `test/integration/ma_single_team/` | Manual; costs tokens |
 | `make e2e-ma-multi` | `test/integration/ma_multi_team/` | Manual; costs tokens |
+| `make e2e-ma-steering` | `test/integration/ma_steering/` (live `orchestra msg` delivery) | Manual; costs tokens |
 
 ## Environment variables
 
@@ -54,6 +55,7 @@ Real numbers vary with model, prompt size, and turn count. The fixtures use `mod
 |---|---|---|
 | `ma_single_team` | 1 | ≈ $0.05 |
 | `ma_multi_team` | 2 | ≈ $0.15 |
+| `ma_steering` | 1 | ≈ $0.05–0.10 |
 
 Treat these as smoke runs, not regression suites. Run them when the MA codepath changes shape (spawner internals, prompt builder, event translator, session lifecycle), or before promoting a release.
 

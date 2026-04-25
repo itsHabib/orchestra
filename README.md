@@ -238,6 +238,9 @@ orchestra run orchestra.yaml
 | `orchestra runs prune [--workspace <path>] [--older-than 720h] [--apply] [--reconcile]` | Dry-run stale Managed Agents cache pruning in a workflow context; `--apply` deletes eligible cache records. |
 | `orchestra plan <config>` | Preview DAG execution order without running anything. |
 | `orchestra debug agents ls/prune` | Low-level Managed Agents cache inspection for debugging. |
+| `orchestra msg --team <name> --message <text> [--no-retry]` | Steer a running managed-agents team by delivering a `user.message` to its session. See [Steering a run](#steering-a-run). |
+| `orchestra interrupt --team <name>` | Send a `user.interrupt` to a running team's managed-agents session (always at-most-once). |
+| `orchestra sessions ls [--all]` | List teams in the active run with their managed-agents session info. Defaults to steerable rows; `--all` includes pending / done / failed / terminated. |
 
 ### `plan` flags
 
@@ -336,6 +339,29 @@ Caveats under `managed_agents`:
 - `members:` and `coordinator:` are not supported (validation emits a warning and the orchestration ignores them).
 - The file message bus is disabled — teams cannot read each other's inboxes mid-run.
 - Repo-backed artifact flow (pushing branches between teams) is the next chapter and not yet shipped.
+
+### Steering a run
+
+While `orchestra run` is going, three commands let a human nudge a running team without restarting the run:
+
+```bash
+orchestra sessions ls                                          # what's currently steerable
+orchestra msg --team <name> --message "use the JSON store"     # deliver a user.message
+orchestra interrupt --team <name>                              # deliver a user.interrupt
+```
+
+These commands talk directly to Managed Agents using the workspace's `state.json` to look up the team's session ID. The running `orchestra run` process picks up MA's echo of the steering event and logs it as `[team] human: <text>`.
+
+Mechanics worth knowing:
+
+- **Lock-free state read.** `msg`, `interrupt`, and `sessions ls` read `state.json` without acquiring the workspace's run lock. The atomic-write pattern keeps the snapshot consistent; the data may be stale but is never torn.
+- **Targeting.** `--team` is the team name from `orchestra.yaml`. The CLI looks up its current MA session ID itself.
+- **Status check.** `msg` and `interrupt` require the team to be in `running` state. The check is best-effort under TOCTOU: a team can transition between read and send, and MA's response is surfaced if that happens.
+- **Retry semantics.**
+  - `orchestra msg` defaults to **at-least-once with retry** on 429 / 5xx. In the rare 5xx-then-success case the agent may observe the same message twice. Pass `--no-retry` for at-most-once.
+  - `orchestra interrupt` is **always at-most-once** (no retries) — duplicate interrupts could double-cancel a recovery cycle.
+- **Backend gate.** All three commands require `backend: managed_agents`. Local-backend steering is tracked separately as P1.9-E.
+- **No-active-run behavior.** `msg` and `interrupt` exit non-zero with `no active orchestra run in <workspace>`. `sessions ls` exits 0 with an empty table — listing is permissive.
 
 ## Message Bus
 

@@ -210,6 +210,14 @@ func (r *orchestrationRun) reportMAEvent(teamName string, event spawner.Event) {
 		r.logger.TeamMsg(teamName, "managed-agents session idle (%s)", ev.Status.StopReason.Type)
 	case spawner.SpanModelRequestEndEvent:
 		r.logger.TeamMsg(teamName, "tokens %s in / %s out", fmtTokens(ev.Usage.InputTokens), fmtTokens(ev.Usage.OutputTokens))
+	case spawner.UserMessageEchoEvent:
+		text := truncateForLog(compactForLog(ev.Text), 140)
+		if text == "" {
+			text = "(empty)"
+		}
+		r.logger.TeamMsg(teamName, "human: %s", text)
+	case spawner.UserInterruptEchoEvent:
+		r.logger.TeamMsg(teamName, "human: <interrupt>")
 	}
 }
 
