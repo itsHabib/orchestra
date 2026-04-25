@@ -269,9 +269,23 @@ func (r *orchestrationRun) buildSessionResources(team *config.Team, state *store
 		if !ok || len(ts.RepositoryArtifacts) == 0 {
 			continue
 		}
+		// Use the upstream's effective repository (config-side, not the
+		// stored URL) as the source of truth for cross-repo detection.
+		// Stored RepositoryArtifact.URL may be missing on legacy/manually
+		// edited state and must not silently route a downstream session to
+		// the wrong repo. Empty stored URL is also treated as unknown.
+		depTeam := r.cfg.TeamByName(dep)
+		var depRepoURL string
+		if depTeam != nil {
+			if depRepo := depTeam.EffectiveRepository(r.cfg); depRepo != nil {
+				depRepoURL = depRepo.URL
+			}
+		}
+		if depRepoURL != repo.URL {
+			continue
+		}
 		latest := ts.RepositoryArtifacts[len(ts.RepositoryArtifacts)-1]
 		if latest.URL != "" && latest.URL != repo.URL {
-			// Cross-repo upstream: out of scope (validator emits a warning).
 			continue
 		}
 		resources = append(resources, spawner.ResourceRef{
@@ -317,7 +331,11 @@ func (r *orchestrationRun) resolveTeamArtifact(ctx context.Context, team *config
 		}
 		return fmt.Errorf("get branch: %w", err)
 	}
-	if gh.CommitSHA == gh.BaseSHA {
+	// Detect a real "agent created the branch but pushed no new commits" only
+	// when BaseSHA was actually resolved from compare(default...branch). When
+	// resolution failed (compare 404, default branch misconfigured, etc.) the
+	// BaseSHA is empty and we trust the branch HEAD as the deliverable.
+	if gh.BaseSHA != "" && gh.CommitSHA == gh.BaseSHA {
 		return r.markTeamMissingBranch(ctx, team.Name, branch)
 	}
 

@@ -5,22 +5,38 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func TestGetBranch_OK(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/octo/repo/branches/orchestra/team-a-1", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "token tok-1" {
-			t.Errorf("auth header %q, want %q", got, "token tok-1")
+// dispatchOnEscapedPath returns an http.Handler that matches against
+// r.URL.EscapedPath() (since Go 1.22 ServeMux routes on the escaped path
+// and slashes inside path segments arrive as %2F).
+func dispatchOnEscapedPath(t *testing.T, routes map[string]http.HandlerFunc) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h, ok := routes[r.URL.EscapedPath()]; ok {
+			h(w, r)
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"orchestra/team-a-1","commit":{"sha":"deadbeef0000"}}`))
+		t.Logf("unrouted %s %s (escaped=%q)", r.Method, r.URL.RequestURI(), r.URL.EscapedPath())
+		http.NotFound(w, r)
 	})
-	mux.HandleFunc("/repos/octo/repo/compare/main...orchestra/team-a-1", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"merge_base_commit":{"sha":"basebase0000"}}`))
-	})
-	srv := httptest.NewServer(mux)
+}
+
+func TestGetBranch_OK(t *testing.T) {
+	srv := httptest.NewServer(dispatchOnEscapedPath(t, map[string]http.HandlerFunc{
+		"/repos/octo/repo/branches/orchestra%2Fteam-a-1": func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "token tok-1" {
+				t.Errorf("auth header %q, want %q", got, "token tok-1")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"orchestra/team-a-1","commit":{"sha":"deadbeef0000"}}`))
+		},
+		"/repos/octo/repo/compare/main...orchestra%2Fteam-a-1": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"merge_base_commit":{"sha":"basebase0000"}}`))
+		},
+	}))
 	defer srv.Close()
 
 	c := New("tok-1", WithBase(srv.URL), WithHTTPClient(srv.Client()))
@@ -76,7 +92,7 @@ func TestGetBranch_TokenScrubbedOnAuthError(t *testing.T) {
 	}
 }
 
-func TestGetBranch_NoDefaultBranchFallsBackToHead(t *testing.T) {
+func TestGetBranch_NoDefaultBranchLeavesBaseEmpty(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/octo/repo/branches/feat", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"name":"feat","commit":{"sha":"head1"}}`))
@@ -89,7 +105,32 @@ func TestGetBranch_NoDefaultBranchFallsBackToHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if b.BaseSHA != "head1" || b.CommitSHA != "head1" {
-		t.Fatalf("base should fall back to head when no default branch given, got %+v", b)
+	if b.CommitSHA != "head1" {
+		t.Fatalf("CommitSHA = %q, want head1", b.CommitSHA)
+	}
+	if b.BaseSHA != "" {
+		t.Fatalf("BaseSHA must be empty when no default branch given, got %q", b.BaseSHA)
+	}
+}
+
+func TestGetBranch_BranchNameWithSlashEscaped(t *testing.T) {
+	const wantBranch = "orchestra/team-a-1"
+	srv := httptest.NewServer(dispatchOnEscapedPath(t, map[string]http.HandlerFunc{
+		"/repos/octo/repo/branches/orchestra%2Fteam-a-1": func(w http.ResponseWriter, r *http.Request) {
+			if !strings.Contains(r.RequestURI, "%2F") {
+				t.Errorf("request URI %q should contain %%2F-escaped slash", r.RequestURI)
+			}
+			_, _ = w.Write([]byte(`{"name":"orchestra/team-a-1","commit":{"sha":"head1"}}`))
+		},
+	}))
+	defer srv.Close()
+
+	c := New("t", WithBase(srv.URL), WithHTTPClient(srv.Client()))
+	b, err := c.GetBranch(context.Background(), "octo", "repo", wantBranch, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if b.Name != wantBranch {
+		t.Fatalf("name = %q", b.Name)
 	}
 }

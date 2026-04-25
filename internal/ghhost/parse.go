@@ -23,8 +23,8 @@ func ParseRepoURL(repoURL string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("parse url: %w", err)
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return "", "", fmt.Errorf("unsupported scheme %q", u.Scheme)
+	if u.Scheme != "https" {
+		return "", "", fmt.Errorf("unsupported scheme %q (only https; the PAT must not be sent in cleartext)", u.Scheme)
 	}
 	host := strings.ToLower(u.Host)
 	if host != "github.com" && host != "www.github.com" {

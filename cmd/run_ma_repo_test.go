@@ -158,17 +158,17 @@ func TestArtifactPublishSpec_NilWhenNoRepo(t *testing.T) {
 }
 
 func TestResolveTeamArtifact_RecordsBranch(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/octo/repo/branches/orchestra/alpha-run-x", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"name":"orchestra/alpha-run-x","commit":{"sha":"head1"}}`))
-	})
-	mux.HandleFunc("/repos/octo/repo/compare/main...orchestra/alpha-run-x", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"merge_base_commit":{"sha":"baseSha"}}`))
-	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(escapedPathRouter(t, map[string]http.HandlerFunc{
+		"/repos/octo/repo/branches/orchestra%2Falpha-run-x": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"name":"orchestra/alpha-run-x","commit":{"sha":"head1"}}`))
+		},
+		"/repos/octo/repo/compare/main...orchestra%2Falpha-run-x": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"merge_base_commit":{"sha":"baseSha"}}`))
+		},
+	}))
 	defer srv.Close()
 
-	r := newRepoTestRun(t, "alpha", "run-x", srv)
+	r := newRepoTestRun(t, "run-x", srv)
 	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Teams[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,15 +186,15 @@ func TestResolveTeamArtifact_RecordsBranch(t *testing.T) {
 }
 
 func TestResolveTeamArtifact_BranchNotFoundMarksFailed(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/octo/repo/branches/orchestra/alpha-run-x", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"Branch not found"}`))
-	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(escapedPathRouter(t, map[string]http.HandlerFunc{
+		"/repos/octo/repo/branches/orchestra%2Falpha-run-x": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Branch not found"}`))
+		},
+	}))
 	defer srv.Close()
 
-	r := newRepoTestRun(t, "alpha", "run-x", srv)
+	r := newRepoTestRun(t, "run-x", srv)
 	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Teams[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -212,25 +212,25 @@ func TestResolveTeamArtifact_BranchNotFoundMarksFailed(t *testing.T) {
 }
 
 func TestResolveTeamArtifact_OpenPRPopulatesURL(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/octo/repo/branches/orchestra/alpha-run-x", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"name":"orchestra/alpha-run-x","commit":{"sha":"sha-head"}}`))
-	})
-	mux.HandleFunc("/repos/octo/repo/compare/main...orchestra/alpha-run-x", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"merge_base_commit":{"sha":"sha-base"}}`))
-	})
-	mux.HandleFunc("/repos/octo/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"html_url":"https://github.com/octo/repo/pull/9","number":9}`))
-	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(escapedPathRouter(t, map[string]http.HandlerFunc{
+		"/repos/octo/repo/branches/orchestra%2Falpha-run-x": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"name":"orchestra/alpha-run-x","commit":{"sha":"sha-head"}}`))
+		},
+		"/repos/octo/repo/compare/main...orchestra%2Falpha-run-x": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"merge_base_commit":{"sha":"sha-base"}}`))
+		},
+		"/repos/octo/repo/pulls": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"html_url":"https://github.com/octo/repo/pull/9","number":9}`))
+		},
+	}))
 	defer srv.Close()
 
-	r := newRepoTestRun(t, "alpha", "run-x", srv)
+	r := newRepoTestRun(t, "run-x", srv)
 	r.cfg.Backend.ManagedAgents.OpenPullRequests = true
 	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Teams[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -261,7 +261,22 @@ func TestResolveTeamArtifact_SkipsWhenClientNil(t *testing.T) {
 	}
 }
 
-func newRepoTestRun(t *testing.T, _, runID string, srv *httptest.Server) *orchestrationRun {
+// escapedPathRouter dispatches on r.URL.EscapedPath() (Go 1.22+ ServeMux
+// matches on the escaped path, so branch names that contain "/" arrive as
+// "%2F" path segments — using a literal-pattern mux makes routing fail).
+func escapedPathRouter(t *testing.T, routes map[string]http.HandlerFunc) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h, ok := routes[r.URL.EscapedPath()]; ok {
+			h(w, r)
+			return
+		}
+		t.Logf("unrouted %s %s (escaped=%q)", r.Method, r.URL.RequestURI(), r.URL.EscapedPath())
+		http.NotFound(w, r)
+	})
+}
+
+func newRepoTestRun(t *testing.T, runID string, srv *httptest.Server) *orchestrationRun {
 	t.Helper()
 	cfg := newRepoCfg(t)
 	st := memstore.New()
