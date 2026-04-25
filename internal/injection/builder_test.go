@@ -22,7 +22,7 @@ func TestBuildPrompt_SoloNoDeps(t *testing.T) {
 			},
 		},
 	}
-	prompt := BuildPrompt(&team, "my-project", nil, &config.Config{}, nil, "", "")
+	prompt := BuildPrompt(&team, "my-project", nil, &config.Config{}, nil, "", "", Capabilities{})
 
 	checks := []string{
 		"You are: Backend Lead",
@@ -66,7 +66,7 @@ func TestBuildPrompt_SoloWithDeps(t *testing.T) {
 			{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}},
 		},
 	}
-	prompt := BuildPrompt(&team, "proj", state, cfg, nil, "", "")
+	prompt := BuildPrompt(&team, "proj", state, cfg, nil, "", "", Capabilities{})
 
 	if !strings.Contains(prompt, "Context from Previous Teams") {
 		t.Error("missing previous teams section")
@@ -92,7 +92,7 @@ func TestBuildPrompt_TeamLeadWithMembers(t *testing.T) {
 			{Summary: "Build DB", Details: "Postgres", Verify: "go test"},
 		},
 	}
-	prompt := BuildPrompt(&team, "proj", nil, &config.Config{}, nil, ".orchestra/messages/backend", ".orchestra/messages")
+	prompt := BuildPrompt(&team, "proj", nil, &config.Config{}, nil, ".orchestra/messages/backend", ".orchestra/messages", Capabilities{})
 
 	if !strings.Contains(prompt, "You have 2 teammates") {
 		t.Error("missing team count")
@@ -124,7 +124,7 @@ func TestBuildPrompt_TeamLeadWithDeps(t *testing.T) {
 	cfg := &config.Config{
 		Teams: []config.Team{{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}}},
 	}
-	prompt := BuildPrompt(&team, "proj", state, cfg, nil, "", "")
+	prompt := BuildPrompt(&team, "proj", state, cfg, nil, "", "", Capabilities{})
 
 	if !strings.Contains(prompt, "TeamCreate") {
 		t.Error("missing TeamCreate instruction for team lead")
@@ -142,7 +142,7 @@ func TestBuildPrompt_ContextInjectedVerbatim(t *testing.T) {
 		Context: ctx,
 		Tasks:   []config.Task{{Summary: "t", Details: "d", Verify: "v"}},
 	}
-	prompt := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "")
+	prompt := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "", Capabilities{})
 	if !strings.Contains(prompt, ctx) {
 		t.Error("context not injected verbatim")
 	}
@@ -159,7 +159,7 @@ func TestBuildPrompt_TaskFieldsPresent(t *testing.T) {
 			Verify:       "go test -v ./...",
 		}},
 	}
-	prompt := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "")
+	prompt := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "", Capabilities{})
 	for _, s := range []string{"Build the thing", "Detailed requirements here", "src/foo.go, src/bar.go", "`go test -v ./...`"} {
 		if !strings.Contains(prompt, s) {
 			t.Errorf("missing %q in prompt", s)
@@ -200,7 +200,7 @@ func TestBuildPrompt_WithTierPeers(t *testing.T) {
 
 	// Test from backend's perspective
 	team := *cfg.TeamByName("backend")
-	prompt := BuildPrompt(&team, "proj", nil, cfg, tierPeers, "", "")
+	prompt := BuildPrompt(&team, "proj", nil, cfg, tierPeers, "", "", Capabilities{})
 
 	// Should contain the section header
 	if !strings.Contains(prompt, "## Parallel Teams (Your Tier)") {
@@ -224,7 +224,7 @@ func TestBuildPrompt_NilTierPeers(t *testing.T) {
 		Lead:  config.Lead{Role: "Solo Lead"},
 		Tasks: []config.Task{{Summary: "Do stuff", Verify: "true"}},
 	}
-	prompt := BuildPrompt(&team, "proj", nil, &config.Config{}, nil, "", "")
+	prompt := BuildPrompt(&team, "proj", nil, &config.Config{}, nil, "", "", Capabilities{})
 
 	if strings.Contains(prompt, "Parallel Teams") {
 		t.Error("nil tierPeers should not produce parallel teams section")
@@ -238,9 +238,89 @@ func TestBuildPrompt_SingleTierPeer(t *testing.T) {
 			{Name: "only", Lead: config.Lead{Role: "Lead"}, Tasks: []config.Task{{Summary: "Work"}}},
 		},
 	}
-	prompt := BuildPrompt(&cfg.Teams[0], "proj", nil, cfg, []string{"only"}, "", "")
+	prompt := BuildPrompt(&cfg.Teams[0], "proj", nil, cfg, []string{"only"}, "", "", Capabilities{})
 
 	if strings.Contains(prompt, "Parallel Teams") {
 		t.Error("single-team tier should not produce parallel teams section")
+	}
+}
+
+func TestBuildPrompt_LocalBackendByteIdenticalWhenNoArtifactPublish(t *testing.T) {
+	team := config.Team{
+		Name:  "backend",
+		Lead:  config.Lead{Role: "Backend Lead"},
+		Tasks: []config.Task{{Summary: "Build", Details: "d", Verify: "v"}},
+	}
+	zero := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "", Capabilities{})
+	nilSpec := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "", Capabilities{ArtifactPublish: nil})
+	if zero != nilSpec {
+		t.Fatal("zero-value Capabilities and explicit nil ArtifactPublish must produce identical output")
+	}
+	if strings.Contains(zero, "Artifact delivery") {
+		t.Fatal("local prompt must not contain artifact-delivery section")
+	}
+}
+
+func TestBuildPrompt_ArtifactPublishSection(t *testing.T) {
+	team := config.Team{
+		Name:      "team-b",
+		Lead:      config.Lead{Role: "B Lead"},
+		Tasks:     []config.Task{{Summary: "Edit README", Details: "d", Verify: "v"}},
+		DependsOn: []string{"team-a"},
+	}
+	state := &workspace.State{
+		Teams: map[string]workspace.TeamState{
+			"team-a": {
+				Status:        "done",
+				ResultSummary: "edited README",
+				RepositoryArtifacts: []workspace.RepositoryArtifact{
+					{Branch: "orchestra/team-a-run-123", CommitSHA: "deadbeef"},
+				},
+			},
+		},
+	}
+	cfg := &config.Config{
+		Teams: []config.Team{{Name: "team-a", Lead: config.Lead{Role: "A Lead"}}},
+	}
+	caps := Capabilities{ArtifactPublish: &ArtifactPublishSpec{
+		MountPath:  "/workspace/repo",
+		BranchName: "orchestra/team-b-run-123",
+		UpstreamMounts: []UpstreamMount{
+			{TeamName: "team-a", MountPath: "/workspace/upstream/team-a", Branch: "orchestra/team-a-run-123"},
+		},
+	}}
+	prompt := BuildPrompt(&team, "p", state, cfg, nil, "", "", caps)
+
+	checks := []string{
+		"## Artifact delivery",
+		"`/workspace/repo`",
+		"`orchestra/team-b-run-123`",
+		"Do NOT open a pull request",
+		"team-a: `/workspace/upstream/team-a` (branch `orchestra/team-a-run-123`)",
+	}
+	for _, c := range checks {
+		if !strings.Contains(prompt, c) {
+			t.Errorf("artifact prompt missing %q", c)
+		}
+	}
+}
+
+func TestBuildPrompt_ArtifactPublishSectionTier0NoUpstreams(t *testing.T) {
+	team := config.Team{
+		Name:  "team-a",
+		Lead:  config.Lead{Role: "A Lead"},
+		Tasks: []config.Task{{Summary: "Edit README", Details: "d", Verify: "v"}},
+	}
+	caps := Capabilities{ArtifactPublish: &ArtifactPublishSpec{
+		MountPath:  "/workspace/repo",
+		BranchName: "orchestra/team-a-run-123",
+	}}
+	prompt := BuildPrompt(&team, "p", nil, &config.Config{}, nil, "", "", caps)
+
+	if !strings.Contains(prompt, "## Artifact delivery") {
+		t.Fatal("artifact section missing")
+	}
+	if strings.Contains(prompt, "mounted read-only") {
+		t.Fatal("tier-0 team must not list upstream mounts")
 	}
 }
