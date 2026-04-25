@@ -34,11 +34,11 @@ func runRunsPrune(ctx context.Context) error {
 		Apply:   runsPruneApply,
 		MaxAge:  runsPruneOlder,
 		Protect: protectRunAgentRefs(refs),
+		Now:     now,
 	})
 	if err != nil {
 		return err
 	}
-	report.Now = now
 	printStaleAgentReport(report, runsPruneApply, "No stale cached agents eligible for workflow prune.", "cache record ")
 	if runsReconcile {
 		orphaned, err := svc.Orphans(ctx, excludeRunAgentRefs(refs))

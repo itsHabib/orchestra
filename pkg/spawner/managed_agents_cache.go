@@ -29,16 +29,6 @@ func (s *ManagedAgentsSpawner) putEnvRecord(
 	})
 }
 
-func agentCacheKey(spec *AgentSpec) (string, error) {
-	if spec.Project == "" || spec.Role == "" {
-		return "", fmt.Errorf("%w: agent spec requires project and role", store.ErrInvalidArgument)
-	}
-	if strings.Contains(spec.Project, cacheKeySeparator) || strings.Contains(spec.Role, cacheKeySeparator) {
-		return "", fmt.Errorf("%w: agent project/role must not contain %q", store.ErrInvalidArgument, cacheKeySeparator)
-	}
-	return spec.Project + cacheKeySeparator + spec.Role, nil
-}
-
 func envCacheKey(spec *EnvSpec) (string, error) {
 	if spec.Project == "" || spec.Name == "" {
 		return "", fmt.Errorf("%w: environment spec requires project and name", store.ErrInvalidArgument)
@@ -47,21 +37,6 @@ func envCacheKey(spec *EnvSpec) (string, error) {
 		return "", fmt.Errorf("%w: environment project/name must not contain %q", store.ErrInvalidArgument, cacheKeySeparator)
 	}
 	return spec.Project + cacheKeySeparator + spec.Name, nil
-}
-
-// AgentCacheKeyFromMetadata reconstructs the cache key for an orchestra-tagged
-// MA agent from its metadata map. Returns ("", false) if the agent isn't
-// tagged as v2 orchestra-managed or is missing required tags.
-func AgentCacheKeyFromMetadata(metadata map[string]string) (string, bool) {
-	if metadata[orchestraMetadataVersion] != orchestraVersionV2 {
-		return "", false
-	}
-	project := metadata[orchestraMetadataProject]
-	role := metadata[orchestraMetadataRole]
-	if project == "" || role == "" {
-		return "", false
-	}
-	return project + cacheKeySeparator + role, true
 }
 
 func normalizeEnvSpec(spec *EnvSpec) {

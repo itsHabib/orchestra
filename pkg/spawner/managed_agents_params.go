@@ -14,14 +14,6 @@ func toEnvCreateParams(spec *EnvSpec, key string) anthropic.BetaEnvironmentNewPa
 	}
 }
 
-func agentMetadata(spec *AgentSpec) map[string]string {
-	md := cloneStringMap(spec.Metadata)
-	md[orchestraMetadataProject] = spec.Project
-	md[orchestraMetadataRole] = spec.Role
-	md[orchestraMetadataVersion] = orchestraVersionV2
-	return md
-}
-
 func envMetadata(spec *EnvSpec) map[string]string {
 	md := cloneStringMap(spec.Metadata)
 	md[orchestraMetadataProject] = spec.Project

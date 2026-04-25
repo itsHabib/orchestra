@@ -160,7 +160,10 @@ func (s *Service) Prune(ctx context.Context, opts PruneOpts) (*PruneReport, erro
 		return nil, fmt.Errorf("agents.Prune: %w", err)
 	}
 
-	now := s.now()
+	now := opts.Now
+	if now.IsZero() {
+		now = s.now()
+	}
 	report := &PruneReport{
 		Considered: make([]store.AgentRecord, 0, len(rows)),
 		Now:        now,
@@ -209,7 +212,7 @@ func (s *Service) Orphans(ctx context.Context, exclude func(key, agentID string)
 		out = append(out, Orphan{
 			Key:     key,
 			AgentID: agent.ID,
-			Version: agent.Version,
+			Version: int(agent.Version),
 			Status:  status,
 		})
 	})

@@ -84,7 +84,7 @@ const (
 type Orphan struct {
 	Key     string
 	AgentID string
-	Version int64
+	Version int
 	Status  Status
 }
 
@@ -93,6 +93,9 @@ type PruneOpts struct {
 	Apply   bool
 	MaxAge  time.Duration
 	Protect func(key, agentID string) bool
+	// Now fixes the reference time used for staleness selection and for
+	// PruneReport.Now. Zero falls back to the service clock.
+	Now time.Time
 }
 
 // PruneReport describes a prune evaluation and any applied deletions.

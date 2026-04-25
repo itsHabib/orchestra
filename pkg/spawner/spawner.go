@@ -40,7 +40,8 @@ type Tool = agentservice.Tool
 // MCPServer describes an MCP server attached to an agent.
 type MCPServer = agentservice.MCPServer
 
-// Skill describes an Anthropic-hosted skill attached to an agent.
+// Skill describes a skill attached to an agent. Both Anthropic-hosted and
+// custom skills are supported; the kind is carried in Metadata["type"].
 type Skill = agentservice.Skill
 
 // EnvSpec describes a backend environment resource.
