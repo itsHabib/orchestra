@@ -3,6 +3,7 @@ package spawner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -174,16 +175,25 @@ func TestListTeamSessions_HandlesNilState(t *testing.T) {
 	}
 }
 
-func TestIsSteeringSentinel_RecognisesAllSentinels(t *testing.T) {
+func TestIsSteeringSentinel_RecognizesBareAndWrappedSentinels(t *testing.T) {
 	for _, sentinel := range []error{ErrNoActiveRun, ErrTeamNotFound, ErrTeamNotRunning, ErrNoSessionRecorded, ErrLocalBackend} {
-		wrapped := errors.New("wrapped: " + sentinel.Error())
-		_ = wrapped
 		if !IsSteeringSentinel(sentinel) {
-			t.Fatalf("sentinel %v not recognized", sentinel)
+			t.Fatalf("bare sentinel %v not recognized", sentinel)
+		}
+		// %w-wrapping must keep IsSteeringSentinel happy — the CLI
+		// commands wrap with extra context (workspace path, team name)
+		// before returning, and callers errors.Is against the bare
+		// sentinel; this test pins that contract.
+		wrapped := fmt.Errorf("with extra context: %w", sentinel)
+		if !IsSteeringSentinel(wrapped) {
+			t.Fatalf("wrapped sentinel %v not recognized", wrapped)
 		}
 	}
-	if IsSteeringSentinel(errors.New("random")) {
+	if IsSteeringSentinel(errors.New("random non-sentinel")) {
 		t.Fatal("non-sentinel reported as sentinel")
+	}
+	if IsSteeringSentinel(nil) {
+		t.Fatal("nil reported as sentinel")
 	}
 }
 

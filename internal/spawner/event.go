@@ -196,18 +196,28 @@ type SpanModelRequestEndEvent struct {
 }
 
 // UserMessageEchoEvent represents MA's echo of a user.message event delivered
-// into the session (e.g. by `orchestra msg`). The translator emits this so the
-// running orchestrator can advance LastEventID / LastEventAt and surface the
-// human's input in the run log; team status is not mutated.
+// into the session. The translator emits this so the running orchestrator can
+// advance LastEventID / LastEventAt and surface a human's input in the run
+// log; team status is not mutated.
+//
+// FromOrchestrator distinguishes echoes of events the orchestrator process
+// itself sent (e.g. the bootstrap prompt delivered by Session.Send) from
+// echoes of events delivered by an out-of-process steering CLI (e.g. by
+// `orchestra msg`). reportMAEvent uses this to avoid labeling the bootstrap
+// prompt as a human nudge — see cmd/run_ma.go.
 type UserMessageEchoEvent struct {
 	BaseEvent
-	Text string
+	Text             string
+	FromOrchestrator bool
 }
 
 // UserInterruptEchoEvent represents MA's echo of a user.interrupt event
-// delivered into the session (e.g. by `orchestra interrupt`).
+// delivered into the session. FromOrchestrator follows the same convention as
+// UserMessageEchoEvent, though today only `orchestra interrupt` and tests
+// exercise this path.
 type UserInterruptEchoEvent struct {
 	BaseEvent
+	FromOrchestrator bool
 }
 
 // UnknownEvent preserves events the orchestrator does not yet interpret.

@@ -61,11 +61,7 @@ func TestSteeringDelivery_LiveMA(t *testing.T) {
 	if err := runCmd.Start(); err != nil {
 		t.Fatalf("starting orchestra run: %v", err)
 	}
-	t.Cleanup(func() {
-		if runCmd.ProcessState == nil {
-			_ = runCmd.Process.Kill()
-		}
-	})
+	t.Cleanup(func() { reapBackground(t, runCmd) })
 
 	statePath := filepath.Join(workDir, ".orchestra", "state.json")
 	if err := waitForRunningTeam(t, statePath, "intro", 90*time.Second); err != nil {
@@ -86,7 +82,7 @@ func TestSteeringDelivery_LiveMA(t *testing.T) {
 		t.Fatalf("orchestra msg failed: %v\n%s", err, out)
 	}
 	if got := strings.TrimSpace(string(out)); got != "ok" {
-		t.Logf("orchestra msg stdout: %q", got)
+		t.Fatalf("orchestra msg stdout = %q, want %q", got, "ok")
 	}
 
 	if err := runCmd.Wait(); err != nil {
@@ -106,6 +102,29 @@ func TestSteeringDelivery_LiveMA(t *testing.T) {
 	intro := finalState.Teams["intro"]
 	if intro.LastEventID == "" {
 		t.Fatal("LastEventID never advanced")
+	}
+}
+
+// reapBackground kills `cmd` if it is still running and waits a short
+// bounded interval to harvest its exit status, so the test does not leak a
+// zombie process when an assertion fails before the normal Wait() call.
+func reapBackground(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd.ProcessState != nil {
+		return
+	}
+	_ = cmd.Process.Kill()
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Logf("cleanup: orchestra run after kill: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Logf("cleanup: timed out waiting for orchestra run to exit after kill")
 	}
 }
 

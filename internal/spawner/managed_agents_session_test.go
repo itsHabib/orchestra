@@ -390,6 +390,64 @@ func TestTranslateMAEvent_CoversKnownDesignRows(t *testing.T) {
 	}
 }
 
+func TestManagedAgentsTranslator_BootstrapEchoTaggedAsOrchestrator(t *testing.T) {
+	ctx := context.Background()
+	st := seededSessionStore(t)
+	// Send returns a Data union populated with an event id; the session
+	// must remember that id so the corresponding echo through the stream
+	// comes back with FromOrchestrator=true.
+	events := &fakeSessionEventsAPI{
+		seq: &callSeq{},
+		stream: &fakeStream{events: []managedEvent{
+			rawEvent(`{"id":"sent_1","type":"user.message","processed_at":"2026-04-25T10:00:00Z","content":[{"type":"text","text":"bootstrap"}]}`),
+			rawEvent(`{"id":"steered_1","type":"user.message","processed_at":"2026-04-25T10:00:01Z","content":[{"type":"text","text":"out of band"}]}`),
+		}},
+		sendResponses: []*anthropic.BetaManagedAgentsSendSessionEvents{
+			{Data: []anthropic.BetaManagedAgentsSendSessionEventsDataUnion{{ID: "sent_1", Type: "user.message"}}},
+		},
+	}
+	sp := newManagedAgentsSpawnerWithSessions(st, newFakeAgentAPI(), newFakeEnvAPI(), &fakeSessionAPI{seq: events.seq}, events)
+	pending, err := sp.StartSession(ctx, StartSessionRequest{
+		Agent:    AgentHandle{ID: "agent_1", Version: 1},
+		Env:      EnvHandle{ID: "env_1"},
+		TeamName: "alpha",
+		Store:    st,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, ch, err := pending.Stream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Send(ctx, &UserEvent{Type: UserEventTypeMessage, Message: "bootstrap"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	var sawBootstrap, sawSteered bool
+	for ev := range ch {
+		echo, ok := ev.(UserMessageEchoEvent)
+		if !ok {
+			continue
+		}
+		switch string(echo.ID) {
+		case "sent_1":
+			sawBootstrap = true
+			if !echo.FromOrchestrator {
+				t.Fatalf("bootstrap echo should be FromOrchestrator=true, got %+v", echo)
+			}
+		case "steered_1":
+			sawSteered = true
+			if echo.FromOrchestrator {
+				t.Fatalf("out-of-process steered echo should be FromOrchestrator=false, got %+v", echo)
+			}
+		}
+	}
+	if !sawBootstrap || !sawSteered {
+		t.Fatalf("missing echo events: bootstrap=%v steered=%v", sawBootstrap, sawSteered)
+	}
+}
+
 func TestManagedAgentsTranslator_UserEchoAdvancesLastEventOnly(t *testing.T) {
 	ctx := context.Background()
 	st := memstore.New()
@@ -524,16 +582,22 @@ func (f *fakeSessionAPI) Get(context.Context, string, anthropic.BetaSessionGetPa
 }
 
 type fakeSessionEventsAPI struct {
-	seq     *callSeq
-	stream  eventStream
-	streams []eventStream
-	pager   eventPager
-	sent    []anthropic.BetaSessionEventSendParams
+	seq           *callSeq
+	stream        eventStream
+	streams       []eventStream
+	pager         eventPager
+	sent          []anthropic.BetaSessionEventSendParams
+	sendResponses []*anthropic.BetaManagedAgentsSendSessionEvents
 }
 
 func (f *fakeSessionEventsAPI) Send(_ context.Context, _ string, params anthropic.BetaSessionEventSendParams, _ ...option.RequestOption) (*anthropic.BetaManagedAgentsSendSessionEvents, error) {
 	f.seq.Add("send")
 	f.sent = append(f.sent, params)
+	if len(f.sendResponses) > 0 {
+		next := f.sendResponses[0]
+		f.sendResponses = f.sendResponses[1:]
+		return next, nil
+	}
 	return &anthropic.BetaManagedAgentsSendSessionEvents{}, nil
 }
 
