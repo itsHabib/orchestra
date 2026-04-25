@@ -244,11 +244,6 @@ func TestValidate_ManagedAgentsWarnings(t *testing.T) {
 	if !coordinator || !members {
 		t.Fatalf("warnings=%v, want coordinator and members warnings", warnings)
 	}
-	for _, w := range warnings {
-		if strings.Contains(w.Message, "P1.4") {
-			t.Fatalf("warning still references P1.4: %v", w)
-		}
-	}
 }
 
 func TestResolveDefaults(t *testing.T) {

@@ -117,24 +117,25 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 	}
 	logger.Info("DAG: %d tiers", len(tiers))
 
-	var participants []messaging.Participant
-	var lookup map[string]string
-	var maSpawner *spawner.ManagedAgentsSpawner
 	if cfg.Backend.Kind == "managed_agents" {
 		ma, err := initManagedAgentsBackend(cfg, runService, logger)
 		if err != nil {
 			return nil, nil, err
 		}
-		maSpawner = ma
-	} else {
-		p, l, err := initLocalBackend(cfg, ws, active, logger)
-		if err != nil {
-			return nil, nil, err
-		}
-		participants = p
-		lookup = l
+		return &orchestrationRun{
+			cfg:        cfg,
+			logger:     logger,
+			runService: runService,
+			ws:         ws,
+			bus:        active.Bus,
+			maSpawner:  ma,
+		}, tiers, nil
 	}
 
+	participants, lookup, err := initLocalBackend(cfg, ws, active, logger)
+	if err != nil {
+		return nil, nil, err
+	}
 	return &orchestrationRun{
 		cfg:          cfg,
 		logger:       logger,
@@ -143,7 +144,6 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 		bus:          active.Bus,
 		participants: participants,
 		inboxLookup:  lookup,
-		maSpawner:    maSpawner,
 	}, tiers, nil
 }
 
