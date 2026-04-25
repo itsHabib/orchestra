@@ -44,9 +44,10 @@ type TeamState struct {
 
 // RepositoryArtifact records repository output produced by a managed agent.
 type RepositoryArtifact struct {
-	URL            string `json:"url"`
-	Branch         string `json:"branch"`
-	BaseSHA        string `json:"base_sha"`
-	CommitSHA      string `json:"commit_sha"`
-	PullRequestURL string `json:"pull_request_url,omitempty"`
+	URL            string    `json:"url"`
+	Branch         string    `json:"branch"`
+	BaseSHA        string    `json:"base_sha"`
+	CommitSHA      string    `json:"commit_sha"`
+	PullRequestURL string    `json:"pull_request_url,omitempty"`
+	ResolvedAt     time.Time `json:"resolved_at,omitempty"`
 }

@@ -5,7 +5,7 @@ ifeq ($(GOBIN),)
 endif
 
 .PHONY: build install uninstall test test-race vet lint check clean \
-        e2e-ma e2e-ma-single e2e-ma-multi
+        e2e-ma e2e-ma-single e2e-ma-multi e2e-ma-steering
 
 build:
 	go build -o $(BINARY) .
@@ -42,7 +42,7 @@ check: lint test build
 # with managed-agents access. See TESTING.md for cost estimates and the
 # expected post-run state.json checks.
 
-e2e-ma: e2e-ma-single e2e-ma-multi
+e2e-ma: e2e-ma-single e2e-ma-multi e2e-ma-steering
 
 e2e-ma-single: build
 	@if [ -z "$$ANTHROPIC_API_KEY" ]; then \
@@ -57,6 +57,17 @@ e2e-ma-multi: build
 		exit 1; \
 	fi
 	ORCHESTRA_MA_INTEGRATION=1 ./$(BINARY) run test/integration/ma_multi_team/orchestra.yaml
+
+# e2e-ma-steering exercises orchestra msg against a live MA session via the
+# Go test driver under test/integration/ma_steering. Verifies delivery only
+# (the steering event reaches MA and is echoed back through the stream); the
+# agent's reaction to the message is not graded.
+e2e-ma-steering:
+	@if [ -z "$$ANTHROPIC_API_KEY" ]; then \
+		echo "ANTHROPIC_API_KEY required for e2e-ma-steering (live Managed Agents)"; \
+		exit 1; \
+	fi
+	ORCHESTRA_MA_INTEGRATION=1 go test -count=1 -v ./test/integration/ma_steering/...
 
 clean:
 	rm -f $(BINARY)

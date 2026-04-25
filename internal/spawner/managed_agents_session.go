@@ -257,6 +257,13 @@ type Session struct {
 	err           error
 	lastAgentText string
 	lastEventID   EventID
+
+	// selfSentMu guards selfSentIDs. Session.Send is called from the
+	// orchestrator goroutine that owns the team; the translator goroutine
+	// (run loop) reads these IDs when an echo arrives. Cheap mutex over
+	// a small map suffices.
+	selfSentMu  sync.Mutex
+	selfSentIDs map[string]struct{}
 }
 
 // ID returns the MA session ID.
@@ -305,16 +312,59 @@ func (s *Session) Usage(ctx context.Context) (Usage, error) {
 	return usageFromMASession(&ma.Usage), nil
 }
 
-// Send delivers a user.message or user.interrupt to MA.
+// Send delivers a user.message or user.interrupt to MA. The IDs MA assigns
+// to the accepted events are recorded so that when MA echoes them back
+// through the stream the translator can tag them as orchestrator-sourced
+// (FromOrchestrator=true) — preventing the bootstrap prompt from being
+// mislabeled as a human steering message in the run log.
 func (s *Session) Send(ctx context.Context, event *UserEvent) error {
 	params, err := toSessionEventSendParams(event)
 	if err != nil {
 		return err
 	}
-	return s.withRetry(ctx, "session_event_send", func(ctx context.Context) error {
-		_, err := s.events.Send(ctx, s.id, params)
+	var resp *anthropic.BetaManagedAgentsSendSessionEvents
+	if err := s.withRetry(ctx, "session_event_send", func(ctx context.Context) error {
+		var sendErr error
+		resp, sendErr = s.events.Send(ctx, s.id, params)
+		return sendErr
+	}); err != nil {
 		return err
-	})
+	}
+	s.recordSelfSent(resp)
+	return nil
+}
+
+// recordSelfSent stores the IDs MA assigned to events delivered via this
+// Session, so that the matching echoes can be distinguished from out-of-
+// process steering deliveries. Out-of-process callers (orchestra msg /
+// orchestra interrupt) bypass Session entirely and call
+// spawner.SendUserMessage / SendUserInterrupt against MA directly; their
+// IDs are never seen here, so their echoes correctly come back with
+// FromOrchestrator=false.
+func (s *Session) recordSelfSent(resp *anthropic.BetaManagedAgentsSendSessionEvents) {
+	if resp == nil || len(resp.Data) == 0 {
+		return
+	}
+	s.selfSentMu.Lock()
+	defer s.selfSentMu.Unlock()
+	if s.selfSentIDs == nil {
+		s.selfSentIDs = make(map[string]struct{}, len(resp.Data))
+	}
+	for i := range resp.Data {
+		if id := resp.Data[i].ID; id != "" {
+			s.selfSentIDs[id] = struct{}{}
+		}
+	}
+}
+
+func (s *Session) wasSelfSent(id string) bool {
+	if id == "" {
+		return false
+	}
+	s.selfSentMu.Lock()
+	defer s.selfSentMu.Unlock()
+	_, ok := s.selfSentIDs[id]
+	return ok
 }
 
 // History lists already-recorded events, optionally after a known event ID.
@@ -505,6 +555,7 @@ func (s *Session) process(ctx context.Context, ev managedEvent) (bool, error) {
 		s.seen.Push(parsed.ID)
 		s.lastEventID = EventID(parsed.ID)
 	}
+	translated = s.tagSelfSent(translated, parsed.ID)
 	if err := s.writeRawLog(raw); err != nil {
 		wrapped := fmt.Errorf("log_write: %w", err)
 		_ = s.failTeam(context.WithoutCancel(ctx), parsed.ID, parsed.ProcessedAt, wrapped.Error())
@@ -518,6 +569,26 @@ func (s *Session) process(ctx context.Context, ev managedEvent) (bool, error) {
 	}
 
 	return s.apply(ctx, translated, &parsed)
+}
+
+// tagSelfSent flips FromOrchestrator on user.message / user.interrupt
+// echoes whose ID matches a Session.Send the orchestrator made. Called
+// before emitting to the events channel so consumers (e.g. reportMAEvent)
+// see the correct provenance.
+func (s *Session) tagSelfSent(ev Event, id string) Event {
+	switch typed := ev.(type) {
+	case UserMessageEchoEvent:
+		if s.wasSelfSent(id) {
+			typed.FromOrchestrator = true
+			return typed
+		}
+	case UserInterruptEchoEvent:
+		if s.wasSelfSent(id) {
+			typed.FromOrchestrator = true
+			return typed
+		}
+	}
+	return ev
 }
 
 func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, error) {
@@ -564,6 +635,11 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 			ts.CostUSD += ev.Usage.CostUSD
 			ts.SessionID = s.id
 		})
+	case UserMessageEchoEvent, UserInterruptEchoEvent:
+		// Steering echoes advance LastEventID / LastEventAt only. Team
+		// status, tokens, and cost are unaffected — the human nudged the
+		// agent, but no orchestra-side lifecycle transition happened.
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
 	default:
 		return false, nil
 	}
@@ -1129,6 +1205,9 @@ func translateMAEvent(raw []byte, now time.Time) (Event, maEvent, error) {
 	if translated, ok := translateSessionEvent(base, &ev); ok {
 		return translated, ev, nil
 	}
+	if translated, ok := translateUserEvent(base, &ev); ok {
+		return translated, ev, nil
+	}
 	base.Type = EventTypeUnknown
 	return UnknownEvent{BaseEvent: base, Payload: json.RawMessage(raw)}, ev, nil
 }
@@ -1152,6 +1231,17 @@ func translateAgentEvent(base BaseEvent, ev *maEvent) (Event, bool) {
 		return AgentCustomToolUseEvent{BaseEvent: base, ToolUse: ToolUse{ID: ev.ID, Name: ev.Name, Input: rawInput(ev.Input)}}, true
 	case EventTypeAgentThreadContextCompacted:
 		return AgentThreadContextCompactedEvent{BaseEvent: base, Summary: contentText(ev.Content)}, true
+	default:
+		return nil, false
+	}
+}
+
+func translateUserEvent(base BaseEvent, ev *maEvent) (Event, bool) {
+	switch EventType(ev.Type) {
+	case EventTypeUserMessage:
+		return UserMessageEchoEvent{BaseEvent: base, Text: contentText(ev.Content)}, true
+	case EventTypeUserInterrupt:
+		return UserInterruptEchoEvent{BaseEvent: base}, true
 	default:
 		return nil, false
 	}

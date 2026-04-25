@@ -1,0 +1,51 @@
+name: ma-repo-relay
+backend:
+  kind: managed_agents
+  managed_agents:
+    repository:
+      # Replace with a scratch repo you control. Orchestra will push branches
+      # named orchestra/<team>-<run-id> here.
+      url: https://github.com/your-user/orchestra-scratch
+      mount_path: /workspace/repo
+      default_branch: main
+    open_pull_requests: false  # set true to have orchestra also open PRs
+
+defaults:
+  model: sonnet
+  max_turns: 20
+  permission_mode: acceptEdits
+  timeout_minutes: 30
+
+teams:
+  - name: editor
+    lead:
+      role: "README Editor"
+    context: |
+      Your working copy of the repo is mounted at /workspace/repo. Make a
+      single concrete edit to README.md, then commit and push the orchestra
+      branch you were assigned. Do NOT open a pull request.
+    tasks:
+      - summary: "Append an attribution line to README.md"
+        details: |
+          Add one line at the end of README.md noting that this edit was made
+          by team `editor`. Commit and push to the assigned branch.
+        deliverables: []
+        verify: "README.md has a new attribution line on the assigned branch"
+
+  - name: reviewer
+    depends_on: [editor]
+    lead:
+      role: "Edit Reviewer"
+    context: |
+      The upstream editor team's branch is mounted read-only at
+      /workspace/upstream/editor. Your own working copy is at /workspace/repo.
+      Append a single review-comment line to README.md acknowledging editor's
+      change, then commit and push your assigned branch.
+    tasks:
+      - summary: "Append a review line referencing editor's change"
+        details: |
+          Read the line editor added (under /workspace/upstream/editor/README.md)
+          and append "Reviewed by reviewer." to README.md in your own working
+          copy. Commit and push to the assigned branch.
+        deliverables: []
+        verify: "README.md on the assigned branch has both editor's and reviewer's lines"

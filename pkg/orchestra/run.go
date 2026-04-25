@@ -12,6 +12,7 @@ import (
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/dag"
+	"github.com/itsHabib/orchestra/internal/ghhost"
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/messaging"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
@@ -151,6 +152,8 @@ type orchestrationRun struct {
 	participants       []messaging.Participant
 	inboxLookup        map[string]string
 	maSpawner          *spawner.ManagedAgentsSpawner
+	ghClient           *ghhost.Client // nil for non-MA runs or when no repository is configured
+	ghPAT              string         // in-memory only; never persisted or logged
 	startTeamMAForTest startTeamMAFunc
 }
 
@@ -273,6 +276,10 @@ func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service,
 		if err != nil {
 			return nil, nil, err
 		}
+		ghPAT, ghClient, err := initGitHubClient(cfg, logger)
+		if err != nil {
+			return nil, nil, err
+		}
 		return &orchestrationRun{
 			cfg:        cfg,
 			logger:     logger,
@@ -280,6 +287,8 @@ func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service,
 			ws:         ws,
 			bus:        active.Bus,
 			maSpawner:  ma,
+			ghClient:   ghClient,
+			ghPAT:      ghPAT,
 		}, tiers, nil
 	}
 
@@ -308,6 +317,37 @@ func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, logger Lo
 		return nil, fmt.Errorf("managed-agents spawner: %w", err)
 	}
 	return ma, nil
+}
+
+// initGitHubClient resolves the GitHub PAT and returns a ghhost.Client when
+// any team has an effective repository configured. Returns ("", nil, nil) for
+// runs that do not need GitHub access (text-only managed-agents flows).
+// Resolved at startup so missing-token errors fail fast.
+func initGitHubClient(cfg *Config, logger Logger) (string, *ghhost.Client, error) {
+	if !cfgNeedsGitHub(cfg) {
+		return "", nil, nil
+	}
+	pat, err := ghhost.ResolvePAT()
+	if err != nil {
+		return "", nil, fmt.Errorf("github pat: %w", err)
+	}
+	logger.Info("GitHub client initialized for managed-agents repository flow")
+	return pat, ghhost.New(pat), nil
+}
+
+func cfgNeedsGitHub(cfg *Config) bool {
+	if cfg.Backend.Kind != BackendManagedAgents {
+		return false
+	}
+	if cfg.Backend.ManagedAgents != nil && cfg.Backend.ManagedAgents.Repository != nil {
+		return true
+	}
+	for i := range cfg.Teams {
+		if cfg.Teams[i].EnvironmentOverride.Repository != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func initLocalBackend(cfg *Config, ws *workspace.Workspace, active *runsvc.Active, logger Logger) ([]messaging.Participant, map[string]string, error) {
@@ -404,7 +444,7 @@ func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNam
 }
 
 func (r *orchestrationRun) teamPrompt(team *Team, tierNames []string, state *store.RunState) string {
-	return injection.BuildPrompt(team, r.cfg.Name, state, r.cfg, tierPeers(tierNames), r.inboxLookup[team.Name], r.bus.Path())
+	return injection.BuildPrompt(team, r.cfg.Name, state, r.cfg, tierPeers(tierNames), r.inboxLookup[team.Name], r.bus.Path(), injection.Capabilities{})
 }
 
 func tierPeers(tierNames []string) []string {

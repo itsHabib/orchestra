@@ -46,3 +46,4 @@ This project includes Claude Code skills in `.claude/skills/`:
 - `/orchestra-monitor` — Status dashboard (team progress, costs, activity, messages)
 - `/orchestra-inbox` — Read messages from any team/coordinator inbox
 - `/orchestra-msg` — Send messages to teams or broadcast to all
+- `/ship-feature` — Drive a design doc → worktree → PR → CI green → reviews requested → push-notify when reviews land
