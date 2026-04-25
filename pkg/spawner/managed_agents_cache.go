@@ -10,26 +10,6 @@ import (
 	"github.com/itsHabib/orchestra/pkg/store"
 )
 
-func (s *ManagedAgentsSpawner) putAgentRecord(
-	ctx context.Context,
-	key string,
-	hash string,
-	spec *AgentSpec,
-	agent *anthropic.BetaManagedAgentsAgent,
-) error {
-	now := s.now()
-	return s.store.PutAgent(ctx, key, &store.AgentRecord{
-		Key:       key,
-		Project:   spec.Project,
-		Role:      spec.Role,
-		AgentID:   agent.ID,
-		Version:   int(agent.Version),
-		SpecHash:  hash,
-		UpdatedAt: now,
-		LastUsed:  now,
-	})
-}
-
 func (s *ManagedAgentsSpawner) putEnvRecord(
 	ctx context.Context,
 	key string,
@@ -84,19 +64,8 @@ func AgentCacheKeyFromMetadata(metadata map[string]string) (string, bool) {
 	return project + cacheKeySeparator + role, true
 }
 
-func normalizeAgentSpec(spec *AgentSpec) {
-	spec.Project = firstNonEmpty(spec.Project, spec.Metadata[orchestraMetadataProject])
-	spec.Role = firstNonEmpty(spec.Role, spec.Metadata[orchestraMetadataRole])
-}
-
 func normalizeEnvSpec(spec *EnvSpec) {
 	spec.Project = firstNonEmpty(spec.Project, spec.Metadata[orchestraMetadataProject])
-}
-
-func taggedAgent(metadata map[string]string, project, role string) bool {
-	return metadata[orchestraMetadataProject] == project &&
-		metadata[orchestraMetadataRole] == role &&
-		metadata[orchestraMetadataVersion] == orchestraVersionV2
 }
 
 func taggedEnv(metadata map[string]string, project, name string) bool {
@@ -105,23 +74,8 @@ func taggedEnv(metadata map[string]string, project, name string) bool {
 		metadata[orchestraMetadataVersion] == orchestraVersionV2
 }
 
-func isAgentArchived(agent *anthropic.BetaManagedAgentsAgent) bool {
-	return agent != nil && !agent.ArchivedAt.IsZero()
-}
-
 func isEnvArchived(env *anthropic.BetaEnvironment) bool {
 	return env != nil && env.ArchivedAt != ""
-}
-
-func handleFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) AgentHandle {
-	return AgentHandle{
-		ID:       agent.ID,
-		Backend:  managedAgentsBackend,
-		Name:     agent.Name,
-		Version:  int(agent.Version),
-		Model:    agent.Model.ID,
-		Metadata: cloneStringMap(agent.Metadata),
-	}
 }
 
 func handleFromMAEnv(env *anthropic.BetaEnvironment) EnvHandle {
@@ -131,14 +85,6 @@ func handleFromMAEnv(env *anthropic.BetaEnvironment) EnvHandle {
 		Name:     env.Name,
 		Metadata: cloneStringMap(env.Metadata),
 	}
-}
-
-func agentIDs(agents []anthropic.BetaManagedAgentsAgent) []string {
-	out := make([]string, 0, len(agents))
-	for i := range agents {
-		out = append(out, agents[i].ID)
-	}
-	return out
 }
 
 func envIDs(envs []anthropic.BetaEnvironment) []string {
@@ -164,4 +110,12 @@ func parseMATime(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

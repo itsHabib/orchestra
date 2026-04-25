@@ -31,9 +31,16 @@ type Spawner interface {
 	ResumeSession(ctx context.Context, sessionID string) (*Session, error)
 }
 
+// AgentSpec describes the backend agent resource to create or reuse.
 type AgentSpec = agentservice.AgentSpec
+
+// Tool describes a backend-native tool made available to an agent.
 type Tool = agentservice.Tool
+
+// MCPServer describes an MCP server attached to an agent.
 type MCPServer = agentservice.MCPServer
+
+// Skill describes an Anthropic-hosted skill attached to an agent.
 type Skill = agentservice.Skill
 
 // EnvSpec describes a backend environment resource.
@@ -63,6 +70,7 @@ type NetworkSpec struct {
 	AllowPackageManagers bool
 }
 
+// AgentHandle identifies a backend agent resource.
 type AgentHandle = agentservice.AgentHandle
 
 // EnvHandle identifies a backend environment resource.

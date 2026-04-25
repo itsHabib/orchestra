@@ -13,8 +13,7 @@ import (
 )
 
 // canonicalAgentSpec is the JSON-serializable shape used to compute the spec
-// hash. Only fields we round-trip through the Managed Agents API are included,
-// which keeps specHash and hashFromMAAgent symmetric.
+// hash. Only fields we round-trip through the Managed Agents API are included.
 type canonicalAgentSpec struct {
 	Model      string           `json:"model"`
 	System     string           `json:"system"`
@@ -30,7 +29,7 @@ type canonicalEnvSpec struct {
 
 // canonicalSkill is the subset of Skill used for hashing. Arbitrary skill
 // metadata is intentionally dropped: the MA API does not return it, so
-// including it here would break round-trip equality with hashFromMAAgent.
+// including it here would break round-trip equality with returned agents.
 type canonicalSkill struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
@@ -166,80 +165,6 @@ func isBuiltInTool(name string) bool {
 	default:
 		return false
 	}
-}
-
-// hashFromMAAgent reconstructs an AgentSpec from a Managed Agents resource and
-// returns its canonical hash. The reconstruction only includes fields the MA
-// API round-trips, which must match canonicalAgentSpec exactly — otherwise an
-// adopted agent would fail an equality check and be needlessly updated.
-func hashFromMAAgent(agent *anthropic.BetaManagedAgentsAgent) (string, error) {
-	if agent == nil {
-		return "", errors.New("spawner: nil managed agent")
-	}
-	spec := AgentSpec{
-		Model:        agent.Model.ID,
-		SystemPrompt: agent.System,
-		Tools:        toolsFromMAAgent(agent.Tools),
-		MCPServers:   mcpServersFromMAAgent(agent.MCPServers),
-		Skills:       skillsFromMAAgent(agent.Skills),
-	}
-	return specHash(&spec)
-}
-
-func toolsFromMAAgent(tools []anthropic.BetaManagedAgentsAgentToolUnion) []Tool {
-	var out []Tool
-	for i := range tools {
-		tool := &tools[i]
-		switch tool.Type {
-		case "agent_toolset_20260401":
-			for j := range tool.Configs.OfBetaManagedAgentsAgentToolConfigArray {
-				cfg := &tool.Configs.OfBetaManagedAgentsAgentToolConfigArray[j]
-				if cfg.Enabled {
-					out = append(out, Tool{Name: string(cfg.Name), Type: "agent_toolset_20260401"})
-				}
-			}
-		case "mcp_toolset":
-			out = append(out, Tool{Name: tool.MCPServerName, Type: "mcp_toolset"})
-		case "custom":
-			out = append(out, Tool{
-				Name:        tool.Name,
-				Type:        "custom",
-				Description: tool.Description,
-				InputSchema: map[string]any{
-					"properties": tool.InputSchema.Properties,
-					"required":   tool.InputSchema.Required,
-					"type":       string(tool.InputSchema.Type),
-				},
-			})
-		}
-	}
-	return out
-}
-
-func mcpServersFromMAAgent(servers []anthropic.BetaManagedAgentsMCPServerURLDefinition) []MCPServer {
-	out := make([]MCPServer, 0, len(servers))
-	for i := range servers {
-		server := &servers[i]
-		out = append(out, MCPServer{
-			Name: server.Name,
-			Type: string(server.Type),
-			URL:  server.URL,
-		})
-	}
-	return out
-}
-
-func skillsFromMAAgent(skills []anthropic.BetaManagedAgentsAgentSkillUnion) []Skill {
-	out := make([]Skill, 0, len(skills))
-	for i := range skills {
-		skill := &skills[i]
-		out = append(out, Skill{
-			Name:     skill.SkillID,
-			Version:  skill.Version,
-			Metadata: map[string]string{"type": skill.Type},
-		})
-	}
-	return out
 }
 
 func hashFromMAEnv(env *anthropic.BetaEnvironment) (string, error) {

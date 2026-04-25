@@ -70,9 +70,13 @@ type Summary struct {
 type Status string
 
 const (
-	StatusActive      Status = "active"
-	StatusArchived    Status = "archived"
-	StatusMissing     Status = "missing"
+	// StatusActive means the Managed Agent exists and is not archived.
+	StatusActive Status = "active"
+	// StatusArchived means the Managed Agent exists but is archived.
+	StatusArchived Status = "archived"
+	// StatusMissing means the cached Managed Agent ID returned 404.
+	StatusMissing Status = "missing"
+	// StatusUnreachable means the Managed Agents API lookup failed.
 	StatusUnreachable Status = "unreachable"
 )
 

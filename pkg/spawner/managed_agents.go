@@ -17,21 +17,19 @@
 // EnsureAgent delegates to internal/agents.Service. EnsureEnvironment acquires
 // a per-key lock via the Store and then runs this pipeline:
 //
-//	resolveAgentFromCache  →  hit:  reuse (or update-in-place on spec drift)
-//	                         miss: reconcileAgent
-//	                                 findAdoptableAgent → adoptAgent
-//	                                                    → createAgent
+//	resolveEnvFromCache  →  hit:  reuse (or archive-and-recreate on spec drift)
+//	                       miss: reconcileEnv
+//	                               findAdoptableEnv → adoptEnv
+//	                                                → createEnv
 //
 // Environments follow the same shape, except drift triggers
 // archive-and-recreate (the MA API does not allow in-place env updates).
 //
 // The implementation is split across several files in this package:
 //
-//   - managed_agents.go       — this file: types, constructor, public API shells
-//   - managed_agents_env.go   — env Ensure pipeline (mirror, with archive-and-recreate on drift)
-//   - managed_agents_cache.go — cache record writers, key builders, metadata tag helpers, handle converters
-//   - managed_agents_hash.go  — deterministic spec hashing
-//   - managed_agents_params.go — MA API param builders
+//   - managed_agents.go      — this file: types, constructor, public API shells
+//   - managed_agents_env.go  — env Ensure pipeline, cache helpers, hashing, and MA params
+//   - managed_agents_session.go — session lifecycle and stream translation
 
 package spawner
 
@@ -243,6 +241,9 @@ func withManagedAgentsClock(clock ManagedAgentsClock) ManagedAgentsOption {
 	}
 }
 
+// EnsureAgent returns an active managed-agents agent resource for spec.
+//
+//nolint:gocritic // Spawner interface intentionally takes AgentSpec by value.
 func (s *ManagedAgentsSpawner) EnsureAgent(ctx context.Context, spec AgentSpec) (AgentHandle, error) {
 	if s.agentService == nil {
 		return AgentHandle{}, ErrUnsupported

@@ -141,7 +141,7 @@ func printStaleAgentReport(
 		action = "Deleted"
 	}
 	for i := range report.Stale {
-		row := report.Stale[i]
+		row := &report.Stale[i]
 		reason := agentservice.StaleReason(row, report.Now, report.MaxAge)
 		fmt.Printf("%s %s%s (%s)\n", action, entryPrefix, row.Record.Key, reason)
 	}

@@ -172,7 +172,7 @@ func (s *Service) Prune(ctx context.Context, opts PruneOpts) (*PruneReport, erro
 		if opts.Protect != nil && opts.Protect(row.Record.Key, row.Record.AgentID) {
 			continue
 		}
-		if StaleReason(row, now, opts.MaxAge) != "" {
+		if StaleReason(&row, now, opts.MaxAge) != "" {
 			report.Stale = append(report.Stale, row)
 		}
 	}
@@ -226,12 +226,16 @@ func (s *Service) Orphans(ctx context.Context, exclude func(key, agentID string)
 }
 
 // StaleReason returns the CLI-facing stale reason for one summary.
-func StaleReason(row Summary, now time.Time, olderThan time.Duration) string {
+func StaleReason(row *Summary, now time.Time, olderThan time.Duration) string {
+	if row == nil {
+		return ""
+	}
 	switch row.Status {
 	case StatusMissing:
 		return "MA 404"
 	case StatusArchived:
 		return "archived on MA"
+	case StatusActive, StatusUnreachable:
 	}
 	if olderThan > 0 && (row.Record.LastUsed.IsZero() || row.Record.LastUsed.Before(now.Add(-olderThan))) {
 		return "last used older than " + olderThan.String()
