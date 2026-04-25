@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	agentservice "github.com/itsHabib/orchestra/internal/agents"
 	"github.com/itsHabib/orchestra/pkg/store"
 )
 
@@ -31,41 +32,17 @@ type Spawner interface {
 }
 
 // AgentSpec describes the backend agent resource to create or reuse.
-type AgentSpec struct {
-	Project      string
-	Role         string
-	Name         string
-	Model        string
-	SystemPrompt string
-	Tools        []Tool
-	MCPServers   []MCPServer
-	Skills       []Skill
-	Metadata     map[string]string
-}
+type AgentSpec = agentservice.AgentSpec
 
 // Tool describes a backend-native tool made available to an agent.
-type Tool struct {
-	Name        string
-	Type        string
-	Description string
-	InputSchema any
-	Metadata    map[string]string
-}
+type Tool = agentservice.Tool
 
 // MCPServer describes an MCP server attached to an agent.
-type MCPServer struct {
-	Name     string
-	Type     string
-	URL      string
-	Metadata map[string]string
-}
+type MCPServer = agentservice.MCPServer
 
-// Skill describes a backend-native skill attached to an agent.
-type Skill struct {
-	Name     string
-	Version  string
-	Metadata map[string]string
-}
+// Skill describes a skill attached to an agent. Both Anthropic-hosted and
+// custom skills are supported; the kind is carried in Metadata["type"].
+type Skill = agentservice.Skill
 
 // EnvSpec describes a backend environment resource.
 type EnvSpec struct {
@@ -95,14 +72,7 @@ type NetworkSpec struct {
 }
 
 // AgentHandle identifies a backend agent resource.
-type AgentHandle struct {
-	ID       string
-	Backend  string
-	Name     string
-	Version  int
-	Model    string
-	Metadata map[string]string
-}
+type AgentHandle = agentservice.AgentHandle
 
 // EnvHandle identifies a backend environment resource.
 type EnvHandle struct {

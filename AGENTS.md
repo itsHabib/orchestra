@@ -20,6 +20,7 @@ Requires Go 1.22+.
 - `internal/dag/` — Topological sort (Kahn's algorithm) → execution tiers
 - `internal/spawner/` — Spawns `Codex -p --output-format stream-json` subprocesses
 - `internal/injection/` — Prompt construction (role + context + tasks + dependency results)
+- `internal/agents/` — Managed Agents service (MA client, agent cache, prune/reconcile)
 - `internal/run/` — Run lifecycle service (lock, archive, seed state, team transitions)
 - `internal/messaging/` — File-based cross-team message bus
 - `internal/workspace/` — Atomic file I/O helpers for registry, results, logs

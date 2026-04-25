@@ -87,37 +87,18 @@ func TestAggregateRunStatus(t *testing.T) {
 	}
 }
 
-func TestStaleRunAgentRowsProtectsRecentRunReferences(t *testing.T) {
-	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
-	rows := []agentRow{
-		{
-			record: store.AgentRecord{
-				Key:      "project__active",
-				AgentID:  "agent-active",
-				LastUsed: now.Add(-60 * 24 * time.Hour),
-			},
-			status: "active",
-		},
-		{
-			record: store.AgentRecord{
-				Key:      "project__old",
-				AgentID:  "agent-old",
-				LastUsed: now.Add(-60 * 24 * time.Hour),
-			},
-			status: "active",
-		},
-	}
+func TestProtectRunAgentRefsProtectsRecentRunReferences(t *testing.T) {
 	refs := runAgentRefs{
 		allAgentIDs:       map[string]struct{}{"agent-active": {}, "agent-old": {}},
 		protectedAgentIDs: map[string]struct{}{"agent-active": {}},
 	}
 
-	stale := staleRunAgentRows(rows, refs, now, 30*24*time.Hour)
-	if len(stale) != 1 {
-		t.Fatalf("len(stale)=%d, want 1", len(stale))
+	protect := protectRunAgentRefs(refs)
+	if !protect("project__active", "agent-active") {
+		t.Fatal("expected active agent to be protected")
 	}
-	if stale[0].record.AgentID != "agent-old" {
-		t.Fatalf("stale agent=%q, want agent-old", stale[0].record.AgentID)
+	if protect("project__old", "agent-old") {
+		t.Fatal("expected old agent to be eligible")
 	}
 }
 
