@@ -25,8 +25,34 @@ type Config struct {
 //
 //	backend:
 //	  kind: managed_agents
+//	  managed_agents:
+//	    repository: { url: "https://github.com/owner/repo" }
+//	    open_pull_requests: true
 type Backend struct {
-	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Kind          string                `yaml:"kind,omitempty" json:"kind,omitempty"`
+	ManagedAgents *ManagedAgentsBackend `yaml:"managed_agents,omitempty" json:"managed_agents,omitempty"`
+}
+
+// ManagedAgentsBackend captures managed-agents-specific backend settings. Only
+// consulted when Backend.Kind is "managed_agents".
+type ManagedAgentsBackend struct {
+	Repository       *RepositorySpec `yaml:"repository,omitempty" json:"repository,omitempty"`
+	OpenPullRequests bool            `yaml:"open_pull_requests,omitempty" json:"open_pull_requests,omitempty"`
+}
+
+// RepositorySpec describes a GitHub repository attached to managed-agents
+// sessions. URL is the canonical https URL; MountPath defaults to
+// "/workspace/repo"; DefaultBranch defaults to "main".
+type RepositorySpec struct {
+	URL           string `yaml:"url" json:"url"`
+	MountPath     string `yaml:"mount_path,omitempty" json:"mount_path,omitempty"`
+	DefaultBranch string `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`
+}
+
+// EnvironmentOverride lets a single team substitute backend-level
+// environment fields (currently just Repository) without touching others.
+type EnvironmentOverride struct {
+	Repository *RepositorySpec `yaml:"repository,omitempty" json:"repository,omitempty"`
 }
 
 // UnmarshalYAML accepts the older scalar backend spelling and the newer
@@ -73,12 +99,13 @@ const DefaultMAConcurrentSessions = 20
 
 // Team represents a single team or solo agent in the orchestration.
 type Team struct {
-	Name      string   `yaml:"name"`
-	Lead      Lead     `yaml:"lead"`
-	Members   []Member `yaml:"members"`
-	Tasks     []Task   `yaml:"tasks"`
-	DependsOn []string `yaml:"depends_on"`
-	Context   string   `yaml:"context"`
+	Name                string              `yaml:"name"`
+	Lead                Lead                `yaml:"lead"`
+	Members             []Member            `yaml:"members"`
+	Tasks               []Task              `yaml:"tasks"`
+	DependsOn           []string            `yaml:"depends_on"`
+	Context             string              `yaml:"context"`
+	EnvironmentOverride EnvironmentOverride `yaml:"environment_override,omitempty"`
 }
 
 // Task represents a unit of work assigned to a team.
@@ -151,6 +178,7 @@ func (c *Config) ResolveDefaults() {
 	if c.Coordinator.MaxTurns == 0 {
 		c.Coordinator.MaxTurns = 500
 	}
+	c.resolveRepositoryDefaults()
 }
 
 // Warning represents a non-fatal validation issue.
@@ -179,6 +207,8 @@ func (c *Config) Validate() ([]Warning, error) {
 	warnings = append(warnings, teamValidation.warnings...)
 	errs = append(errs, teamValidation.errs...)
 	warnings = append(warnings, c.validateBackendWarnings()...)
+	warnings = append(warnings, c.validateRepositoryWarnings()...)
+	errs = append(errs, c.validateRepositoryHard()...)
 
 	// Check for cycles using DFS
 	if err := detectCycles(c.Teams); err != nil {

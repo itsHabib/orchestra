@@ -1,0 +1,55 @@
+name: ma-repo-relay
+backend:
+  kind: managed_agents
+  managed_agents:
+    repository:
+      # Driven by ORCHESTRA_TEST_REPO_URL at integration time; this default is
+      # only used if the env var is unset (in which case the run will fail when
+      # it tries to push). The integration runner is expected to render this
+      # file or the binary is invoked with ORCHESTRA_TEST_REPO_URL set in env.
+      url: https://github.com/PLACEHOLDER/PLACEHOLDER
+      mount_path: /workspace/repo
+      default_branch: main
+    open_pull_requests: false
+
+defaults:
+  model: sonnet
+  max_turns: 20
+  permission_mode: acceptEdits
+  timeout_minutes: 30
+
+teams:
+  - name: team-a
+    lead:
+      role: "README Editor"
+    context: |
+      Your working copy of the repo is mounted at /workspace/repo. Append one
+      line to README.md, commit, and push to the assigned orchestra branch.
+      Do NOT open a pull request.
+    tasks:
+      - summary: "Append a line to README.md"
+        details: |
+          Add a single new line at the end of README.md (any non-empty content).
+          Commit and push to the branch you were assigned in the artifact-delivery
+          instructions.
+        deliverables: []
+        verify: "README.md on the assigned branch has one new line vs. main"
+
+  - name: team-b
+    depends_on: [team-a]
+    lead:
+      role: "README Continuer"
+    context: |
+      The upstream team-a's branch is mounted read-only at
+      /workspace/upstream/team-a. Your own working copy is at /workspace/repo.
+      Read team-a's appended line, then append your own line referencing it
+      and push to your assigned orchestra branch.
+    tasks:
+      - summary: "Append a follow-up line to README.md"
+        details: |
+          Read /workspace/upstream/team-a/README.md and note the last line
+          team-a added. In your own working copy at /workspace/repo, append
+          a new line that references team-a's contribution. Commit and push
+          to your assigned branch.
+        deliverables: []
+        verify: "README.md on team-b's branch has team-a's line and team-b's line"
