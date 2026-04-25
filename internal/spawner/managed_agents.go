@@ -64,9 +64,11 @@ const (
 	cacheKeySeparator = "__"
 
 	// defaultStartSessionConcurrency caps in-flight Beta.Sessions.New calls.
-	// MA enforces a 60-creates/min org limit; a 20-slot semaphore keeps the
-	// steady-state create rate well under the cap at observed ~2s create
-	// latency (~10/sec peak). Override via WithManagedAgentsConcurrency.
+	// This is a concurrency bound, not a rate limit — it bounds bursts but does
+	// not enforce MA's 60-creates/min org limit on its own. Per-minute throttling
+	// is handled reactively by withRetry's 429 + Retry-After path. The cap keeps
+	// short bursts from blowing the budget; the retry layer handles the rest.
+	// Override via WithManagedAgentsConcurrency.
 	defaultStartSessionConcurrency = 20
 )
 
