@@ -67,9 +67,6 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		return nil, teamCtx.Err()
 	}
 	if err := session.Err(); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, err
-		}
 		return nil, err
 	}
 
