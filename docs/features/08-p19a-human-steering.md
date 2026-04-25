@@ -40,10 +40,10 @@ Splitting the outbound and inbound directions matters because the outbound piece
 
 - F1. `orchestra msg --team <name> --message <text> [--workspace .orchestra/]` finds the active run's session for `<name>` and delivers a `user.message` event directly to MA via the SDK (not through the running orchestrator's `Session.Send`, which lives in a different process). Exits 0 on accepted-by-MA, non-zero on team not found / not running / send failure.
 - F2. `orchestra interrupt --team <name> [--workspace .orchestra/]` does the same with `user.interrupt`. Same exit semantics.
-- F3. `orchestra sessions ls [--workspace .orchestra/]` prints a table with one row per team in the active run *whose status is `running` or `pending`* (the only steerable states). `--all` includes `done` / `failed` / `terminated` rows for inspection. Columns: `team`, `status`, `steerable` (yes/no), `session_id`, `agent_id`, `last_event_id`, `last_event_at`. Exits 0; empty table if no active run.
-- F4. All three commands are no-ops on `backend: local` runs and print an actionable error: `"steering is only supported under backend: managed_agents (local-backend steering tracked as P1.9-E)"`. Deliberate scope cut for this chapter — see §3 out-of-scope and §5.7.
-- F5. The commands target the **active** run, identified via the existing run-lock pattern. If there is no active run, exit non-zero with `"no active orchestra run in <workspace>"`. The lookup uses a lock-free read of `state.json` (the file is atomically written) — no shared lock dependency; see §5.3.
-- F6. `orchestra msg` and `orchestra interrupt` require the named team to be in `status: running`. If the team is `pending`, `done`, `failed`, or `terminated`, exit non-zero with the current status in the error message. The check is best-effort (TOCTOU: the team can transition between read and send); on send-time MA errors, the CLI surfaces them with the actual MA response.
+- F3. `orchestra sessions ls [--workspace .orchestra/]` prints a table with one row per team in the active run whose status is `running` (the only steerable state — `pending` teams have no MA session ID yet). `--all` includes `pending` / `done` / `failed` / `terminated` rows for inspection. Columns: `team`, `status`, `steerable` (yes/no — `yes` iff `status == "running"` and `session_id != ""`), `session_id`, `agent_id`, `last_event_id`, `last_event_at`. Exits 0 with an empty table if no active run. (`sessions ls` is a list operation; absent input is an empty result, not an error. `msg` and `interrupt` need a target and exit non-zero on no-active-run; see F5.)
+- F4. All three commands are no-ops on `backend: local` runs and print an actionable error: `"steering is only supported under backend: managed_agents (local-backend steering tracked as P1.9-E)"`. Deliberate scope cut for this chapter — see §3 out-of-scope and §5.8.
+- F5. `orchestra msg` and `orchestra interrupt` target the **active** run. If there is no active run, both exit non-zero with `"no active orchestra run in <workspace>"`. (`sessions ls` exits 0 with an empty table in the same condition; see F3.) The lookup uses a lock-free read of `state.json` (the file is atomically written) — no shared lock dependency; see §5.3.
+- F6. `orchestra msg` and `orchestra interrupt` require the named team to be in `status: running` (matching F3's `Steerable` definition). If the team is `pending`, `done`, `failed`, or `terminated`, exit non-zero with the current status in the error message. The check is best-effort (TOCTOU: the team can transition between read and send); on send-time MA errors, the CLI surfaces them with the actual MA response.
 - F7. The send is **at-least-once** under transient errors — MA's `Beta.Sessions.Events.Send` is not idempotency-keyed and the CLI does not deduplicate. `--help` documents this: in the rare 5xx-then-success case, the agent may observe the event twice. `--no-retry` flag bypasses retry entirely for callers that need at-most-once (interrupts especially).
 - F8. The MA event translator (`internal/spawner/managed_agents_session.go`) is extended to recognize `user.message` and `user.interrupt` events. When MA echoes a steered event back through the running session's stream, the translator: (a) advances `LastEventID` / `LastEventAt`, (b) emits a `r.reportMAEvent` log line so coordinators tailing `orchestra run` output see `[team] human: <text>`, (c) does NOT mutate team status. Without this extension, F3's `last_event_at` column is stale and the run log gives no visible cause for the team's behavior change.
 - F9. The steering helper code lives in `internal/spawner/steering.go` (next to `toSessionEventSendParams` which it reuses). It does NOT live in a new `internal/steering/` package — that proposal had to import `managedSessionEventsAPI` (unexported) and would have duplicated the SDK-adapter glue. See §5.5.
@@ -159,7 +159,7 @@ If the existing `LoadRunState` is already lock-free against an atomically-writte
 type TeamSession struct {
     Team         string
     Status       string
-    Steerable    bool      // true iff Status == "running" || Status == "pending"
+    Steerable    bool      // true iff Status == "running" && SessionID != ""
     SessionID    string
     AgentID      string
     LastEventID  string
@@ -197,10 +197,10 @@ func Interrupt(ctx context.Context, workspaceDir, team string) error
 // to `orchestra sessions ls`.
 func ActiveSessions(ctx context.Context, workspaceDir string) ([]TeamSession, error)
 
-type TeamSession = steering.TeamSession  // alias from internal/steering
+type TeamSession = spawner.TeamSession  // alias from internal/spawner
 ```
 
-These are thin wrappers around `internal/steering`. Same alias-not-copy discipline as P2.0.
+These are thin wrappers around `internal/spawner` (where the steering helpers live per §5.7). Same alias-not-copy discipline as P2.0.
 
 ---
 
@@ -373,12 +373,14 @@ If this test fails, the design's lock-free read assumption is wrong and we re-ev
 
 Single PR, ~600-900 LOC plus tests:
 
-1. New `internal/steering/` package (`steering.go`, `steering_test.go`).
-2. New cobra commands: `cmd/msg.go`, `cmd/interrupt.go`, `cmd/sessions.go` (with `ls` subcommand).
-3. SDK wrappers in `pkg/orchestra/` (assumes P2.0 has landed; if not, this chapter ships the wrappers without P2.0 — the SDK additions just live under `internal/` until P2.0 promotes them).
-4. README "Steering a run" section under Backends.
-5. TESTING.md row for `e2e-ma-steering`.
-6. Live MA fixture under `test/integration/ma_steering/`.
+1. New steering helpers in `internal/spawner/steering.go` and `internal/spawner/steering_test.go` (next to existing `toSessionEventSendParams`; `managedSessionEventsAPI` stays unexported and undeduplicated, per §5.7).
+2. MA event translator extension for `user.message` / `user.interrupt` echoes (§F8).
+3. Lock-free state reader (e.g. `store.ReadActiveRunState` or filestore equivalent — see §4.3).
+4. New cobra commands: `cmd/msg.go`, `cmd/interrupt.go`, `cmd/sessions.go` (with `ls` subcommand).
+5. SDK wrappers in `pkg/orchestra/` (assumes P2.0 has landed; if not, this chapter ships the wrappers without P2.0 — the SDK additions just live under `internal/` until P2.0 promotes them).
+6. README "Steering a run" section under Backends.
+7. TESTING.md row for `e2e-ma-steering`.
+8. Live MA fixture under `test/integration/ma_steering/`.
 
 **Rollback.** Pure revert. No schema changes, no migration, no behavioral change for existing `orchestra run` flows.
 

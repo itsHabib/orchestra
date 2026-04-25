@@ -23,10 +23,10 @@ The strategic payoff: every dogfood app is a free design review. The first one (
 **Functional.**
 
 - F1. A new package `pkg/orchestra` exists at the repo root. It compiles with `go build ./...` and is reachable via the module path `github.com/itsHabib/orchestra/pkg/orchestra`.
-- F2. The package re-exports the YAML schema types via Go type aliases (not struct copies): `Config`, `Defaults`, `Backend`, `Coordinator`, `Team`, `Lead`, `Member`, `Task`. Aliases keep the source of truth in `internal/config` so that fields added there (e.g. P1.5's `ManagedAgentsBackend.Repository`) flow through automatically.
-- F3. The package re-exports the run-state observation types via aliases: `RunState`, `TeamState`, `RepositoryArtifact` (when P1.5 lands). Source of truth stays in `internal/store`.
+- F2. The package re-exports the YAML schema types via Go type aliases (not struct copies): `Config`, `Defaults`, `Backend`, `Coordinator`, `Team`, `Lead`, `Member`, `Task`. Aliases keep the source of truth in `internal/config` so that fields added there flow through automatically (e.g. P1.5 will add `ManagedAgentsBackend.Repository` and consumers see it for free).
+- F3. The package re-exports the run-state observation types via aliases: `RunState`, `TeamState`, `RepositoryArtifact`. Source of truth stays in `internal/store` (these types already exist in the tree as of P1.5's earlier scaffolding).
 - F4. The package exposes a top-level `Run(ctx context.Context, cfg *Config, opts ...Option) (*Result, error)` function that performs the equivalent of `orchestra run`: validate config, build DAG, execute tiers, return results. `Run` takes ownership of `cfg` for the call duration: it may invoke `ResolveDefaults` and `Validate` on the pointer; concurrent caller mutation of the same `*Config` while `Run` is in flight is undefined behavior. Callers wanting to share a config across goroutines must clone it.
-- F5. `Result` exposes per-team status, result summary, cost, duration, session ID, **per-team turn count and token counters**, and (when P1.5 lands) repository artifacts. It is read-only and self-contained — callers get the full picture without dipping into `internal/`. The CLI summary renderer (`printSummary`) is migrated to read every field from `Result`, not from disk.
+- F5. `Result` exposes per-team status, result summary, cost, duration, session ID, **per-team turn count and token counters**, and repository artifacts. It is read-only and self-contained — callers get the full picture without dipping into `internal/`. The CLI summary renderer (`printSummary`) is migrated to read every field from `Result`, not from disk.
 - F6. The package exposes a `LoadConfig(path string) (*Config, []Warning, error)` helper so callers don't have to reimplement YAML loading. Warnings are returned even when `err != nil` (validation failure preserves the warning slice for context).
 - F7. The CLI (`cmd/run.go`) is migrated to use `pkg/orchestra.Run` as its entry point. The CLI is the SDK's first consumer; if the surface is awkward there, it's awkward for everyone.
 - F8. The package defines an `orchestra.Logger` interface capturing exactly the methods the orchestration loop calls today (`TeamMsg`, `TierStart`, `Info`, `Warn`, `Error`, `Success`). `internal/log.Logger` is made to satisfy it without behavior change. SDK callers either (a) pass the existing `internal/log.New()` (re-exported as `orchestra.NewCLILogger()` for the colored stdout default) or (b) supply their own implementation — typically a no-op for library callers, an `slog`-bridging adapter for callers that already have an slog tree, or a custom one for UI integrations.
@@ -50,7 +50,7 @@ The strategic payoff: every dogfood app is a free design review. The first one (
 - New package `pkg/orchestra/` containing `orchestra.go` (types, Run, LoadConfig, Result, Option), `doc.go` (package godoc with the experimental marker), `option.go` (Option implementation if it grows beyond a couple of fields).
 - Type-alias declarations re-exporting from `internal/config` and `internal/store`.
 - A `Run(ctx, cfg, opts...) (*Result, error)` function implemented by extracting the body of `cmd/run.go:runOrchestration` into the new package (or by having `runOrchestration` delegate to it).
-- An `Option` type for caller-side knobs — at minimum, a `WithLogger(*slog.Logger)` for callers that don't want orchestra's colored stdout, and a `WithWorkspaceDir(string)` for callers that don't want `.orchestra/` in `os.Getwd()`.
+- An `Option` type for caller-side knobs — at minimum, a `WithLogger(logger Logger)` (taking the SDK's `Logger` interface, not `*slog.Logger`; see F8) for callers that don't want orchestra's colored stdout, and a `WithWorkspaceDir(string)` for callers that don't want `.orchestra/` in `os.Getwd()`.
 - Migration of `cmd/run.go` to call `pkg/orchestra.Run` instead of duplicating the orchestration loop.
 - Godoc on every exported identifier, with a clear "experimental" banner on the package doc.
 - A short test file `pkg/orchestra/orchestra_test.go` that imports the package and exercises `LoadConfig` + a tiny mock-backed `Run` against a one-team config — proving the surface is reachable from outside `internal/`.
@@ -59,7 +59,7 @@ The strategic payoff: every dogfood app is a free design review. The first one (
 
 - **Spawner-as-public.** `internal/spawner` stays internal. No consumer has asked for "bring your own backend" yet; expose only when one does.
 - **Store-as-public.** Same. The `Result` type gives callers everything the CLI gives a human; raw store access is implementation.
-- **DAG-as-public.** Tier construction is internal. If a consumer wants tier visibility, expose it via `Result.Tiers []string[]` later — don't expose `dag.BuildTiers`.
+- **DAG-as-public.** Tier construction is internal. Consumers get tier visibility via `Result.Tiers [][]string` (in scope per §10) — they don't need access to `dag.BuildTiers`.
 - **Injection-as-public.** Prompt construction is internal. Custom prompts would be a separate feature with its own doc.
 - **Run-service / messaging / workspace.** Implementation. The `Run` entry point hides these.
 - **Stability commitment.** P2.1 marks the surface stable. This chapter explicitly does not.
@@ -145,14 +145,18 @@ type Result struct {
     DurationMs int64
 }
 
-// TeamResult is the SDK-shaped per-team view: a TeamState plus the fields the
-// CLI's printSummary today reads from disk via workspace.TeamResult.
+// TeamResult is the SDK-shaped per-team view: TeamState plus SDK-only fields
+// not already carried on TeamState. TeamState already exposes Status,
+// ResultSummary, CostUSD, DurationMs, SessionID, AgentID, AgentVersion,
+// InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens,
+// LastError, LastEventID, LastEventAt, RepositoryArtifacts, and the
+// Started/EndedAt timestamps. The only field the CLI's printSummary needs
+// today that lives outside TeamState is NumTurns, sourced from
+// workspace.TeamResult; this chapter adds it to TeamState directly so the
+// SDK never has to merge two sources.
 type TeamResult struct {
-    TeamState           // embedded — Status, ResultSummary, CostUSD, DurationMs, SessionID, AgentID, etc.
-    NumTurns      int
-    InputTokens   int64
-    OutputTokens  int64
-    // Future P1.5 fields (RepositoryArtifacts) will be on TeamState.
+    TeamState
+    // Reserved for future SDK-only fields. Empty today.
 }
 
 // Logger is the orchestration loop's logging dependency. Library callers
@@ -297,9 +301,11 @@ P2.0 adds an explicit `defer` of all subprocess teardown in the extracted body a
 
 ### 5.7 `Result` carries everything `printSummary` needs (no disk reads in the SDK path)
 
-Today's `printSummary` (`cmd/run_summary.go`) reads per-team `NumTurns` from `workspace.TeamResult` on disk. The SDK extraction must not require disk reads to render a summary, so `Result.Teams` exposes a richer `TeamResult` struct that embeds `TeamState` and adds `NumTurns`, `InputTokens`, `OutputTokens`. The CLI's migrated `printSummary` reads only from `Result`.
+Today's `printSummary` (`cmd/run_summary.go`) reads per-team `NumTurns` from `workspace.TeamResult` on disk. `internal/store.TeamState` already carries the token counters (`InputTokens`, `OutputTokens`, cache counters) and cost. The single missing field is `NumTurns`.
 
-Schema-side, `internal/store.TeamState` is extended to record `NumTurns` (it already records token counters). One small additive store change, justified as part of this chapter rather than as a "while we're here" drive-by.
+This chapter adds `NumTurns int` to `internal/store.TeamState`, populated during runs. `Result.Teams` then exposes `map[string]TeamResult` where `TeamResult` simply embeds the (now-complete) `TeamState`. No field shadowing; no two-source merge. The migrated `printSummary` reads only from `Result`.
+
+The wrapper `TeamResult` type stays — even with no SDK-only fields today, it gives the SDK a stable shape for future additions (e.g. derived percentages, computed renderings) without touching `TeamState`.
 
 ### 5.8 Migrate the CLI as part of this chapter
 
@@ -327,7 +333,7 @@ If a real consumer asks, add it then.
 | Migrate CLI here | Migrate CLI in a follow-up | Free regression coverage and immediate exercise of the surface |
 | `Run` blocks, returns snapshot; live events via `Logger` | Streaming events channel | No consumer demands streams; snapshot matches CLI; the Logger interface gives live events without backpressure plumbing |
 | godoc + per-identifier marker + CHANGELOG | `v0/` path, `experimental/` subpackage, `Experimental_` prefix on every export, build tag | Reviewers correctly noted godoc-only is weak in practice; we accept that and trade against the cost of moving the path. Trigger to escalate: any external import. |
-| `Result` carries TeamResult (TeamState + NumTurns + tokens) | Expose internal `workspace.TeamResult` directly via alias; or extend `TeamState` with all fields | Aliasing internal `workspace` types couples SDK to a layout that may change; extending `TeamState` with NumTurns is a small additive change worth doing here, and the SDK-shaped `TeamResult` keeps token/turn counters in one obvious place |
+| Add `NumTurns` to `TeamState`; SDK exposes `TeamResult` as a thin embed | Alias internal `workspace.TeamResult`; or layer `NumTurns` only on the SDK wrapper without touching the store | Aliasing `workspace` types couples the SDK to a layout that may change; layering on the wrapper alone leaves the store missing data the CLI already needs. Adding to `TeamState` is one small additive change that benefits both the CLI and the SDK; the wrapper stays as a stable SDK shape for future additions. |
 | `Run` takes ownership of `*Config` | By-value `Config` to be safe; or document immutability and clone internally | By-value copies on every call when concurrent SDK use is the explicit goal; explicit ownership contract + a `CloneConfig` helper for shared-config cases is cheaper |
 | Process-local concurrent-Run protection | Cross-process protection only via the existing exclusive workspace lock | The exclusive lock catches it across processes; in-process callers want a typed sentinel (`ErrRunInProgress`) instead of an opaque file-lock-contention error |
 | `Run` guarantees subprocess cleanup | Best-effort cleanup that works for the CLI (process exits anyway) | SDK callers don't exit; the bug is invisible today and ships under the SDK without the fix |
