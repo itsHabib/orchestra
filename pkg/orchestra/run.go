@@ -101,8 +101,36 @@ func CloneConfig(cfg *Config) *Config {
 		return nil
 	}
 	clone := *cfg
+	clone.Backend = cloneBackend(cfg.Backend)
 	clone.Teams = cloneTeams(cfg.Teams)
 	return &clone
+}
+
+// cloneBackend deep-copies Backend's pointer sub-objects so concurrent
+// CloneConfig consumers don't share the ManagedAgents block (which
+// ResolveDefaults / repository-flow code mutates in place).
+func cloneBackend(b Backend) Backend {
+	out := b
+	if b.ManagedAgents != nil {
+		ma := *b.ManagedAgents
+		ma.Repository = cloneRepositorySpec(b.ManagedAgents.Repository)
+		out.ManagedAgents = &ma
+	}
+	return out
+}
+
+func cloneRepositorySpec(r *config.RepositorySpec) *config.RepositorySpec {
+	if r == nil {
+		return nil
+	}
+	repo := *r
+	return &repo
+}
+
+func cloneEnvironmentOverride(e config.EnvironmentOverride) config.EnvironmentOverride {
+	out := e
+	out.Repository = cloneRepositorySpec(e.Repository)
+	return out
 }
 
 func cloneTeams(in []Team) []Team {
@@ -115,6 +143,7 @@ func cloneTeams(in []Team) []Team {
 		out[i].Members = cloneSlice(in[i].Members)
 		out[i].Tasks = cloneTasks(in[i].Tasks)
 		out[i].DependsOn = cloneSlice(in[i].DependsOn)
+		out[i].EnvironmentOverride = cloneEnvironmentOverride(in[i].EnvironmentOverride)
 	}
 	return out
 }
@@ -181,10 +210,14 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOption
 
 	runErr := run.execute(ctx, tiers)
 	result, snapErr := run.buildResult(ctx, tiers, time.Since(wallStart))
-	if runErr != nil {
+	switch {
+	case runErr != nil && snapErr != nil:
+		return result, errors.Join(runErr, snapErr)
+	case runErr != nil:
 		return result, runErr
+	default:
+		return result, snapErr
 	}
-	return result, snapErr
 }
 
 func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error {
@@ -232,10 +265,10 @@ func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, du
 	snapCtx := context.WithoutCancel(ctx)
 	state, err := r.runService.Snapshot(snapCtx)
 	if err != nil {
-		return nil, fmt.Errorf("snapshot run state: %w", err)
+		return nil, fmt.Errorf("orchestra: snapshot run state: %w", err)
 	}
 	if state == nil {
-		return nil, errors.New("snapshot returned nil state")
+		return nil, errors.New("orchestra: snapshot returned nil state")
 	}
 	teams := make(map[string]TeamResult, len(state.Teams))
 	for name := range state.Teams {

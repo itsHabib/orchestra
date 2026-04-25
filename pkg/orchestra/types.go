@@ -24,6 +24,25 @@ type Defaults = config.Defaults
 // Experimental: aliased from internal/config.
 type Backend = config.Backend
 
+// ManagedAgentsBackend captures managed-agents-specific backend settings.
+// Aliased so callers can construct repository-backed configs without
+// reaching into internal packages.
+//
+// Experimental: aliased from internal/config.
+type ManagedAgentsBackend = config.ManagedAgentsBackend
+
+// RepositorySpec describes a GitHub repository attached to managed-agents
+// sessions.
+//
+// Experimental: aliased from internal/config.
+type RepositorySpec = config.RepositorySpec
+
+// EnvironmentOverride lets a single team substitute backend-level
+// environment fields (currently just Repository) without touching others.
+//
+// Experimental: aliased from internal/config.
+type EnvironmentOverride = config.EnvironmentOverride
+
 // Coordinator configures the optional top-level coordinator agent.
 //
 // Experimental: aliased from internal/config.

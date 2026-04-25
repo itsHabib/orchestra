@@ -333,23 +333,52 @@ func TestValidate_StandaloneCallerBuiltConfig(t *testing.T) {
 }
 
 // TestCloneConfig_DeepCopy proves CloneConfig isolates mutations from
-// the source so callers can run Run concurrently.
+// the source so callers can run Run concurrently — including the
+// pointer-bearing Backend.ManagedAgents and per-team
+// EnvironmentOverride.Repository sub-objects that ResolveDefaults and
+// the repository-flow code mutate in place.
 func TestCloneConfig_DeepCopy(t *testing.T) {
 	src := &orchestra.Config{
 		Name: "src",
+		Backend: orchestra.Backend{
+			Kind: orchestra.BackendManagedAgents,
+			ManagedAgents: &orchestra.ManagedAgentsBackend{
+				Repository: &orchestra.RepositorySpec{URL: "https://github.com/o/r1", DefaultBranch: "main"},
+			},
+		},
 		Teams: []orchestra.Team{
-			{Name: "a", Tasks: []orchestra.Task{{Summary: "s1", Deliverables: []string{"x"}}}, DependsOn: []string{"upstream"}},
+			{
+				Name:      "a",
+				Tasks:     []orchestra.Task{{Summary: "s1", Deliverables: []string{"x"}}},
+				DependsOn: []string{"upstream"},
+				EnvironmentOverride: orchestra.EnvironmentOverride{
+					Repository: &orchestra.RepositorySpec{URL: "https://github.com/o/team-a", DefaultBranch: "main"},
+				},
+			},
 		},
 	}
 	clone := orchestra.CloneConfig(src)
 	if clone == src {
 		t.Fatal("CloneConfig returned the same pointer")
 	}
+	if clone.Backend.ManagedAgents == src.Backend.ManagedAgents {
+		t.Fatal("clone shares Backend.ManagedAgents pointer with src")
+	}
+	if clone.Backend.ManagedAgents.Repository == src.Backend.ManagedAgents.Repository {
+		t.Fatal("clone shares Backend.ManagedAgents.Repository pointer with src")
+	}
+	if clone.Teams[0].EnvironmentOverride.Repository == src.Teams[0].EnvironmentOverride.Repository {
+		t.Fatal("clone shares team EnvironmentOverride.Repository pointer with src")
+	}
+
 	clone.Name = "clone"
 	clone.Teams[0].Name = "b"
 	clone.Teams[0].Tasks[0].Summary = "s2"
 	clone.Teams[0].Tasks[0].Deliverables[0] = "y"
 	clone.Teams[0].DependsOn[0] = "other"
+	clone.Backend.ManagedAgents.Repository.URL = "https://github.com/o/r2"
+	clone.Backend.ManagedAgents.OpenPullRequests = true
+	clone.Teams[0].EnvironmentOverride.Repository.URL = "https://github.com/o/team-mut"
 
 	if src.Name != "src" {
 		t.Errorf("src.Name mutated: %q", src.Name)
@@ -365,6 +394,15 @@ func TestCloneConfig_DeepCopy(t *testing.T) {
 	}
 	if src.Teams[0].DependsOn[0] != "upstream" {
 		t.Errorf("src DependsOn mutated: %q", src.Teams[0].DependsOn[0])
+	}
+	if src.Backend.ManagedAgents.Repository.URL != "https://github.com/o/r1" {
+		t.Errorf("src Backend.ManagedAgents.Repository.URL mutated: %q", src.Backend.ManagedAgents.Repository.URL)
+	}
+	if src.Backend.ManagedAgents.OpenPullRequests {
+		t.Errorf("src Backend.ManagedAgents.OpenPullRequests mutated to true")
+	}
+	if src.Teams[0].EnvironmentOverride.Repository.URL != "https://github.com/o/team-a" {
+		t.Errorf("src team EnvironmentOverride.Repository.URL mutated: %q", src.Teams[0].EnvironmentOverride.Repository.URL)
 	}
 }
 
