@@ -1,6 +1,6 @@
 # Feature: `agents.Service` — extract MA + cache choreography out of `cmd/`
 
-Status: **Draft**
+Status: **Shipped** (PR #9, commit 377bf12)
 Owner: @itsHabib
 Depends on: [01-service-layer.md](./01-service-layer.md) (shipped), P1.3 ([p13-registry-cache.md](./p13-registry-cache.md)) (shipped), P1.4 ([p14-ma-session-lifecycle.md](./p14-ma-session-lifecycle.md)) (shipped)
 Target: lands before the next MA-touching CLI surface (`orchestra sessions ls`, `envs gc`, anything else that calls the Managed Agents API from a command).

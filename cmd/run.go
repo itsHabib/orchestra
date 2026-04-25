@@ -61,7 +61,7 @@ func runOrchestration(ctx context.Context, cfg *config.Config, logger *olog.Logg
 	}
 
 	if cfg.Backend.Kind == "managed_agents" && cfg.Coordinator.Enabled {
-		logger.Warn("coordinator is ignored for backend.kind=managed_agents in P1.4")
+		logger.Warn("coordinator is not supported under backend.kind=managed_agents")
 	}
 	var coordHandle *spawner.CoordinatorHandle
 	var coordLog io.Closer
@@ -94,6 +94,7 @@ type orchestrationRun struct {
 	bus                *messaging.Bus
 	participants       []messaging.Participant
 	inboxLookup        map[string]string
+	maSpawner          *spawner.ManagedAgentsSpawner
 	startTeamMAForTest startTeamMAFunc
 }
 
@@ -118,19 +119,20 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 
 	var participants []messaging.Participant
 	var lookup map[string]string
+	var maSpawner *spawner.ManagedAgentsSpawner
 	if cfg.Backend.Kind == "managed_agents" {
-		logger.Info("Managed-agents backend: file message bus and coordinator workspace are disabled in P1.4")
+		ma, err := initManagedAgentsBackend(cfg, runService, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		maSpawner = ma
 	} else {
-		if active.Bus == nil {
-			return nil, nil, errors.New("run began without message bus")
+		p, l, err := initLocalBackend(cfg, ws, active, logger)
+		if err != nil {
+			return nil, nil, err
 		}
-		participants = messaging.BuildParticipants(teamNames(cfg.Teams))
-		lookup = inboxLookup(participants)
-		logger.Success("Message bus initialized at %s", active.Bus.Path())
-
-		if err := os.MkdirAll(filepath.Join(ws.Path, "coordinator"), 0o755); err != nil {
-			return nil, nil, fmt.Errorf("creating coordinator decisions directory: %w", err)
-		}
+		participants = p
+		lookup = l
 	}
 
 	return &orchestrationRun{
@@ -141,7 +143,34 @@ func newOrchestrationRun(cfg *config.Config, logger *olog.Logger, runService *ru
 		bus:          active.Bus,
 		participants: participants,
 		inboxLookup:  lookup,
+		maSpawner:    maSpawner,
 	}, tiers, nil
+}
+
+func initManagedAgentsBackend(cfg *config.Config, runService *runsvc.Service, logger *olog.Logger) (*spawner.ManagedAgentsSpawner, error) {
+	logger.Info("Managed-agents backend: file message bus and coordinator workspace are disabled")
+	ma, err := spawner.NewHostManagedAgentsSpawner(
+		runService.Store(),
+		spawner.WithManagedAgentsConcurrency(cfg.Defaults.MAConcurrentSessions),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("managed-agents spawner: %w", err)
+	}
+	return ma, nil
+}
+
+func initLocalBackend(cfg *config.Config, ws *workspace.Workspace, active *runsvc.Active, logger *olog.Logger) ([]messaging.Participant, map[string]string, error) {
+	if active.Bus == nil {
+		return nil, nil, errors.New("run began without message bus")
+	}
+	participants := messaging.BuildParticipants(teamNames(cfg.Teams))
+	lookup := inboxLookup(participants)
+	logger.Success("Message bus initialized at %s", active.Bus.Path())
+
+	if err := os.MkdirAll(filepath.Join(ws.Path, "coordinator"), 0o755); err != nil {
+		return nil, nil, fmt.Errorf("creating coordinator decisions directory: %w", err)
+	}
+	return participants, lookup, nil
 }
 
 func (r *orchestrationRun) runTiers(ctx context.Context, tiers [][]string) error {

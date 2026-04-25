@@ -238,11 +238,16 @@ func TestValidate_ManagedAgentsWarnings(t *testing.T) {
 	}
 	var coordinator, members bool
 	for _, w := range warnings {
-		coordinator = coordinator || strings.Contains(w.Message, "coordinator is ignored")
-		members = members || strings.Contains(w.Message, "members are ignored")
+		coordinator = coordinator || strings.Contains(w.Message, "coordinator is not supported under backend.kind=managed_agents")
+		members = members || strings.Contains(w.Message, "members are not supported under backend.kind=managed_agents")
 	}
 	if !coordinator || !members {
 		t.Fatalf("warnings=%v, want coordinator and members warnings", warnings)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w.Message, "P1.4") {
+			t.Fatalf("warning still references P1.4: %v", w)
+		}
 	}
 }
 
@@ -260,8 +265,34 @@ func TestResolveDefaults(t *testing.T) {
 	if cfg.Defaults.MaxTurns != 200 {
 		t.Fatalf("expected 200, got %d", cfg.Defaults.MaxTurns)
 	}
+	if cfg.Defaults.MAConcurrentSessions != DefaultMAConcurrentSessions {
+		t.Fatalf("MAConcurrentSessions=%d, want %d", cfg.Defaults.MAConcurrentSessions, DefaultMAConcurrentSessions)
+	}
 	if cfg.Teams[0].Lead.Model != "sonnet" {
 		t.Fatalf("expected team model sonnet, got %s", cfg.Teams[0].Lead.Model)
+	}
+}
+
+func TestResolveDefaults_PreservesMAConcurrentSessionsOverride(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{MAConcurrentSessions: 5},
+		Teams:    []Team{{Name: "a", Lead: Lead{Role: "dev"}}},
+	}
+	cfg.ResolveDefaults()
+	if cfg.Defaults.MAConcurrentSessions != 5 {
+		t.Fatalf("MAConcurrentSessions=%d, want override 5", cfg.Defaults.MAConcurrentSessions)
+	}
+}
+
+func TestValidate_NegativeMAConcurrentSessions(t *testing.T) {
+	cfg := &Config{
+		Name:     "p",
+		Defaults: Defaults{MAConcurrentSessions: -1},
+		Teams:    []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+	}
+	_, err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "ma_concurrent_sessions") {
+		t.Fatalf("expected ma_concurrent_sessions validation error, got %v", err)
 	}
 }
 

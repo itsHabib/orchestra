@@ -97,9 +97,9 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 }
 
 func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, state *store.RunState, logWriter io.Writer) (*spawner.Session, <-chan spawner.Event, error) {
-	ma, err := spawner.NewHostManagedAgentsSpawner(r.runService.Store())
-	if err != nil {
-		return nil, nil, err
+	ma := r.maSpawner
+	if ma == nil {
+		return nil, nil, errors.New("managed-agents spawner not initialized")
 	}
 
 	agent, err := ma.EnsureAgent(ctx, r.managedAgentSpec(team))

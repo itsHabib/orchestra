@@ -1,0 +1,43 @@
+name: ma-multi-team
+backend:
+  kind: managed_agents
+
+defaults:
+  model: sonnet
+  max_turns: 30
+  permission_mode: acceptEdits
+  timeout_minutes: 30
+  # ma_concurrent_sessions: 20  # default; cap on in-flight Beta.Sessions.New
+
+teams:
+  - name: planner
+    lead:
+      role: "Outline Planner"
+    context: |
+      You write tight outlines for technical blog posts. Output is plain text;
+      no code blocks, no preamble. Subsequent teams will read your outline as
+      their input — be specific.
+    tasks:
+      - summary: "Outline a blog post on durable workflows"
+        details: |
+          Produce a three-bullet outline for a 600-word blog post titled
+          "Why durable workflows beat ad-hoc job queues." Each bullet is one
+          sentence naming the section's core claim.
+        deliverables: []
+        verify: "outline has exactly three bullets"
+
+  - name: analyst
+    depends_on: [planner]
+    lead:
+      role: "Outline Expander"
+    context: |
+      You expand outlines into prose paragraphs. Read the upstream planner's
+      outline (delivered as the planner's result summary) and write one
+      paragraph per bullet. Match the order of the upstream outline exactly.
+    tasks:
+      - summary: "Expand the planner's outline into paragraphs"
+        details: |
+          For each bullet in the planner's outline, write one paragraph
+          (~120 words). Preserve the bullet order. Do not invent new bullets.
+        deliverables: []
+        verify: "one paragraph per upstream bullet, same order"

@@ -346,12 +346,14 @@ func (s *Session) History(ctx context.Context, after EventID) ([]Event, error) {
 	return out, nil
 }
 
-// ListProducedFiles is out of scope for the P1.4 text-only managed-agents flow.
+// ListProducedFiles is out of scope for the text-only managed-agents flow.
+// Repo-backed artifact discovery lands with the P1.5 chapter.
 func (s *Session) ListProducedFiles(context.Context) ([]FileRef, error) {
 	return nil, ErrUnsupported
 }
 
-// DownloadFile is out of scope for the P1.4 text-only managed-agents flow.
+// DownloadFile is out of scope for the text-only managed-agents flow.
+// Repo-backed artifact retrieval lands with the P1.5 chapter.
 func (s *Session) DownloadFile(context.Context, FileRef, io.Writer) error {
 	return ErrUnsupported
 }
@@ -754,6 +756,10 @@ func (s *ManagedAgentsSpawner) StartSession(ctx context.Context, req StartSessio
 	if req.Env.ID == "" {
 		return nil, fmt.Errorf("%w: missing environment id", store.ErrInvalidArgument)
 	}
+	if err := s.acquireStartSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer s.releaseStartSlot()
 	var created *anthropic.BetaManagedAgentsSession
 	params := toSessionNewParams(&req)
 	err := s.withRetry(ctx, "start_session", func(ctx context.Context) error {
@@ -790,6 +796,27 @@ func (s *ManagedAgentsSpawner) StartSession(ctx context.Context, req StartSessio
 // ResumeSession is implemented in P1.8.
 func (s *ManagedAgentsSpawner) ResumeSession(context.Context, string) (*Session, error) {
 	return nil, ErrUnsupported
+}
+
+// acquireStartSlot blocks until a StartSession slot is free or ctx is done.
+func (s *ManagedAgentsSpawner) acquireStartSlot(ctx context.Context) error {
+	if s.startSem == nil {
+		return nil
+	}
+	select {
+	case s.startSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseStartSlot returns a slot acquired by acquireStartSlot.
+func (s *ManagedAgentsSpawner) releaseStartSlot() {
+	if s.startSem == nil {
+		return
+	}
+	<-s.startSem
 }
 
 func (s *ManagedAgentsSpawner) withRetry(ctx context.Context, op string, fn func(context.Context) error) error {

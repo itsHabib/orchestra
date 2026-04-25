@@ -62,6 +62,12 @@ const (
 	// and env name are validated to not contain this sequence so that the
 	// resulting key is unambiguous.
 	cacheKeySeparator = "__"
+
+	// defaultStartSessionConcurrency caps in-flight Beta.Sessions.New calls.
+	// MA enforces a 60-creates/min org limit; a 20-slot semaphore keeps the
+	// steady-state create rate well under the cap at observed ~2s create
+	// latency (~10/sec peak). Override via WithManagedAgentsConcurrency.
+	defaultStartSessionConcurrency = 20
 )
 
 // ManagedAgentsConfig controls the registry-cache behavior for managed agents.
@@ -123,6 +129,9 @@ type ManagedAgentsSpawner struct {
 	logger        *slog.Logger
 	cfg           ManagedAgentsConfig
 	clock         ManagedAgentsClock
+	// startSem caps in-flight Beta.Sessions.New calls. Buffered, capacity ==
+	// configured concurrency. nil means unbounded (only for test isolation).
+	startSem chan struct{}
 }
 
 // NewManagedAgentsSpawner returns a managed-agents spawner backed by the given store and SDK client.
@@ -210,6 +219,9 @@ func newManagedAgentsSpawnerWithSessions(
 	if s.clock == nil {
 		s.clock = func() time.Time { return time.Now().UTC() }
 	}
+	if s.startSem == nil {
+		s.startSem = make(chan struct{}, defaultStartSessionConcurrency)
+	}
 	s.agentService = agentservice.New(st, agents,
 		agentservice.WithLogger(s.logger),
 		agentservice.WithClock(agentservice.Clock(s.clock)),
@@ -232,6 +244,19 @@ func WithManagedAgentsLogger(logger *slog.Logger) ManagedAgentsOption {
 func WithManagedAgentsConfig(cfg ManagedAgentsConfig) ManagedAgentsOption {
 	return func(s *ManagedAgentsSpawner) {
 		s.cfg = cfg
+	}
+}
+
+// WithManagedAgentsConcurrency caps the number of in-flight StartSession
+// (Beta.Sessions.New) calls. n <= 0 falls back to defaultStartSessionConcurrency.
+// One spawner instance, shared across all teams in a run, owns the semaphore;
+// per-team spawner instances would defeat the cap.
+func WithManagedAgentsConcurrency(n int) ManagedAgentsOption {
+	return func(s *ManagedAgentsSpawner) {
+		if n <= 0 {
+			n = defaultStartSessionConcurrency
+		}
+		s.startSem = make(chan struct{}, n)
 	}
 }
 
