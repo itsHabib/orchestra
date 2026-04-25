@@ -69,7 +69,25 @@ func printRunDetail(record runRecord, now time.Time) {
 		if ts.LastError != "" {
 			fmt.Printf("  error: %s\n", compactError(errors.New(ts.LastError)))
 		}
+		printRepositoryArtifacts(ts.RepositoryArtifacts)
 	}
+}
+
+func printRepositoryArtifacts(artifacts []store.RepositoryArtifact) {
+	for _, a := range artifacts {
+		extras := "branch " + a.Branch + " (" + shortSHA(a.CommitSHA) + ")"
+		if a.PullRequestURL != "" {
+			extras += " pr " + a.PullRequestURL
+		}
+		fmt.Printf("  artifact: %s\n", extras)
+	}
+}
+
+func shortSHA(sha string) string {
+	if len(sha) <= 8 {
+		return sha
+	}
+	return sha[:8]
 }
 
 func sortedRunTeamNames(state *store.RunState) []string {

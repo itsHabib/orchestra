@@ -6,6 +6,8 @@ Depends on: [00-store-interface.md](./00-store-interface.md) (shipped), [p13-reg
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §6 (architecture), §8 (Spawner interface), §9.3 (`StartSession`), §9.4 (`Session.Events`), §10.2 (`state.json` schema), §13 phase P1.4, §16 (event mapping).
 Target: single-team end-to-end MA run producing a text-only deliverable. No repo resources, no resume, no steering.
 
+**Update (P1.5 shipping).** Branch handling — `repository_artifacts[]` population, `github_repository` resource construction, post-session branch resolution, and host-side PR opening — moved to [05-p15-repo-artifact-flow.md](./05-p15-repo-artifact-flow.md) and is layered on top of P1.4 via the new `Capabilities.ArtifactPublish` toggle and `internal/ghhost`. P1.4's text-only fixture (`test/integration/ma_single_team/`) continues to pass unchanged.
+
 **Deviation from DESIGN-v2 §13 P1.4.** The upstream phase spec says *"StartSession + Events + Send + watchdog"*, where the watchdog sends a `user.interrupt` + status-check nudge on silence and transitions to `stalled` only on persistent silence. This doc replaces the nudge-then-stall watchdog with a hard per-team context deadline that maps directly to `failed`. Rationale: `stalled` is functionally identical to `failed` until P1.8 (resume) lands, and the nudge is a product hypothesis with no empirical data behind it. v1's existing `defaults.timeout_minutes` + context-deadline pattern is reused verbatim. See §5.4.
 
 ---

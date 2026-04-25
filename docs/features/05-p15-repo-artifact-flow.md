@@ -1,10 +1,16 @@
 # Feature: P1.5 — Repo-backed artifact flow
 
-Status: **Proposed — deferred until after P1.6 text-only**
+Status: **Shipping — see PR for branch.** Tracked here once merged.
 Owner: @itsHabib
-Depends on: [p14-ma-session-lifecycle.md](./p14-ma-session-lifecycle.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md) (shipped), [06-p16-multi-team-text-only.md](./06-p16-multi-team-text-only.md) (proposed — lands first)
+Depends on: [p14-ma-session-lifecycle.md](./p14-ma-session-lifecycle.md) (shipped), [p13-registry-cache.md](./p13-registry-cache.md) (shipped), [06-p16-multi-team-text-only.md](./06-p16-multi-team-text-only.md) (shipped — PR #12)
 Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §5 D5, §6, §9.6, §10.2, §13 phase P1.5, §14 Q8.
 Target: multi-team DAG runs under `backend: managed_agents` where team A's deliverable is a branch push and team B reads it. Layered on top of the text-only multi-team DAG shipped by P1.6.
+
+## Implementation deviations from this design
+
+- **Capabilities struct shape (§4.4).** The `Capabilities` struct as shipped contains only `ArtifactPublish *ArtifactPublishSpec`. The `HasFileBus` and `HasMembers` fields proposed in §4.4 stayed as the existing implicit `inboxFolder != ""` and `team.HasMembers()` checks inside the prompt builder. This kept the local-backend prompt byte-identical with zero risk of surprise rendering changes; the struct can absorb the other flags later if a real caller benefits.
+- **Per-package repository defaulting.** `ResolveDefaults` now also fills `RepositorySpec.MountPath` (`/workspace/repo`) and `DefaultBranch` (`main`) as proposed in §5.5 / §10 Q2.
+- **Open Q decisions taken.** Q1 (multi github_repository fan-in): implemented as multiple `ResourceRef` entries — fallback to a single mount + `git fetch` is deferred until/if MA rejects fan-in. Q3 (`base_sha`): merge_base from the compare endpoint, with the head SHA as a fallback when no default branch is configured. Q4 (PR body): one-line `Opened by orchestra run <run-id>` footer. Q6 (PAT lifetime): resolved at orchestra startup and stored in `orchestrationRun.ghPAT` (in-memory only, never persisted).
 
 **Ordering note (2026-04-20).** DESIGN-v2 §13 sequenced P1.5 before P1.6. That ordering has been reversed: [06-p16-multi-team-text-only.md](./06-p16-multi-team-text-only.md) proves multi-team DAG under MA using text-only deliverables first. This chapter layers GitHub-backed artifact flow on top as additive capability for teams whose deliverable is code. Text-only teams keep using the summary path. DESIGN-v2 amendments to reflect the reordering are pending.
 
