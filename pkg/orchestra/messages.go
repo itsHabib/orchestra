@@ -1,12 +1,11 @@
-package cmd
+package orchestra
 
 import (
-	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/messaging"
 	"github.com/itsHabib/orchestra/internal/store"
 )
 
-func teamNames(teams []config.Team) []string {
+func teamNamesFromConfig(teams []Team) []string {
 	names := make([]string, len(teams))
 	for i := range teams {
 		names[i] = teams[i].Name
@@ -14,7 +13,7 @@ func teamNames(teams []config.Team) []string {
 	return names
 }
 
-func inboxLookup(participants []messaging.Participant) map[string]string {
+func inboxLookupFromParticipants(participants []messaging.Participant) map[string]string {
 	lookup := make(map[string]string, len(participants))
 	for _, p := range participants {
 		lookup[p.Name] = p.FolderName()
@@ -22,7 +21,7 @@ func inboxLookup(participants []messaging.Participant) map[string]string {
 	return lookup
 }
 
-func (r *orchestrationRun) seedBootstrapMessages(team *config.Team, state *store.RunState) error {
+func (r *orchestrationRun) seedBootstrapMessages(team *Team, state *store.RunState) error {
 	for _, dep := range team.DependsOn {
 		summary := r.dependencySummary(dep, state)
 		if summary == "" {

@@ -1,5 +1,6 @@
-# Compiled binaries
-orchestra
+# Compiled binaries (root-level only — do not match pkg/orchestra/)
+/orchestra
+/orchestra.exe
 examples/miniflow/cli
 examples/miniflow/server
 docs/spike-harness/spike-harness

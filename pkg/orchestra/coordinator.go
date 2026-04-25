@@ -1,4 +1,4 @@
-package cmd
+package orchestra
 
 import (
 	"context"
@@ -42,6 +42,8 @@ func (r *orchestrationRun) startCoordinator(ctx context.Context, tiers [][]strin
 	return coordHandle, coordLogWriter, nil
 }
 
+// stopCoordinator gracefully cancels the coordinator and writes its
+// final result to the workspace. It is safe to call with a nil handle.
 func (r *orchestrationRun) stopCoordinator(coordHandle *spawner.CoordinatorHandle) error {
 	if coordHandle == nil {
 		return nil

@@ -1,4 +1,4 @@
-package cmd
+package orchestra
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/store"
@@ -21,9 +20,9 @@ type managedSession interface {
 	Cancel(context.Context) error
 }
 
-type startTeamMAFunc func(context.Context, *config.Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
+type startTeamMAFunc func(context.Context, *Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
 
-func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, state *store.RunState) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) runTeamMA(ctx context.Context, team *Team, state *store.RunState) (*workspace.TeamResult, error) {
 	logWriter, err := r.ws.NDJSONLogWriter(team.Name)
 	if err != nil {
 		return nil, err
@@ -33,13 +32,7 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 	teamCtx, cancel := context.WithTimeout(ctx, time.Duration(r.cfg.Defaults.TimeoutMinutes)*time.Minute)
 	defer cancel()
 
-	var session managedSession
-	var events <-chan spawner.Event
-	if r.startTeamMAForTest != nil {
-		session, events, err = r.startTeamMAForTest(teamCtx, team, state, logWriter)
-	} else {
-		session, events, err = r.startTeamMA(teamCtx, team, state, logWriter)
-	}
+	session, events, err := r.startTeamMASession(teamCtx, team, state, logWriter)
 	if err != nil {
 		return nil, err
 	}
@@ -48,19 +41,20 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 		r.reportMAEvent(team.Name, event)
 	}
 
-	cleanupCtx := context.WithoutCancel(ctx)
+	return r.finalizeMATeam(ctx, teamCtx, team, session)
+}
+
+func (r *orchestrationRun) startTeamMASession(ctx context.Context, team *Team, state *store.RunState, logWriter io.Writer) (managedSession, <-chan spawner.Event, error) {
+	if r.startTeamMAForTest != nil {
+		return r.startTeamMAForTest(ctx, team, state, logWriter)
+	}
+	return r.startTeamMA(ctx, team, state, logWriter)
+}
+
+func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, team *Team, session managedSession) (*workspace.TeamResult, error) {
+	cleanupCtx := context.WithoutCancel(parentCtx)
 	if errors.Is(teamCtx.Err(), context.DeadlineExceeded) {
-		_ = session.Cancel(cleanupCtx)
-		msg := fmt.Sprintf("hard timeout after %d minutes", r.cfg.Defaults.TimeoutMinutes)
-		if err := r.runService.Store().UpdateTeamState(cleanupCtx, team.Name, func(ts *store.TeamState) {
-			ts.Status = "failed"
-			ts.EndedAt = r.runService.Now().UTC()
-			ts.LastError = msg
-			ts.SessionID = session.ID()
-		}); err != nil {
-			return nil, err
-		}
-		return nil, errors.New(msg)
+		return nil, r.handleMATimeout(cleanupCtx, team, session)
 	}
 	if errors.Is(teamCtx.Err(), context.Canceled) {
 		_ = session.Cancel(cleanupCtx)
@@ -93,19 +87,29 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *config.Team, sta
 	}, nil
 }
 
-func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, state *store.RunState, logWriter io.Writer) (*spawner.Session, <-chan spawner.Event, error) {
+func (r *orchestrationRun) handleMATimeout(ctx context.Context, team *Team, session managedSession) error {
+	_ = session.Cancel(ctx)
+	msg := fmt.Sprintf("hard timeout after %d minutes", r.cfg.Defaults.TimeoutMinutes)
+	if err := r.runService.Store().UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+		ts.Status = "failed"
+		ts.EndedAt = r.runService.Now().UTC()
+		ts.LastError = msg
+		ts.SessionID = session.ID()
+	}); err != nil {
+		return err
+	}
+	return errors.New(msg)
+}
+
+func (r *orchestrationRun) startTeamMA(ctx context.Context, team *Team, state *store.RunState, logWriter io.Writer) (managedSession, <-chan spawner.Event, error) {
 	ma := r.maSpawner
 	if ma == nil {
 		return nil, nil, errors.New("managed-agents spawner not initialized")
 	}
 
-	agent, err := ma.EnsureAgent(ctx, r.managedAgentSpec(team))
+	agent, env, err := r.ensureManagedResources(ctx, team)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ensure_agent: %w", err)
-	}
-	env, err := ma.EnsureEnvironment(ctx, r.managedEnvSpec())
-	if err != nil {
-		return nil, nil, fmt.Errorf("ensure_environment: %w", err)
+		return nil, nil, err
 	}
 	if err := r.recordMAHandles(ctx, team.Name, &agent, &env); err != nil {
 		return nil, nil, err
@@ -143,7 +147,20 @@ func (r *orchestrationRun) startTeamMA(ctx context.Context, team *config.Team, s
 	return session, events, nil
 }
 
-func (r *orchestrationRun) managedAgentSpec(team *config.Team) spawner.AgentSpec {
+func (r *orchestrationRun) ensureManagedResources(ctx context.Context, team *Team) (spawner.AgentHandle, spawner.EnvHandle, error) {
+	ma := r.maSpawner
+	agent, err := ma.EnsureAgent(ctx, r.managedAgentSpec(team))
+	if err != nil {
+		return spawner.AgentHandle{}, spawner.EnvHandle{}, fmt.Errorf("ensure_agent: %w", err)
+	}
+	env, err := ma.EnsureEnvironment(ctx, r.managedEnvSpec())
+	if err != nil {
+		return spawner.AgentHandle{}, spawner.EnvHandle{}, fmt.Errorf("ensure_environment: %w", err)
+	}
+	return agent, env, nil
+}
+
+func (r *orchestrationRun) managedAgentSpec(team *Team) spawner.AgentSpec {
 	return spawner.AgentSpec{
 		Project:      r.cfg.Name,
 		Role:         team.Name,
@@ -174,7 +191,7 @@ func (r *orchestrationRun) managedEnvSpec() spawner.EnvSpec {
 	}
 }
 
-func (r *orchestrationRun) teamPromptMA(team *config.Team, state *store.RunState) string {
+func (r *orchestrationRun) teamPromptMA(team *Team, state *store.RunState) string {
 	maTeam := *team
 	maTeam.Members = nil
 	prompt := injection.BuildPrompt(&maTeam, r.cfg.Name, state, r.cfg, nil, "", "")
