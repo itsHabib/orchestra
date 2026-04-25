@@ -427,6 +427,25 @@ func (r *orchestrationRun) reportMAEvent(teamName string, event spawner.Event) {
 		r.logger.TeamMsg(teamName, "managed-agents session idle (%s)", ev.Status.StopReason.Type)
 	case spawner.SpanModelRequestEndEvent:
 		r.logger.TeamMsg(teamName, "tokens %s in / %s out", fmtTokens(ev.Usage.InputTokens), fmtTokens(ev.Usage.OutputTokens))
+	case spawner.UserMessageEchoEvent:
+		// Skip the bootstrap prompt the orchestrator itself sent via
+		// Session.Send — labeling it as a human nudge would be both
+		// misleading and would leak prompt fragments to console output.
+		// Only out-of-process steering deliveries (orchestra msg) reach
+		// here with FromOrchestrator=false.
+		if ev.FromOrchestrator {
+			return
+		}
+		text := truncateForLog(compactForLog(ev.Text), 140)
+		if text == "" {
+			text = "(empty)"
+		}
+		r.logger.TeamMsg(teamName, "human: %s", text)
+	case spawner.UserInterruptEchoEvent:
+		if ev.FromOrchestrator {
+			return
+		}
+		r.logger.TeamMsg(teamName, "human: <interrupt>")
 	}
 }
 

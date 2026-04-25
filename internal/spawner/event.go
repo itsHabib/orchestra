@@ -39,6 +39,14 @@ const (
 	EventTypeSpanModelRequestStart EventType = "span.model_request_start"
 	// EventTypeSpanModelRequestEnd reports the end of a model request span.
 	EventTypeSpanModelRequestEnd EventType = "span.model_request_end"
+	// EventTypeUserMessage echoes a user.message event delivered into a session
+	// (typically by the steering CLI). The translator maps these back through
+	// the running orchestrator's event stream so that LastEventID / LastEventAt
+	// advance and the run log shows the human's input alongside agent output.
+	EventTypeUserMessage EventType = "user.message"
+	// EventTypeUserInterrupt echoes a user.interrupt event delivered into a
+	// session.
+	EventTypeUserInterrupt EventType = "user.interrupt"
 	// EventTypeUnknown preserves events the orchestrator does not yet understand.
 	EventTypeUnknown EventType = "unknown"
 )
@@ -185,6 +193,31 @@ type SpanModelRequestEndEvent struct {
 	BaseEvent
 	Model string
 	Usage Usage
+}
+
+// UserMessageEchoEvent represents MA's echo of a user.message event delivered
+// into the session. The translator emits this so the running orchestrator can
+// advance LastEventID / LastEventAt and surface a human's input in the run
+// log; team status is not mutated.
+//
+// FromOrchestrator distinguishes echoes of events the orchestrator process
+// itself sent (e.g. the bootstrap prompt delivered by Session.Send) from
+// echoes of events delivered by an out-of-process steering CLI (e.g. by
+// `orchestra msg`). reportMAEvent uses this to avoid labeling the bootstrap
+// prompt as a human nudge — see cmd/run_ma.go.
+type UserMessageEchoEvent struct {
+	BaseEvent
+	Text             string
+	FromOrchestrator bool
+}
+
+// UserInterruptEchoEvent represents MA's echo of a user.interrupt event
+// delivered into the session. FromOrchestrator follows the same convention as
+// UserMessageEchoEvent, though today only `orchestra interrupt` and tests
+// exercise this path.
+type UserInterruptEchoEvent struct {
+	BaseEvent
+	FromOrchestrator bool
 }
 
 // UnknownEvent preserves events the orchestrator does not yet interpret.

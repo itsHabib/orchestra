@@ -1,0 +1,35 @@
+name: ma-steering
+
+backend:
+  kind: managed_agents
+
+defaults:
+  model: sonnet
+  max_turns: 20
+  permission_mode: acceptEdits
+  timeout_minutes: 5
+
+teams:
+  - name: intro
+    lead:
+      role: "Steering Test Lead"
+    context: |
+      You are participating in a delivery test for Orchestra's human-steering
+      CLI. The harness will send you a follow-up message via `orchestra msg`
+      while you are working. Acknowledge any follow-up message in your final
+      summary if you receive one, but the test only verifies that the
+      message was delivered — your reaction to it is not graded.
+    tasks:
+      - summary: "Write a 1000-word introduction to managed-agents orchestration"
+        details: |
+          Produce a thorough 1000-1200 word markdown introduction covering:
+          - what a managed-agents session is
+          - why orchestra runs them in tiers
+          - how steering events fit in
+          - one example of when a human would interrupt a run
+          Aim for the high end of the word range — the long output keeps
+          the session running long enough for the test harness to send a
+          steering message before the run ends.
+        deliverables:
+          - "introduction.md"
+        verify: "introduction is a coherent markdown essay of about 1000 words"
