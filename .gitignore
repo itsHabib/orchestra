@@ -8,3 +8,6 @@ docs/spike-harness/spike-harness.exe
 # Claude Code local config
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Orchestra workspace created at runtime
+.orchestra/

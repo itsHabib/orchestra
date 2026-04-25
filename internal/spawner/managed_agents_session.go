@@ -1012,10 +1012,20 @@ func toSessionEventSendParams(event *UserEvent) (anthropic.BetaSessionEventSendP
 				Type: anthropic.BetaManagedAgentsTextBlockTypeText,
 			},
 		}}
+		// Construct the union directly: the SDK helper
+		// BetaManagedAgentsEventParamsOfUserMessage (v1.37.0,
+		// betasessionevent.go:1122) does not set the required Type field, and
+		// MA's /events endpoint rejects the request with HTTP 400
+		// "events[0].type: Field required". Sibling helpers for interrupt /
+		// tool_confirmation do set Type. Workaround until the SDK helper is
+		// fixed upstream.
 		return anthropic.BetaSessionEventSendParams{
-			Events: []anthropic.BetaManagedAgentsEventParamsUnion{
-				anthropic.BetaManagedAgentsEventParamsOfUserMessage(content),
-			},
+			Events: []anthropic.BetaManagedAgentsEventParamsUnion{{
+				OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
+					Content: content,
+					Type:    anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+				},
+			}},
 		}, nil
 	case UserEventTypeInterrupt:
 		return anthropic.BetaSessionEventSendParams{

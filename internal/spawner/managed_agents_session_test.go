@@ -318,6 +318,39 @@ func TestManagedAgentsTranslator_StateWriteFailureExits(t *testing.T) {
 	}
 }
 
+func TestToSessionEventSendParams_UserMessageIncludesType(t *testing.T) {
+	// Regression guard for an SDK helper bug: anthropic-sdk-go v1.37.0's
+	// BetaManagedAgentsEventParamsOfUserMessage does not set the required
+	// Type field, and MA rejects the resulting request with HTTP 400
+	// "events[0].type: Field required". We work around it by constructing
+	// the union directly; this test pins the marshaled shape so a future
+	// "simplification" back to the helper trips in CI rather than at
+	// runtime against live MA.
+	params, err := toSessionEventSendParams(&UserEvent{
+		Type:    UserEventTypeMessage,
+		Message: "hello",
+	})
+	if err != nil {
+		t.Fatalf("toSessionEventSendParams: %v", err)
+	}
+	if len(params.Events) != 1 {
+		t.Fatalf("Events len=%d, want 1", len(params.Events))
+	}
+	raw, err := json.Marshal(params.Events[0])
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("unmarshal probe: %v", err)
+	}
+	if probe.Type != "user.message" {
+		t.Fatalf("event type=%q, want user.message; raw=%s", probe.Type, raw)
+	}
+}
+
 func TestTranslateMAEvent_CoversKnownDesignRows(t *testing.T) {
 	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
