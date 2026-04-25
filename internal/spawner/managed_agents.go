@@ -235,6 +235,7 @@ func WithManagedAgentsConfig(cfg ManagedAgentsConfig) ManagedAgentsOption {
 	}
 }
 
+//nolint:unused // Reserved for future test-only clock injection; cleanup tracked separately.
 func withManagedAgentsClock(clock ManagedAgentsClock) ManagedAgentsOption {
 	return func(s *ManagedAgentsSpawner) {
 		s.clock = clock

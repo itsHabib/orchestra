@@ -9,10 +9,10 @@ import (
 
 	"github.com/itsHabib/orchestra/internal/config"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
-	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/store"
 	"github.com/itsHabib/orchestra/internal/store/memstore"
+	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
 func TestTeamPromptMAIgnoresMembersAndMessageBus(t *testing.T) {

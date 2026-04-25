@@ -10,8 +10,8 @@ import (
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/messaging"
-	"github.com/itsHabib/orchestra/internal/workspace"
 	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
 // TeamResult is the structured result recorded for a completed team.
