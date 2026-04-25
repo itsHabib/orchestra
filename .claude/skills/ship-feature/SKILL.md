@@ -21,20 +21,25 @@ Store as `$DOC`.
 
 ### 1. Resolve the design doc
 
-If `$DOC` was given, verify the file exists. If it doesn't, abort with a clear message — do nothing else.
+If `$DOC` was given as an argument, verify the file exists. If it doesn't, abort with a clear message — do nothing else.
 
-If `$DOC` was NOT given, auto-discover from `main`:
+If `$DOC` was NOT given, ASK the user — do not auto-infer. Use `AskUserQuestion` with the up-to-3 most recent design docs from `main` as options for one-click selection:
 
 ```bash
 git log main --diff-filter=A --name-only --pretty=format: -- 'docs/features/*.md' 'docs/prompts/*.md' \
-  | awk 'NF' | head -1
+  | awk 'NF' | head -3
 ```
 
-Show the discovered path and ask the user to confirm via `AskUserQuestion`:
-- "Use this doc" (Recommended)
-- "Cancel"
+Build the options list:
+- Each found doc becomes an option (label = filename, description = "<path> — last touched <date>" if cheap, otherwise just the path).
+- If 0–1 docs were found, add an explicit "I'll provide a different path" option so the question has ≥2 options.
+- The auto-added "Other" option lets the user type a path freely.
 
-Cancel → exit cleanly. Otherwise read the doc into `$DOC_CONTENT` and derive `$SLUG` from the filename (strip extension, replace any non-alphanumeric with `-`, e.g. `09-foo.md` → `09-foo`).
+Branch on the user's answer:
+- Picked a listed doc → set `$DOC` to that path.
+- Picked "Other" / "I'll provide a different path" → take their typed answer as the path. Verify it exists; if not, abort with a clear message.
+
+Read the doc into `$DOC_CONTENT` and derive `$SLUG` from the filename (strip extension, replace any non-alphanumeric with `-`, e.g. `09-foo.md` → `09-foo`).
 
 If a remote branch `feature/$SLUG` already exists (`git ls-remote --heads origin "feature/$SLUG"`), append `-2`, `-3`, etc. until you find a free name. Final value goes in `$BRANCH`.
 
@@ -190,7 +195,7 @@ Nothing else for you to do until the notification fires.
 
 ## Important
 
-- This skill is a **single bundled approval**: once the user invokes `/ship-feature`, run all six steps without re-prompting between them. The only allowed prompt is the one-key doc confirmation in step 1 when no path arg is given.
+- This skill is a **single bundled approval**: once the user invokes `/ship-feature`, run all six steps without re-prompting between them. The only allowed prompt is the doc-selection question in step 1 when no path arg is given.
 - Never force-push. Never skip hooks. If a CI fix would require either, stop the loop and surface it to the user instead.
 - If the implementation agent in step 2 reports failure, abort BEFORE push. The worktree stays on disk for manual inspection — print its path.
 - Copilot's reviewer handle differs by org. Don't block the workflow if `--add-reviewer` fails; print a one-liner and continue.
