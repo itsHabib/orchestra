@@ -2,39 +2,40 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 
 	"github.com/fatih/color"
-	olog "github.com/itsHabib/orchestra/internal/log"
 	"github.com/itsHabib/orchestra/pkg/orchestra"
 )
 
-func printSummary(logger *olog.Logger, result *orchestra.Result, wallClock time.Duration) {
+func printSummary(w io.Writer, result *orchestra.Result, wallClock time.Duration) {
 	if result == nil {
-		logger.Warn("Summary unavailable: no result")
+		yellow := color.New(color.FgYellow)
+		_, _ = yellow.Fprintf(w, "  ⚠ Summary unavailable: no result\n")
 		return
 	}
 
 	bold := color.New(color.Bold)
-	fmt.Println()
-	_, _ = bold.Println("═══════════════════════════════════════════════════")
-	_, _ = bold.Printf("  Orchestra: %s — Complete\n", result.Project)
-	_, _ = bold.Println("═══════════════════════════════════════════════════")
-	fmt.Println()
+	_, _ = fmt.Fprintln(w)
+	_, _ = bold.Fprintln(w, "═══════════════════════════════════════════════════")
+	_, _ = bold.Fprintf(w, "  Orchestra: %s — Complete\n", result.Project)
+	_, _ = bold.Fprintln(w, "═══════════════════════════════════════════════════")
+	_, _ = fmt.Fprintln(w)
 
-	fmt.Printf("  %-16s │ %-8s │ %-12s │ %-6s │ %-10s\n", "Team", "Status", "Tokens", "Turns", "Duration")
-	fmt.Printf("  ────────────────┼──────────┼──────────────┼────────┼────────────\n")
+	_, _ = fmt.Fprintf(w, "  %-16s │ %-8s │ %-12s │ %-6s │ %-10s\n", "Team", "Status", "Tokens", "Turns", "Duration")
+	_, _ = fmt.Fprintf(w, "  ────────────────┼──────────┼──────────────┼────────┼────────────\n")
 
-	totals := printTeamRows(result)
+	totals := printTeamRows(w, result)
 
-	fmt.Printf("  ────────────────┼──────────┼──────────────┼────────┼────────────\n")
-	fmt.Printf("  %-16s │          │ %s→%-7s │ %-6d │\n", "Total", fmtTokens(totals.in), fmtTokens(totals.out), totals.turns)
-	fmt.Println()
+	_, _ = fmt.Fprintf(w, "  ────────────────┼──────────┼──────────────┼────────┼────────────\n")
+	_, _ = fmt.Fprintf(w, "  %-16s │          │ %s→%-7s │ %-6d │\n", "Total", fmtTokens(totals.in), fmtTokens(totals.out), totals.turns)
+	_, _ = fmt.Fprintln(w)
 
 	wc := wallClock.Round(time.Second)
-	fmt.Printf("  Wall clock: %dm %02ds\n", int(wc.Minutes()), int(wc.Seconds())%60)
-	fmt.Println()
+	_, _ = fmt.Fprintf(w, "  Wall clock: %dm %02ds\n", int(wc.Minutes()), int(wc.Seconds())%60)
+	_, _ = fmt.Fprintln(w)
 }
 
 type tokenTotals struct {
@@ -43,7 +44,7 @@ type tokenTotals struct {
 	turns int
 }
 
-func printTeamRows(result *orchestra.Result) tokenTotals {
+func printTeamRows(w io.Writer, result *orchestra.Result) tokenTotals {
 	var totals tokenTotals
 	for _, tier := range result.Tiers {
 		for _, name := range tier {
@@ -67,7 +68,7 @@ func printTeamRows(result *orchestra.Result) tokenTotals {
 				d := time.Duration(team.DurationMs) * time.Millisecond
 				dur = fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
 			}
-			fmt.Printf("  %-16s │ %-8s │ %-12s │ %-6s │ %s\n", name, team.Status, tokens, turns, dur)
+			_, _ = fmt.Fprintf(w, "  %-16s │ %-8s │ %-12s │ %-6s │ %s\n", name, team.Status, tokens, turns, dur)
 		}
 	}
 	return totals
