@@ -27,6 +27,9 @@ var spawnCmd = &cobra.Command{
 			logger.Error("Validation failed: %s", err)
 			os.Exit(1)
 		}
+		// spawn is a debug entrypoint for a single team; intentionally skips
+		// the res.Warnings render loop the other commands do (pre-P2.5
+		// behavior preserved per design doc NF6 byte-identical output).
 		if !res.Valid() {
 			logger.Error("Validation failed: %s", res.Err())
 			os.Exit(1)
