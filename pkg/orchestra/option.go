@@ -66,6 +66,8 @@ func WithEventBuffer(n int) Option {
 //
 // The callback must not block — it runs on the engine's emit path.
 // Heavy work belongs in a goroutine consuming [Handle.Events] instead.
+// The callback may be invoked concurrently from multiple goroutines
+// (one per running team) — it must be goroutine-safe.
 //
 // If both [WithEventHandler] and a channel consumer are wired, both
 // fire; the handler fires first so its observations precede the channel

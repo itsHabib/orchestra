@@ -45,7 +45,10 @@ const (
 	// Team, Message=error string, At.
 	KindTeamFailed
 	// KindTierComplete fires once at the end of each tier, after every
-	// team in the tier has settled. Populates Tier, Team="", At.
+	// team in the tier has settled — regardless of whether any team in the
+	// tier failed. Consumers that need per-team outcome should observe
+	// KindTeamComplete / KindTeamFailed events within the tier rather than
+	// inferring success from this event. Populates Tier, Team="", At.
 	KindTierComplete
 	// KindRunComplete fires once when the engine has finished all tiers
 	// and is about to transition to PhaseDone. Populates Tier=-1, Team="",
