@@ -446,6 +446,7 @@ func (r *orchestrationRun) reportMAEvent(tierIdx int, teamName string, event spa
 		}
 	case spawner.AgentToolUseEvent:
 		input := compactForLog(fmt.Sprintf("%v", ev.ToolUse.Input))
+		r.recordToolName(ev.ToolUse.ID, ev.ToolUse.Name)
 		r.emit(Event{
 			Kind:    EventToolCall,
 			Tier:    tierIdx,
@@ -460,6 +461,7 @@ func (r *orchestrationRun) reportMAEvent(tierIdx int, teamName string, event spa
 			Kind:    EventToolResult,
 			Tier:    tierIdx,
 			Team:    teamName,
+			Tool:    r.takeToolName(ev.ToolResult.ToolUseID),
 			Message: truncateForLog(result),
 			At:      time.Now(),
 		})
@@ -489,6 +491,37 @@ func (r *orchestrationRun) reportMAEvent(tierIdx int, teamName string, event spa
 		}
 		r.emitTeamMessage(tierIdx, teamName, "human: <interrupt>")
 	}
+}
+
+// recordToolName remembers the tool name associated with a ToolUseID so a
+// later AgentToolResultEvent (which carries only the ID) can populate
+// EventToolResult.Tool. Concurrent emit paths from sibling teams in the
+// same tier share the map under toolNamesMu.
+func (r *orchestrationRun) recordToolName(useID, name string) {
+	if useID == "" || name == "" {
+		return
+	}
+	r.toolNamesMu.Lock()
+	defer r.toolNamesMu.Unlock()
+	if r.toolNamesByUseID == nil {
+		r.toolNamesByUseID = make(map[string]string)
+	}
+	r.toolNamesByUseID[useID] = name
+}
+
+// takeToolName returns the tool name previously recorded for useID and
+// deletes the entry to keep the map bounded across long-lived runs.
+// Returns "" when the result arrives without a matching call (out-of-order
+// or dropped event); EventToolResult.Tool is documented as best-effort.
+func (r *orchestrationRun) takeToolName(useID string) string {
+	if useID == "" {
+		return ""
+	}
+	r.toolNamesMu.Lock()
+	defer r.toolNamesMu.Unlock()
+	name := r.toolNamesByUseID[useID]
+	delete(r.toolNamesByUseID, useID)
+	return name
 }
 
 func managedAgentsModel(model string) string {

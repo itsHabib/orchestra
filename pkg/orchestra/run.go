@@ -143,6 +143,13 @@ type orchestrationRun struct {
 	ghPAT              string         // in-memory only; never persisted or logged
 	handle             *Handle        // nil when called by tests that don't construct a Handle
 	startTeamMAForTest startTeamMAFunc
+
+	// toolNamesMu guards toolNamesByUseID, the MA-only tool-name lookup
+	// populated on AgentToolUseEvent and consumed on AgentToolResultEvent
+	// so EventToolResult.Tool carries the tool name (which the spawner's
+	// ToolResult struct does not — it only carries the ToolUseID).
+	toolNamesMu      sync.Mutex
+	toolNamesByUseID map[string]string
 }
 
 type tierResult struct {
