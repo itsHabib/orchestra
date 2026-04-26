@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/itsHabib/orchestra/internal/ghhost"
 )
@@ -52,40 +53,55 @@ func (c *Config) resolveRepositoryDefaults() {
 
 // validateRepositoryHard returns hard errors for repository configuration.
 // Only consulted when Backend.Kind == "managed_agents".
-func (c *Config) validateRepositoryHard() []string {
+func (c *Config) validateRepositoryHard() []ConfigError {
 	if c.Backend.Kind != "managed_agents" {
 		return nil
 	}
-	var errs []string
+	var errs []ConfigError
 
 	if c.Backend.ManagedAgents != nil && c.Backend.ManagedAgents.Repository != nil {
-		errs = append(errs, validateRepositorySpec("backend.managed_agents.repository", c.Backend.ManagedAgents.Repository)...)
+		basePath := "backend.managed_agents.repository"
+		baseField := []string{"backend", "managed_agents", "repository"}
+		errs = append(errs, validateRepositorySpec(basePath, baseField, "", c.Backend.ManagedAgents.Repository)...)
 	}
 	for i := range c.Teams {
 		spec := c.Teams[i].EnvironmentOverride.Repository
 		if spec == nil {
 			continue
 		}
-		path := fmt.Sprintf("teams[%q].environment_override.repository", c.Teams[i].Name)
-		errs = append(errs, validateRepositorySpec(path, spec)...)
+		basePath := fmt.Sprintf("teams[%q].environment_override.repository", c.Teams[i].Name)
+		baseField := []string{"teams", strconv.Itoa(i), "environment_override", "repository"}
+		errs = append(errs, validateRepositorySpec(basePath, baseField, c.Teams[i].Name, spec)...)
 	}
 
 	if c.Backend.ManagedAgents != nil && c.Backend.ManagedAgents.OpenPullRequests {
 		for i := range c.Teams {
 			if c.Teams[i].EffectiveRepository(c) == nil {
-				errs = append(errs, fmt.Sprintf("team %q: backend.managed_agents.open_pull_requests requires a repository (set backend.managed_agents.repository or environment_override.repository)", c.Teams[i].Name))
+				errs = append(errs, ConfigError{
+					Field:   []string{"backend", "managed_agents", "open_pull_requests"},
+					Team:    c.Teams[i].Name,
+					Message: fmt.Sprintf("team %q: backend.managed_agents.open_pull_requests requires a repository (set backend.managed_agents.repository or environment_override.repository)", c.Teams[i].Name),
+				})
 			}
 		}
 	}
 	return errs
 }
 
-func validateRepositorySpec(path string, spec *RepositorySpec) []string {
+func validateRepositorySpec(basePath string, baseField []string, team string, spec *RepositorySpec) []ConfigError {
 	if spec.URL == "" {
-		return []string{path + ".url is required"}
+		return []ConfigError{{
+			Field:   append(append([]string{}, baseField...), "url"),
+			Team:    team,
+			Message: basePath + ".url is required",
+		}}
 	}
 	if _, _, err := ghhost.ParseRepoURL(spec.URL); err != nil {
-		return []string{fmt.Sprintf("%s.url %q invalid: %v", path, spec.URL, err)}
+		return []ConfigError{{
+			Field:   append(append([]string{}, baseField...), "url"),
+			Team:    team,
+			Message: fmt.Sprintf("%s.url %q invalid: %v", basePath, spec.URL, err),
+		}}
 	}
 	return nil
 }
@@ -116,6 +132,7 @@ func (c *Config) validateRepositoryWarnings() []Warning {
 				continue
 			}
 			warnings = append(warnings, Warning{
+				Field:   []string{"teams", strconv.Itoa(i), "depends_on"},
 				Team:    t.Name,
 				Message: fmt.Sprintf("depends on %q which uses a different repository (%q vs %q); cross-repo upstream branches are not mounted", dep, depRepo, myRepo),
 			})

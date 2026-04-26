@@ -21,12 +21,15 @@ func TestValidate_ValidConfig(t *testing.T) {
 			},
 		},
 	}
-	warnings, err := cfg.Validate()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings: %v", warnings)
+	if len(res.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", res.Warnings)
+	}
+	if res.Config != cfg {
+		t.Fatalf("Config not populated on valid result")
 	}
 }
 
@@ -34,20 +37,20 @@ func TestValidate_EmptyName(t *testing.T) {
 	cfg := &Config{
 		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
 	}
-	_, err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for empty project name")
+	res := cfg.Validate()
+	if res.Valid() {
+		t.Fatal("expected validation to fail for empty project name")
 	}
-	if !strings.Contains(err.Error(), "project name is required") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errorsContain(res.Errors, "project name is required") {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
 }
 
 func TestValidate_EmptyTeams(t *testing.T) {
 	cfg := &Config{Name: "p"}
-	_, err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for empty teams")
+	res := cfg.Validate()
+	if res.Valid() {
+		t.Fatal("expected validation to fail for empty teams")
 	}
 }
 
@@ -59,9 +62,9 @@ func TestValidate_DuplicateTeamNames(t *testing.T) {
 			{Name: "a", Tasks: []Task{{Summary: "y"}}},
 		},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "duplicate team name") {
-		t.Fatalf("expected duplicate team name error, got: %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "duplicate team name") {
+		t.Fatalf("expected duplicate team name error, got: %v", res.Errors)
 	}
 }
 
@@ -72,9 +75,9 @@ func TestValidate_SelfReference(t *testing.T) {
 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"a"}},
 		},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "cannot depend on itself") {
-		t.Fatalf("expected self-reference error, got: %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "cannot depend on itself") {
+		t.Fatalf("expected self-reference error, got: %v", res.Errors)
 	}
 }
 
@@ -85,9 +88,9 @@ func TestValidate_UnknownDependency(t *testing.T) {
 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"b"}},
 		},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "unknown team") {
-		t.Fatalf("expected unknown team error, got: %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "unknown team") {
+		t.Fatalf("expected unknown team error, got: %v", res.Errors)
 	}
 }
 
@@ -99,9 +102,9 @@ func TestValidate_Cycle(t *testing.T) {
 			{Name: "b", Tasks: []Task{{Summary: "y"}}, DependsOn: []string{"a"}},
 		},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("expected cycle error, got: %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "cycle") {
+		t.Fatalf("expected cycle error, got: %v", res.Errors)
 	}
 }
 
@@ -110,9 +113,9 @@ func TestValidate_EmptyTaskSummary(t *testing.T) {
 		Name:  "p",
 		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: ""}}}},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "empty summary") {
-		t.Fatalf("expected empty summary error, got: %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "empty summary") {
+		t.Fatalf("expected empty summary error, got: %v", res.Errors)
 	}
 }
 
@@ -121,9 +124,9 @@ func TestValidate_NoTasks(t *testing.T) {
 		Name:  "p",
 		Teams: []Team{{Name: "a"}},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "at least one task") {
-		t.Fatalf("expected no tasks error, got: %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "at least one task") {
+		t.Fatalf("expected no tasks error, got: %v", res.Errors)
 	}
 }
 
@@ -153,12 +156,12 @@ func TestValidate_TeamSizeWarning(t *testing.T) {
 			},
 		}},
 	}
-	warnings, err := cfg.Validate()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
 	found := false
-	for _, w := range warnings {
+	for _, w := range res.Warnings {
 		if strings.Contains(w.Message, "members") {
 			found = true
 		}
@@ -176,11 +179,11 @@ func TestValidate_TaskQualityWarning(t *testing.T) {
 			Tasks: []Task{{Summary: "do stuff"}},
 		}},
 	}
-	warnings, err := cfg.Validate()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if len(warnings) == 0 {
+	if len(res.Warnings) == 0 {
 		t.Fatal("expected task quality warnings for empty details/verify")
 	}
 }
@@ -215,9 +218,9 @@ func TestValidate_BackendKind(t *testing.T) {
 		Backend: Backend{Kind: "bogus"},
 		Teams:   []Team{{Name: "a", Tasks: []Task{{Summary: "x"}}}},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "backend.kind") {
-		t.Fatalf("expected backend.kind validation error, got %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "backend.kind") {
+		t.Fatalf("expected backend.kind validation error, got %v", res.Errors)
 	}
 }
 
@@ -232,17 +235,17 @@ func TestValidate_ManagedAgentsWarnings(t *testing.T) {
 			Tasks:   []Task{{Summary: "x", Details: "d", Verify: "v"}},
 		}},
 	}
-	warnings, err := cfg.Validate()
-	if err != nil {
-		t.Fatalf("Validate: %v", err)
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("Validate: %v", res.Errors)
 	}
 	var coordinator, members bool
-	for _, w := range warnings {
+	for _, w := range res.Warnings {
 		coordinator = coordinator || strings.Contains(w.Message, "coordinator is not supported under backend.kind=managed_agents")
 		members = members || strings.Contains(w.Message, "members are not supported under backend.kind=managed_agents")
 	}
 	if !coordinator || !members {
-		t.Fatalf("warnings=%v, want coordinator and members warnings", warnings)
+		t.Fatalf("warnings=%v, want coordinator and members warnings", res.Warnings)
 	}
 }
 
@@ -285,9 +288,9 @@ func TestValidate_NegativeMAConcurrentSessions(t *testing.T) {
 		Defaults: Defaults{MAConcurrentSessions: -1},
 		Teams:    []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
 	}
-	_, err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "ma_concurrent_sessions") {
-		t.Fatalf("expected ma_concurrent_sessions validation error, got %v", err)
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "ma_concurrent_sessions") {
+		t.Fatalf("expected ma_concurrent_sessions validation error, got %v", res.Errors)
 	}
 }
 
@@ -323,4 +326,16 @@ func TestHasMembers(t *testing.T) {
 	if !team.HasMembers() {
 		t.Fatal("expected members")
 	}
+}
+
+// errorsContain reports whether any ConfigError in errs has a Message
+// containing substr. Used by tests that previously asserted on the
+// joined err.Error() string.
+func errorsContain(errs []ConfigError, substr string) bool {
+	for _, e := range errs {
+		if strings.Contains(e.Message, substr) {
+			return true
+		}
+	}
+	return false
 }
