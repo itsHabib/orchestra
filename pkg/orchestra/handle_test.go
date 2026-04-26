@@ -136,6 +136,27 @@ func TestHandle_Status_ReflectsLiveTier(t *testing.T) {
 	}
 }
 
+// TestHandle_Send_StubReturnsErrClosed pins the PR 1 stub behavior of
+// Handle.Send. PR 3 wires the real implementation; this test should
+// fail at that point and be replaced with backend-specific coverage.
+func TestHandle_Send_StubReturnsErrClosed(t *testing.T) {
+	var h orchestra.Handle
+	if err := h.Send("any-team", "any-message"); !errors.Is(err, orchestra.ErrClosed) {
+		t.Errorf("Send: got %v, want ErrClosed", err)
+	}
+}
+
+// TestHandle_Interrupt_StubReturnsErrClosed pins the PR 1 stub behavior
+// of Handle.Interrupt. PR 3 wires the real implementation; this test
+// should fail at that point and be replaced with backend-specific
+// coverage.
+func TestHandle_Interrupt_StubReturnsErrClosed(t *testing.T) {
+	var h orchestra.Handle
+	if err := h.Interrupt("any-team"); !errors.Is(err, orchestra.ErrClosed) {
+		t.Errorf("Interrupt: got %v, want ErrClosed", err)
+	}
+}
+
 // writeTwoTierConfig writes an orchestra.yaml with two teams arranged
 // as two tiers (second depends on first). Used by Status tests that
 // need a non-trivial tier sequence.

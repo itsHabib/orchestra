@@ -91,6 +91,7 @@ func Start(ctx context.Context, cfg *Config, opts ...Option) (*Handle, error) {
 		defer close(h.done)
 		defer h.setPhase(PhaseDone)
 		defer release()
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				h.runErr = fmt.Errorf("orchestra: engine panic: %v", r)
@@ -159,9 +160,7 @@ func (h *Handle) Wait() (*Result, error) {
 //
 // Experimental.
 func (h *Handle) Cancel() {
-	if h.cancel != nil {
-		h.cancel()
-	}
+	h.cancel()
 }
 
 // Status returns a cheap snapshot of current run state. Backed by an
@@ -190,7 +189,9 @@ func (h *Handle) Status() Status {
 	if svc == nil {
 		return status
 	}
-	state, err := svc.Snapshot(context.Background())
+	snapCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	state, err := svc.Snapshot(snapCtx)
 	if err != nil || state == nil {
 		return status
 	}
@@ -286,9 +287,11 @@ const (
 	// tiers. It remains the phase until all tiers finish (success or
 	// failure) or the run is canceled.
 	PhaseRunning Phase = "running"
-	// PhaseCompleting indicates that all tiers have returned and the
-	// engine is settling: stopping the coordinator, building the final
-	// Result. Wait has not yet returned.
+	// PhaseCompleting indicates that all tiers have returned successfully
+	// and the engine is settling: stopping the coordinator, building the
+	// final Result. Wait has not yet returned. Only reached on the success
+	// path; canceled or failed runs transition directly from PhaseRunning
+	// to PhaseDone.
 	PhaseCompleting Phase = "completing"
 	// PhaseDone is terminal: Wait has either returned or is unblocked
 	// and the engine goroutine has exited. Send/Interrupt return
@@ -353,8 +356,9 @@ type Event struct {
 
 // closedEventChan is the package-level pre-closed channel returned by
 // [Handle.Events] in PR 1. PR 2 replaces this with a per-Handle bounded
-// channel driven by the engine emitter.
-var closedEventChan = func() chan Event {
+// channel driven by the engine emitter. Typed as receive-only so package
+// code cannot accidentally send on it.
+var closedEventChan <-chan Event = func() chan Event {
 	c := make(chan Event)
 	close(c)
 	return c

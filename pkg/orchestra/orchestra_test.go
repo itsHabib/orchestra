@@ -308,10 +308,10 @@ func TestRun_TakesOwnershipOfConfig(t *testing.T) {
 	}
 }
 
-// TestRun_StillBlocks asserts that Run is a thin convenience over
-// Start + Wait — calling either path against equivalent configs in
-// independent workspaces produces equivalent Result shapes.
-func TestRun_StillBlocks(t *testing.T) {
+// TestRun_EquivalentToStartPlusWait asserts that Run is a thin
+// convenience over Start + Wait — calling either path against equivalent
+// configs in independent workspaces produces equivalent Result shapes.
+func TestRun_EquivalentToStartPlusWait(t *testing.T) {
 	binDir := t.TempDir()
 	writeMockClaude(t, binDir, mockSuccessStream(), nil, 0, 0)
 	withPath(t, binDir)
