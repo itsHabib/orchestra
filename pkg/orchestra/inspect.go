@@ -140,8 +140,16 @@ func LoadRun(workspaceDir, runID string) (*RunState, error) {
 		}
 	}
 	if runID == "active" && len(records) > 0 {
-		// scanRunRecords sorts newest-first, so records[0] is the active
-		// run when one exists, otherwise the most recent archive.
+		// Prefer the explicitly-active record. scanRunRecords usually puts
+		// it at records[0] (newest-first sort), but a stale archive with a
+		// later StartedAt would sort ahead of it; scan explicitly so the
+		// alias always resolves to the live run when one exists, falling
+		// back to the most recent archive otherwise.
+		for i := range records {
+			if records[i].active {
+				return records[i].state, nil
+			}
+		}
 		return records[0].state, nil
 	}
 	return nil, fmt.Errorf("orchestra: run %q: %w", runID, fs.ErrNotExist)
@@ -201,15 +209,19 @@ func ListSessions(workspaceDir string) ([]SessionInfo, error) {
 const defaultInspectTimeout = 5 * time.Second
 
 // sessionInfoStatus maps a TeamState.Status into the public SessionInfo
-// status alphabet documented on [SessionInfo.Status].
+// status alphabet documented on [SessionInfo.Status]. Non-terminal states
+// like "pending" are preserved as-is so SDK consumers can distinguish
+// not-yet-started teams from teams that finished or failed.
 func sessionInfoStatus(teamStatus string) string {
 	switch teamStatus {
 	case "running":
 		return "active"
 	case "done":
 		return "archived"
-	default:
+	case "failed", "canceled":
 		return "terminated"
+	default:
+		return teamStatus
 	}
 }
 
