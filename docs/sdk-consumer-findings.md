@@ -24,7 +24,9 @@ Findings are listed in the order encountered while building. Roughly: 1–4 are 
 
 **What surprised.** `Validate(cfg)` calls `cfg.ResolveDefaults()` before validating. This is documented in the godoc but only as "applies ResolveDefaults to cfg" — easy to miss, and surprising for a function named `Validate`. Saw `cfg.Defaults.Model` change from `""` to `"haiku"` after `Validate` and had to debug by reading the source.
 
-**Suggestion.** Either rename to `ValidateAndResolve`, or expose `cfg.ResolveDefaults()` separately as a documented step in the SDK doc. If keeping the current name, lift the mutation note into a dedicated paragraph that warns shared-config-across-goroutines callers to `CloneConfig` first.
+**Suggestion.** Either rename to `ValidateAndResolve`, or expose `cfg.ResolveDefaults()` separately as a documented step in the SDK doc. If keeping the current name, lift the mutation note into a dedicated paragraph that cross-links to `CloneConfig` for shared-config-across-goroutines callers.
+
+**Partially resolved.** `CloneConfig` already exists at [pkg/orchestra/run.go:69-83](https://github.com/itsHabib/orchestra/blob/main/pkg/orchestra/run.go) with godoc that says "Use this when sharing a Config across goroutines that may invoke Run concurrently." The remaining gap is that `Validate`'s godoc doesn't cross-link to `CloneConfig` — a follow-up shouldn't re-add the helper.
 
 ## 3. `orchestra.TeamState` field godoc lives in `internal/store/run_state.go`
 
@@ -68,7 +70,7 @@ Findings are listed in the order encountered while building. Roughly: 1–4 are 
 
 ## 8. `orchestra.Run`'s godoc doesn't link to `WithEventHandler`
 
-**Where.** [pkg/orchestra/run.go](https://github.com/itsHabib/orchestra/blob/main/pkg/orchestra/run.go) `Run` function godoc.
+**Where.** [pkg/orchestra/handle.go:49-77](https://github.com/itsHabib/orchestra/blob/main/pkg/orchestra/handle.go) — `Run` function godoc (the function lives in `handle.go`, not `run.go`).
 
 **What surprised.** [pkg/orchestra/option.go:79](https://github.com/itsHabib/orchestra/blob/main/pkg/orchestra/option.go) defines `WithEventHandler` for one-shot `Run` callers who want events without managing a `Handle` goroutine. The doc on `Run` mentions options but doesn't cross-link to the recommended one for synchronous progress reporting. Built the consumer initially without progress reporting because the option wasn't discoverable from `Run`'s godoc; found it later by reading `option.go` cold.
 
@@ -78,7 +80,7 @@ Findings are listed in the order encountered while building. Roughly: 1–4 are 
 
 **Where.** [pkg/orchestra/run.go:60-64](https://github.com/itsHabib/orchestra/blob/main/pkg/orchestra/run.go).
 
-**What surprised.** P2.5 §5.3 "Field path conventions" says project-level issues get an empty `Field` slice. So `Validate(nil)` correctly returns `Field: nil`. But `Validate(nil)` is a degenerate case — there's no project at all. An explicit `Field: ["config"]` would let consumers distinguish "your config has no project name" (project-level issue inside the config) from "you passed nil" (no config at all).
+**What surprised.** P2.5 §5.3 "Field path conventions" says project-level issues get an empty `Field` slice. So `Validate(nil)` correctly returns `Field: nil`. But `Validate(nil)` is a degenerate case — there's no project at all. An explicit `Field: ["config"]` would let consumers distinguish "your config has no project name" (project-level issue inside the config) from "you passed nil" (no config at all). The behavior is documented now (`Validate`'s godoc explicitly says "A nil cfg is treated as a hard validation failure (one ConfigError entry, empty Field) rather than a panic"), so this is shape-only — the docs no longer require source-diving to understand it.
 
 **Suggestion.** Tweak `pkg/orchestra/run.go` to return `&ValidationResult{Errors: []ConfigError{{Field: []string{"config"}, Message: "nil config"}}}` for nil cfg.
 
