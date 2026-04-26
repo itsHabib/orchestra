@@ -129,12 +129,3 @@ func (r runRecord) startedAt() time.Time {
 	}
 	return r.modifiedAt.UTC()
 }
-
-func findRunRecord(records []runRecord, id string) (runRecord, bool) {
-	for _, record := range records {
-		if record.id == id || (id == "active" && record.active) {
-			return record, true
-		}
-	}
-	return runRecord{}, false
-}

@@ -220,6 +220,9 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 	if err != nil {
 		return nil, err
 	}
+	if handle != nil {
+		handle.setSteering(cfg.Backend.Kind, run.bus, run.inboxLookup, maSessionEvents(run.maSpawner))
+	}
 
 	runErr := run.execute(ctx, tiers)
 	result, snapErr := run.buildResult(ctx, tiers, time.Since(wallStart))
@@ -243,6 +246,17 @@ func pickEmitter(h *Handle) event.Emitter {
 		return event.NoopEmitter{}
 	}
 	return h
+}
+
+// maSessionEvents extracts the session-events sender from a managed-agents
+// spawner so the Handle can deliver Send / Interrupt events directly to the
+// MA backend. Returns nil for local-backend runs (spawner == nil) or when
+// the spawner was constructed without session-events support.
+func maSessionEvents(ma *spawner.ManagedAgentsSpawner) spawner.SessionEventSender {
+	if ma == nil {
+		return nil
+	}
+	return ma.SessionEvents()
 }
 
 func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error {

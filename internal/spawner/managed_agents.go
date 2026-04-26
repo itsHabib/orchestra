@@ -312,6 +312,22 @@ func (s *ManagedAgentsSpawner) now() time.Time {
 	return s.clock().UTC()
 }
 
+// SessionEvents exposes the spawner's session-events client as the narrow
+// public [SessionEventSender] interface. SDK callers (the Handle's Send and
+// Interrupt paths) use this to deliver user.message and user.interrupt events
+// without re-authenticating an SDK client. Returns nil when the spawner was
+// constructed without session-events support (the test-only constructors that
+// install unsupportedSessionEventsAPI).
+func (s *ManagedAgentsSpawner) SessionEvents() SessionEventSender {
+	if s == nil || s.sessionEvents == nil {
+		return nil
+	}
+	if _, ok := s.sessionEvents.(unsupportedSessionEventsAPI); ok {
+		return nil
+	}
+	return s.sessionEvents
+}
+
 // IsAPIStatus reports whether err is an Anthropic API error carrying the given
 // HTTP status code.
 func IsAPIStatus(err error, code int) bool {

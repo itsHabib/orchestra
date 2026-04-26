@@ -7,6 +7,49 @@ stable. Each release that touches the SDK surface gets an entry here.
 
 ## Unreleased
 
+### Experimental: breaking — `pkg/orchestra` operational SDK (P2.4)
+
+The P2.4 chapter reshapes the SDK around an asynchronous `Handle` and adds
+the surface dogfood apps need to observe and steer a live run. Callers that
+previously called the one-shot `Run(ctx, cfg, opts...)` keep working with
+no source change; the breaking pieces are the logging interface and the
+implicit assumption that `Run` blocks the caller goroutine forever.
+
+- **Removed**: `Logger` interface, `NewCLILogger()`, `NewNoopLogger()`, and
+  `WithLogger`. Observability moves entirely to the structured `Event`
+  channel and the optional `WithEventHandler` callback. Apps that printed
+  through the Logger should consume `Handle.Events()` (or pass
+  `WithEventHandler`) and render with `PrintEvent` or their own renderer.
+- **Reshaped**: `Run(ctx, cfg, opts...) (*Result, error)` now wraps
+  `Start + Wait`. Behavior for blocking callers is unchanged; the
+  difference is that `Start` is the new primitive — it returns
+  asynchronously with a `Handle`, and `Wait()` produces the final result.
+- **Added**:
+  - `Start(ctx, cfg, opts...) (*Handle, error)` plus the `Handle` type
+    with `Wait`, `Cancel`, `Status`, `Events`, `Send`, `Interrupt`.
+  - `WithEventBuffer(n int) Option` configures the bounded event channel.
+  - `WithEventHandler(fn func(Event)) Option` registers a synchronous
+    callback invoked on every emitted event before the channel send.
+  - `PrintEvent(w io.Writer, ev Event)` is the canonical renderer used by
+    `cmd/run` for streaming output; SDK callers can reuse it or write
+    their own.
+  - `ListRuns(workspaceDir) ([]RunSummary, error)`,
+    `LoadRun(workspaceDir, runID) (*RunState, error)`, and
+    `ListSessions(workspaceDir) ([]SessionInfo, error)` enumerate past and
+    active runs and per-team managed-agents sessions. `cmd/runs` and
+    `cmd/sessions` are migrated to call these helpers.
+  - `RunSummary` and `SessionInfo` types describe the per-row data shapes
+    those helpers return.
+  - `Phase` (`PhaseInitializing`, `PhaseRunning`, `PhaseCompleting`,
+    `PhaseDone`) and `TeamSnapshot` describe `Status()` output.
+  - `Event` and `EventKind` types plus the kind constants
+    (`EventTierStart`, `EventTeamStart`, `EventTeamMessage`,
+    `EventToolCall`, `EventToolResult`, `EventTeamComplete`,
+    `EventTeamFailed`, `EventTierComplete`, `EventRunComplete`,
+    `EventDropped`, `EventInfo`, `EventWarn`, `EventError`).
+  - Sentinel errors `ErrClosed`, `ErrTeamNotRunning`, and
+    `ErrInterruptNotSupported` for steering call sites.
+
 ### Added — `pkg/orchestra` SDK (experimental)
 
 - New package `pkg/orchestra` is the experimental Go SDK for the orchestra
