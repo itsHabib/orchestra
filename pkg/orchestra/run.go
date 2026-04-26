@@ -529,7 +529,7 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		Kind:    EventTeamStart,
 		Tier:    tierIdx,
 		Team:    teamName,
-		Message: "Starting " + team.Lead.Role,
+		Message: team.Lead.Role,
 		At:      time.Now(),
 	})
 	if r.cfg.Backend.Kind == BackendManagedAgents {

@@ -2,6 +2,7 @@ package orchestra
 
 import (
 	"io"
+	"strings"
 	"sync"
 
 	olog "github.com/itsHabib/orchestra/internal/log"
@@ -16,6 +17,10 @@ type printEventState struct {
 	loggers map[io.Writer]*olog.Logger
 }
 
+// Intentionally unbounded: the map keys on io.Writer to keep team-color
+// assignments stable for the lifetime of the process. CLI use is bounded
+// (a single os.Stdout entry); long-running consumers that churn distinct
+// writers should manage their own renderer instead of using PrintEvent.
 var printEventLoggers = &printEventState{
 	loggers: make(map[io.Writer]*olog.Logger),
 }
@@ -75,7 +80,11 @@ func PrintEvent(w io.Writer, ev Event) {
 		// Re-derive the team list from Message rather than carrying a
 		// dedicated slice on Event — keeps the Event shape flat.
 		l.TierStart(ev.Tier, splitTeamList(ev.Message))
-	case EventTeamStart, EventTeamMessage, EventTeamComplete, EventTeamFailed:
+	case EventTeamStart:
+		// Event.Message carries the bare role per the KindTeamStart spec;
+		// PrintEvent re-applies the "Starting" prefix the CLI users expect.
+		l.TeamMsg(ev.Team, "Starting %s", ev.Message)
+	case EventTeamMessage, EventTeamComplete, EventTeamFailed:
 		l.TeamMsg(ev.Team, "%s", ev.Message)
 	case EventToolCall, EventToolResult:
 		// Silent — matches today's CLI which did not render tool
@@ -101,25 +110,10 @@ func splitTeamList(s string) []string {
 	if s == "" {
 		return nil
 	}
-	var out []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			out = append(out, trimSpaces(s[start:i]))
-			start = i + 1
-		}
+	parts := strings.Split(s, ",")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = strings.TrimSpace(p)
 	}
-	out = append(out, trimSpaces(s[start:]))
 	return out
-}
-
-// trimSpaces returns s without leading or trailing ASCII spaces.
-func trimSpaces(s string) string {
-	for s != "" && s[0] == ' ' {
-		s = s[1:]
-	}
-	for s != "" && s[len(s)-1] == ' ' {
-		s = s[:len(s)-1]
-	}
-	return s
 }
