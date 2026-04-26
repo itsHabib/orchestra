@@ -278,6 +278,9 @@ func (h *Handle) Emit(ev Event) {
 			At:        time.Now(),
 		}
 		h.dropCount = 0
+		if h.eventHandler != nil {
+			h.eventHandler(dropped)
+		}
 		h.deliverLocked(dropped)
 	}
 	h.deliverLocked(ev)
@@ -302,6 +305,9 @@ func (h *Handle) flushDropped() {
 		At:        time.Now(),
 	}
 	h.dropCount = 0
+	if h.eventHandler != nil {
+		h.eventHandler(dropped)
+	}
 	h.deliverLocked(dropped)
 }
 
