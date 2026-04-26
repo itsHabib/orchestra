@@ -61,6 +61,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	fake := &fakeManagedSession{id: "sess_timeout"}
 	r := &orchestrationRun{
 		cfg:        &Config{Name: "p", Defaults: Defaults{TimeoutMinutes: 0}},
+		emitter:    event.NoopEmitter{},
 		runService: runsvc.New(st),
 		ws:         ws,
 		startTeamMAForTest: func(ctx context.Context, _ *Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
