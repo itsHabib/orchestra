@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/event"
 	"github.com/itsHabib/orchestra/internal/ghhost"
-	olog "github.com/itsHabib/orchestra/internal/log"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/store"
 	"github.com/itsHabib/orchestra/internal/store/memstore"
@@ -255,7 +255,7 @@ func TestResolveTeamArtifact_SkipsWhenClientNil(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &orchestrationRun{cfg: cfg, runService: runsvc.New(st), ws: ws, logger: olog.New()}
+	r := &orchestrationRun{cfg: cfg, runService: runsvc.New(st), ws: ws, emitter: event.NoopEmitter{}}
 	if err := r.resolveTeamArtifact(context.Background(), &cfg.Teams[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,6 +298,6 @@ func newRepoTestRun(t *testing.T, runID string, srv *httptest.Server) *orchestra
 		ghPAT:      pat,
 		runService: runsvc.New(st),
 		ws:         ws,
-		logger:     olog.New(),
+		emitter:    event.NoopEmitter{},
 	}
 }

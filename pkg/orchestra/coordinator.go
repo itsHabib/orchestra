@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/spawner"
@@ -30,15 +31,15 @@ func (r *orchestrationRun) startCoordinator(ctx context.Context, tiers [][]strin
 		PermissionMode: r.cfg.Defaults.PermissionMode,
 		TimeoutMinutes: r.cfg.Defaults.TimeoutMinutes * len(tiers),
 		LogWriter:      coordLogWriter,
-		ProgressFunc:   func(team, msg string) { r.logger.TeamMsg(team, "%s", msg) },
+		ProgressFunc:   func(team, msg string) { r.emitTeamMessage(-1, team, "%s", msg) },
 	})
 	if err != nil {
 		_ = coordLogWriter.Close()
-		r.logger.Warn("Coordinator spawn failed (continuing without): %s", err)
+		r.emitWarn("Coordinator spawn failed (continuing without): %s", err)
 		return nil, nil, nil
 	}
 
-	r.logger.Success("Coordinator agent spawned")
+	r.emitInfo("Coordinator agent spawned")
 	return coordHandle, coordLogWriter, nil
 }
 
@@ -49,17 +50,25 @@ func (r *orchestrationRun) stopCoordinator(coordHandle *spawner.CoordinatorHandl
 		return nil
 	}
 
-	r.logger.Info("Signaling coordinator to stop...")
+	r.emitInfo("Signaling coordinator to stop...")
 	coordHandle.Cancel()
 	coordResult, coordErr := coordHandle.Wait()
 	if coordErr != nil {
-		r.logger.Warn("Coordinator exited with error: %s", coordErr)
+		r.emitWarn("Coordinator exited with error: %s", coordErr)
 		return nil
 	}
 	if coordResult == nil {
 		return nil
 	}
-	r.logger.TeamMsg("coordinator", "Done (cost: $%.2f, turns: %d)", coordResult.CostUSD, coordResult.NumTurns)
+	r.emit(Event{
+		Kind:    EventTeamComplete,
+		Tier:    -1,
+		Team:    "coordinator",
+		Message: fmt.Sprintf("Done (cost: $%.2f, turns: %d)", coordResult.CostUSD, coordResult.NumTurns),
+		Cost:    coordResult.CostUSD,
+		Turns:   coordResult.NumTurns,
+		At:      time.Now(),
+	})
 	if err := r.ws.WriteResult(coordResult); err != nil {
 		return fmt.Errorf("writing coordinator result: %w", err)
 	}

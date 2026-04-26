@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	olog "github.com/itsHabib/orchestra/internal/log"
+	"github.com/itsHabib/orchestra/internal/event"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/store"
@@ -61,6 +61,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	fake := &fakeManagedSession{id: "sess_timeout"}
 	r := &orchestrationRun{
 		cfg:        &Config{Name: "p", Defaults: Defaults{TimeoutMinutes: 0}},
+		emitter:    event.NoopEmitter{},
 		runService: runsvc.New(st),
 		ws:         ws,
 		startTeamMAForTest: func(ctx context.Context, _ *Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
@@ -73,7 +74,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 		},
 	}
 
-	_, err = r.runTeamMA(ctx, team, &store.RunState{})
+	_, err = r.runTeamMA(ctx, 0, team, &store.RunState{})
 	if err == nil || !strings.Contains(err.Error(), "hard timeout after 0 minutes") {
 		t.Fatalf("runTeamMA err=%v, want timeout", err)
 	}
@@ -128,7 +129,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 	)
 	r := &orchestrationRun{
 		cfg:        cfg,
-		logger:     olog.New(),
+		emitter:    event.NoopEmitter{},
 		runService: runsvc.New(st),
 		ws:         ws,
 	}
@@ -204,7 +205,7 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 
 	r := &orchestrationRun{
 		cfg:        cfg,
-		logger:     olog.New(),
+		emitter:    event.NoopEmitter{},
 		runService: runsvc.New(st),
 		ws:         ws,
 	}
@@ -270,7 +271,7 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 	)
 	r := &orchestrationRun{
 		cfg:        cfg,
-		logger:     olog.New(),
+		emitter:    event.NoopEmitter{},
 		runService: runsvc.New(st),
 		ws:         ws,
 	}

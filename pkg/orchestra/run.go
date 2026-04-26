@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/dag"
+	"github.com/itsHabib/orchestra/internal/event"
 	"github.com/itsHabib/orchestra/internal/ghhost"
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/messaging"
@@ -130,7 +132,7 @@ func cloneSlice[T any](in []T) []T {
 // one directly.
 type orchestrationRun struct {
 	cfg                *Config
-	logger             Logger
+	emitter            event.Emitter
 	runService         *runsvc.Service
 	ws                 *workspace.Workspace
 	bus                *messaging.Bus
@@ -141,6 +143,13 @@ type orchestrationRun struct {
 	ghPAT              string         // in-memory only; never persisted or logged
 	handle             *Handle        // nil when called by tests that don't construct a Handle
 	startTeamMAForTest startTeamMAFunc
+
+	// toolNamesMu guards toolNamesByUseID, the MA-only tool-name lookup
+	// populated on AgentToolUseEvent and consumed on AgentToolResultEvent
+	// so EventToolResult.Tool carries the tool name (which the spawner's
+	// ToolResult struct does not — it only carries the ToolUseID).
+	toolNamesMu      sync.Mutex
+	toolNamesByUseID map[string]string
 }
 
 type tierResult struct {
@@ -149,11 +158,54 @@ type tierResult struct {
 	err  error
 }
 
-func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOptions, workspaceDir string, handle *Handle) (*Result, error) {
-	wallStart := time.Now()
-	logger := options.logger
+// emit delivers ev through the orchestrationRun's emitter, falling back
+// to a noop when no emitter is wired (tests that construct orchestrationRun
+// directly without going through newOrchestrationRun).
+//
+//nolint:gocritic // Event-by-value matches the public Emit signature; pointer would force allocations and be inconsistent.
+func (r *orchestrationRun) emit(ev Event) {
+	if r.emitter == nil {
+		return
+	}
+	r.emitter.Emit(ev)
+}
 
-	runService := newRunService(workspaceDir, logger)
+// emitInfo emits an EventInfo with Tier=-1.
+func (r *orchestrationRun) emitInfo(format string, args ...any) {
+	r.emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: fmt.Sprintf(format, args...),
+		At:      time.Now(),
+	})
+}
+
+// emitWarn emits an EventWarn with Tier=-1.
+func (r *orchestrationRun) emitWarn(format string, args ...any) {
+	r.emit(Event{
+		Kind:    EventWarn,
+		Tier:    -1,
+		Message: fmt.Sprintf(format, args...),
+		At:      time.Now(),
+	})
+}
+
+// emitTeamMessage emits an EventTeamMessage scoped to a tier and team.
+func (r *orchestrationRun) emitTeamMessage(tier int, team, format string, args ...any) {
+	r.emit(Event{
+		Kind:    EventTeamMessage,
+		Tier:    tier,
+		Team:    team,
+		Message: fmt.Sprintf(format, args...),
+		At:      time.Now(),
+	})
+}
+
+func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, workspaceDir string, handle *Handle) (*Result, error) {
+	wallStart := time.Now()
+	emitter := pickEmitter(handle)
+
+	runService := newRunService(workspaceDir, emitter)
 	active, err := runService.Begin(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("begin run: %w", err)
@@ -164,7 +216,7 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOption
 		handle.setRunService(runService)
 	}
 
-	run, tiers, err := newOrchestrationRun(cfg, logger, runService, active, handle)
+	run, tiers, err := newOrchestrationRun(cfg, emitter, runService, active, handle)
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +233,21 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOption
 	}
 }
 
+// pickEmitter returns the Handle as the engine's emitter when available;
+// otherwise a NoopEmitter so engine code can call Emit unconditionally.
+// Today every real engine path threads the Handle through, but tests that
+// drive the engine helpers directly without a Handle benefit from the
+// fallback.
+func pickEmitter(h *Handle) event.Emitter {
+	if h == nil {
+		return event.NoopEmitter{}
+	}
+	return h
+}
+
 func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error {
 	if r.cfg.Backend.Kind == BackendManagedAgents && r.cfg.Coordinator.Enabled {
-		r.logger.Warn("coordinator is not supported under backend.kind=managed_agents")
+		r.emitWarn("coordinator is not supported under backend.kind=managed_agents")
 	}
 
 	var coordHandle *spawner.CoordinatorHandle
@@ -250,39 +314,61 @@ func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, du
 	}, nil
 }
 
-func newRunService(path string, logger Logger) *runsvc.Service {
+// newRunService constructs a run.Service wired to the SDK emitter. The
+// service's WithWarn hook fires for non-fatal mirror failures; routing
+// those through EventWarn keeps engine warnings on the same channel as
+// every other observation.
+func newRunService(path string, emitter event.Emitter) *runsvc.Service {
+	warn := func(format string, args ...any) {
+		emitter.Emit(Event{
+			Kind:    EventWarn,
+			Tier:    -1,
+			Message: fmt.Sprintf(format, args...),
+			At:      time.Now(),
+		})
+	}
 	return runsvc.New(
 		filestore.New(path),
 		runsvc.WithWorkspace(workspace.ForPath(path)),
-		runsvc.WithWarn(logger.Warn),
+		runsvc.WithWarn(warn),
 	)
 }
 
-func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service, active *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
+func newOrchestrationRun(cfg *Config, emitter event.Emitter, runService *runsvc.Service, active *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
 	ws := runService.Workspace()
 	if ws == nil {
 		return nil, nil, errors.New("run service has no workspace attached")
 	}
-	logger.Success("Workspace initialized at %s", ws.Path)
+	emitter.Emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: "Workspace initialized at " + ws.Path,
+		At:      time.Now(),
+	})
 
 	tiers, err := dag.BuildTiers(cfg.Teams)
 	if err != nil {
 		return nil, nil, fmt.Errorf("building DAG: %w", err)
 	}
-	logger.Info("DAG: %d tiers", len(tiers))
+	emitter.Emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: fmt.Sprintf("DAG: %d tiers", len(tiers)),
+		At:      time.Now(),
+	})
 
 	if cfg.Backend.Kind == BackendManagedAgents {
-		ma, err := initManagedAgentsBackend(cfg, runService, logger)
+		ma, err := initManagedAgentsBackend(cfg, runService, emitter)
 		if err != nil {
 			return nil, nil, err
 		}
-		ghPAT, ghClient, err := initGitHubClient(cfg, logger)
+		ghPAT, ghClient, err := initGitHubClient(cfg, emitter)
 		if err != nil {
 			return nil, nil, err
 		}
 		return &orchestrationRun{
 			cfg:        cfg,
-			logger:     logger,
+			emitter:    emitter,
 			runService: runService,
 			ws:         ws,
 			bus:        active.Bus,
@@ -293,13 +379,13 @@ func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service,
 		}, tiers, nil
 	}
 
-	participants, lookup, err := initLocalBackend(cfg, ws, active, logger)
+	participants, lookup, err := initLocalBackend(cfg, ws, active, emitter)
 	if err != nil {
 		return nil, nil, err
 	}
 	return &orchestrationRun{
 		cfg:          cfg,
-		logger:       logger,
+		emitter:      emitter,
 		runService:   runService,
 		ws:           ws,
 		bus:          active.Bus,
@@ -309,8 +395,13 @@ func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service,
 	}, tiers, nil
 }
 
-func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, logger Logger) (*spawner.ManagedAgentsSpawner, error) {
-	logger.Info("Managed-agents backend: file message bus and coordinator workspace are disabled")
+func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, emitter event.Emitter) (*spawner.ManagedAgentsSpawner, error) {
+	emitter.Emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: "Managed-agents backend: file message bus and coordinator workspace are disabled",
+		At:      time.Now(),
+	})
 	ma, err := spawner.NewHostManagedAgentsSpawner(
 		runService.Store(),
 		spawner.WithManagedAgentsConcurrency(cfg.Defaults.MAConcurrentSessions),
@@ -325,7 +416,7 @@ func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, logger Lo
 // any team has an effective repository configured. Returns ("", nil, nil) for
 // runs that do not need GitHub access (text-only managed-agents flows).
 // Resolved at startup so missing-token errors fail fast.
-func initGitHubClient(cfg *Config, logger Logger) (string, *ghhost.Client, error) {
+func initGitHubClient(cfg *Config, emitter event.Emitter) (string, *ghhost.Client, error) {
 	if !cfgNeedsGitHub(cfg) {
 		return "", nil, nil
 	}
@@ -333,7 +424,12 @@ func initGitHubClient(cfg *Config, logger Logger) (string, *ghhost.Client, error
 	if err != nil {
 		return "", nil, fmt.Errorf("github pat: %w", err)
 	}
-	logger.Info("GitHub client initialized for managed-agents repository flow")
+	emitter.Emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: "GitHub client initialized for managed-agents repository flow",
+		At:      time.Now(),
+	})
 	return pat, ghhost.New(pat), nil
 }
 
@@ -352,13 +448,18 @@ func cfgNeedsGitHub(cfg *Config) bool {
 	return false
 }
 
-func initLocalBackend(cfg *Config, ws *workspace.Workspace, active *runsvc.Active, logger Logger) ([]messaging.Participant, map[string]string, error) {
+func initLocalBackend(cfg *Config, ws *workspace.Workspace, active *runsvc.Active, emitter event.Emitter) ([]messaging.Participant, map[string]string, error) {
 	if active.Bus == nil {
 		return nil, nil, errors.New("run began without message bus")
 	}
 	participants := messaging.BuildParticipants(teamNamesFromConfig(cfg.Teams))
 	lookup := inboxLookupFromParticipants(participants)
-	logger.Success("Message bus initialized at %s", active.Bus.Path())
+	emitter.Emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: "Message bus initialized at " + active.Bus.Path(),
+		At:      time.Now(),
+	})
 
 	if err := os.MkdirAll(filepath.Join(ws.Path, "coordinator"), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("creating coordinator decisions directory: %w", err)
@@ -379,7 +480,12 @@ func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames [
 	if r.handle != nil {
 		r.handle.setCurrentTier(tierIdx)
 	}
-	r.logger.TierStart(tierIdx, tierNames)
+	r.emit(Event{
+		Kind:    EventTierStart,
+		Tier:    tierIdx,
+		Message: strings.Join(tierNames, ", "),
+		At:      time.Now(),
+	})
 
 	state, err := r.runService.Snapshot(ctx)
 	if err != nil {
@@ -390,12 +496,17 @@ func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames [
 	var wg sync.WaitGroup
 	for _, name := range tierNames {
 		wg.Add(1)
-		go r.spawnTeam(ctx, name, tierNames, state, results, &wg)
+		go r.spawnTeam(ctx, tierIdx, name, tierNames, state, results, &wg)
 	}
 	wg.Wait()
 	close(results)
 
-	failed, err := r.collectTierResults(ctx, results)
+	failed, err := r.collectTierResults(ctx, tierIdx, results)
+	r.emit(Event{
+		Kind: EventTierComplete,
+		Tier: tierIdx,
+		At:   time.Now(),
+	})
 	if err != nil {
 		return err
 	}
@@ -405,14 +516,14 @@ func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames [
 	return nil
 }
 
-func (r *orchestrationRun) spawnTeam(ctx context.Context, teamName string, tierNames []string, state *store.RunState, results chan<- tierResult, wg *sync.WaitGroup) {
+func (r *orchestrationRun) spawnTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState, results chan<- tierResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	res, err := r.runTeam(ctx, teamName, tierNames, state)
+	res, err := r.runTeam(ctx, tierIdx, teamName, tierNames, state)
 	results <- tierResult{name: teamName, res: res, err: err}
 }
 
-func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNames []string, state *store.RunState) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState) (*workspace.TeamResult, error) {
 	team := r.cfg.TeamByName(teamName)
 	if team == nil {
 		return nil, fmt.Errorf("team %q not found in config", teamName)
@@ -421,9 +532,15 @@ func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNam
 		return nil, err
 	}
 
-	r.logger.TeamMsg(teamName, "Starting %s", team.Lead.Role)
+	r.emit(Event{
+		Kind:    EventTeamStart,
+		Tier:    tierIdx,
+		Team:    teamName,
+		Message: team.Lead.Role,
+		At:      time.Now(),
+	})
 	if r.cfg.Backend.Kind == BackendManagedAgents {
-		return r.runTeamMA(ctx, team, state)
+		return r.runTeamMA(ctx, tierIdx, team, state)
 	}
 
 	if err := r.seedBootstrapMessages(team, state); err != nil {
@@ -444,7 +561,9 @@ func (r *orchestrationRun) runTeam(ctx context.Context, teamName string, tierNam
 		PermissionMode: r.cfg.Defaults.PermissionMode,
 		TimeoutMinutes: r.cfg.Defaults.TimeoutMinutes,
 		LogWriter:      logWriter,
-		ProgressFunc:   func(team, msg string) { r.logger.TeamMsg(team, "%s", msg) },
+		ProgressFunc: func(team, msg string) {
+			r.emitTeamMessage(tierIdx, team, "%s", msg)
+		},
 	})
 }
 
@@ -466,37 +585,53 @@ func (r *orchestrationRun) teamModel(team *Team) string {
 	return r.cfg.Defaults.Model
 }
 
-func (r *orchestrationRun) collectTierResults(ctx context.Context, results <-chan tierResult) ([]string, error) {
+func (r *orchestrationRun) collectTierResults(ctx context.Context, tierIdx int, results <-chan tierResult) ([]string, error) {
 	var failed []string
 	for result := range results {
 		if result.err != nil {
 			failed = append(failed, result.name)
-			if err := r.markTeamFailed(ctx, result.name, result.err); err != nil {
+			if err := r.markTeamFailed(ctx, tierIdx, result.name, result.err); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if err := r.recordTeamResult(ctx, result.name, result.res); err != nil {
+		if err := r.recordTeamResult(ctx, tierIdx, result.name, result.res); err != nil {
 			return nil, err
 		}
 	}
 	return failed, nil
 }
 
-func (r *orchestrationRun) markTeamFailed(ctx context.Context, teamName string, teamErr error) error {
-	r.logger.TeamMsg(teamName, "FAILED: %s", teamErr)
+func (r *orchestrationRun) markTeamFailed(ctx context.Context, tierIdx int, teamName string, teamErr error) error {
+	r.emit(Event{
+		Kind:    EventTeamFailed,
+		Tier:    tierIdx,
+		Team:    teamName,
+		Message: fmt.Sprintf("FAILED: %s", teamErr),
+		At:      time.Now(),
+	})
 	if err := r.runService.RecordTeamFail(ctx, teamName, teamErr); err != nil {
 		return fmt.Errorf("recording failed team %s: %w", teamName, err)
 	}
 	return nil
 }
 
-func (r *orchestrationRun) recordTeamResult(ctx context.Context, teamName string, result *workspace.TeamResult) error {
+func (r *orchestrationRun) recordTeamResult(ctx context.Context, tierIdx int, teamName string, result *workspace.TeamResult) error {
+	var msg string
 	if result.NumTurns > 0 {
-		r.logger.TeamMsg(teamName, "Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
+		msg = fmt.Sprintf("Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
 	} else {
-		r.logger.TeamMsg(teamName, "Done (%s in / %s out)", fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
+		msg = fmt.Sprintf("Done (%s in / %s out)", fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))
 	}
+	r.emit(Event{
+		Kind:    EventTeamComplete,
+		Tier:    tierIdx,
+		Team:    teamName,
+		Message: msg,
+		Cost:    result.CostUSD,
+		Turns:   result.NumTurns,
+		At:      time.Now(),
+	})
 	if err := r.ws.WriteResult(result); err != nil {
 		return fmt.Errorf("writing result for %s: %w", teamName, err)
 	}
