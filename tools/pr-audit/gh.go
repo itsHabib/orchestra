@@ -110,7 +110,13 @@ func runGh(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w: gh %v: %v: %s", ErrGhUnavailable, args, err, stderr.String())
+		// Wrap the underlying exec error as well as ErrGhUnavailable so
+		// callers can errors.Is-test for both: the sentinel for the
+		// "gh failed" condition and the exec error for diagnostic
+		// content (exit code, signal). errors.Join handles the
+		// double-wrap cleanly.
+		return nil, fmt.Errorf("gh %v: %w: %s",
+			args, errors.Join(ErrGhUnavailable, err), stderr.String())
 	}
 	return stdout.Bytes(), nil
 }

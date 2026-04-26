@@ -53,7 +53,7 @@ func TestRenderMarkdown_HappyPath(t *testing.T) {
 	result := fabricatedResult("done", true)
 	gen := time.Date(2026, 4, 25, 16, 42, 11, 0, time.UTC)
 
-	out := renderMarkdown(result, pr, ".orchestra/pr-audit-21/", gen)
+	out := renderMarkdown(result, &pr, ".orchestra/pr-audit-21/", gen)
 
 	// PR header bits
 	wantSubstrings := []string{
@@ -85,7 +85,7 @@ func TestRenderMarkdown_FailedTeam(t *testing.T) {
 	result := fabricatedResult("failed", false)
 	gen := time.Date(2026, 4, 25, 16, 42, 11, 0, time.UTC)
 
-	out := renderMarkdown(result, pr, ".orchestra/pr-audit-21/", gen)
+	out := renderMarkdown(result, &pr, ".orchestra/pr-audit-21/", gen)
 
 	if !strings.Contains(out, "- **Status.** failed") {
 		t.Error("markdown missing top-level failed status")
@@ -103,7 +103,7 @@ func TestRenderMarkdown_NilResultStillEmitsHeader(t *testing.T) {
 	// partial failure. But pr-audit's own setup-error path may bail
 	// before Run is invoked, in which case we still want to render the
 	// PR header. This test pins that behavior.
-	out := renderMarkdown(nil, pr, ".orchestra/pr-audit-21/", gen)
+	out := renderMarkdown(nil, &pr, ".orchestra/pr-audit-21/", gen)
 	if !strings.Contains(out, "# PR audit: #21") {
 		t.Error("nil result: markdown missing PR header")
 	}
@@ -117,7 +117,7 @@ func TestRenderJSON_Schema(t *testing.T) {
 	result := fabricatedResult("done", true)
 	gen := time.Date(2026, 4, 25, 16, 42, 11, 0, time.UTC)
 
-	out, err := renderJSON(result, pr, ".orchestra/pr-audit-21/", gen)
+	out, err := renderJSON(result, &pr, ".orchestra/pr-audit-21/", gen)
 	if err != nil {
 		t.Fatalf("renderJSON: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestRenderJSON_FailedTeamCarriesError(t *testing.T) {
 	result := fabricatedResult("failed", false)
 	gen := time.Date(2026, 4, 25, 16, 42, 11, 0, time.UTC)
 
-	out, err := renderJSON(result, pr, ".orchestra/pr-audit-21/", gen)
+	out, err := renderJSON(result, &pr, ".orchestra/pr-audit-21/", gen)
 	if err != nil {
 		t.Fatalf("renderJSON: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestRenderJSON_NilResultEmitsFailedStatus(t *testing.T) {
 	pr := samplePR()
 	gen := time.Date(2026, 4, 25, 16, 42, 11, 0, time.UTC)
 
-	out, err := renderJSON(nil, pr, ".orchestra/pr-audit-21/", gen)
+	out, err := renderJSON(nil, &pr, ".orchestra/pr-audit-21/", gen)
 	if err != nil {
 		t.Fatalf("renderJSON: %v", err)
 	}
@@ -225,7 +225,8 @@ func TestRenderJSON_TierOrderingDeterministic(t *testing.T) {
 	}
 
 	for range 5 {
-		out, err := renderJSON(result, samplePR(), "/ws", time.Now())
+		pr := samplePR()
+		out, err := renderJSON(result, &pr, "/ws", time.Now())
 		if err != nil {
 			t.Fatalf("renderJSON: %v", err)
 		}

@@ -36,10 +36,12 @@ func modelFromEnv(fallback string) string {
 	return fallback
 }
 
-// maxTurnsFromEnv returns PR_AUDIT_MAX_TURNS as an int, or fallback when
-// unset or non-numeric. A non-numeric value silently falls back —
-// surfacing it as an error would force callers to handle env-parsing in
-// their orchestration layer.
+// maxTurnsFromEnv returns PR_AUDIT_MAX_TURNS as an int, or fallback
+// when unset, non-numeric, or non-positive. A bad value silently falls
+// back — surfacing it as an error would force callers to handle
+// env-parsing in their orchestration layer. fallback is a parameter
+// (rather than reading defaultMaxTurns directly) so tests can verify
+// the fallback path with a non-default value.
 func maxTurnsFromEnv(fallback int) int {
 	v := os.Getenv("PR_AUDIT_MAX_TURNS")
 	if v == "" {
@@ -65,8 +67,10 @@ func truncateDiff(diff string) string {
 // buildConfig assembles the orchestra.Config used by the audit run.
 // Pure function — no I/O beyond the env reads in modelFromEnv and
 // maxTurnsFromEnv. The caller is expected to validate the returned
-// config via orchestra.Validate before passing to orchestra.Run.
-func buildConfig(pr PRData) *orchestra.Config {
+// config via orchestra.Validate before passing to orchestra.Run. pr is
+// taken by pointer purely to avoid a 144-byte stack copy; the function
+// does not mutate it.
+func buildConfig(pr *PRData) *orchestra.Config {
 	context := buildAuditorContext(pr)
 
 	return &orchestra.Config{
@@ -115,8 +119,9 @@ func buildConfig(pr PRData) *orchestra.Config {
 
 // buildAuditorContext is the inline prompt context handed to the
 // auditor team. PR meta + truncated diff. Kept ASCII-fenced so the
-// model sees a clear separator between meta and diff.
-func buildAuditorContext(pr PRData) string {
+// model sees a clear separator between meta and diff. pr is taken by
+// pointer purely to avoid a 144-byte stack copy.
+func buildAuditorContext(pr *PRData) string {
 	diff := truncateDiff(pr.Diff)
 
 	files := ""

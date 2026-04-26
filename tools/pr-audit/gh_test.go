@@ -17,11 +17,10 @@ import (
 //
 // See https://npf.io/2015/06/testing-exec-command/ for the original
 // write-up of the pattern.
-func TestHelperProcess(t *testing.T) {
+func TestHelperProcess(_ *testing.T) {
 	if os.Getenv("GO_HELPER_PROCESS") != "1" {
 		return
 	}
-	defer os.Exit(0)
 
 	stdoutPath := os.Getenv("HELPER_STDOUT_FILE")
 	if stdoutPath != "" {
@@ -41,6 +40,7 @@ func TestHelperProcess(t *testing.T) {
 	if code := os.Getenv("HELPER_EXIT"); code != "" {
 		os.Exit(asExitCode(code))
 	}
+	os.Exit(0)
 }
 
 func asExitCode(s string) int {

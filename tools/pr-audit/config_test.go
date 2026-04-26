@@ -33,7 +33,7 @@ func fixturePR(t *testing.T) PRData {
 
 func TestBuildConfig_ValidatesClean(t *testing.T) {
 	pr := fixturePR(t)
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 
 	res := orchestra.Validate(cfg)
 	if !res.Valid() {
@@ -49,7 +49,7 @@ func TestBuildConfig_ValidatesClean(t *testing.T) {
 
 func TestBuildConfig_TeamAndTaskShape(t *testing.T) {
 	pr := fixturePR(t)
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 
 	if len(cfg.Teams) != 1 {
 		t.Fatalf("Teams len = %d, want 1", len(cfg.Teams))
@@ -76,7 +76,7 @@ func TestBuildConfig_TeamAndTaskShape(t *testing.T) {
 
 func TestBuildConfig_ContextEmbedsPRMetaAndDiff(t *testing.T) {
 	pr := fixturePR(t)
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 	ctx := cfg.Teams[0].Context
 
 	if !strings.Contains(ctx, pr.Title) {
@@ -96,7 +96,7 @@ func TestBuildConfig_TruncatesOversizeDiff(t *testing.T) {
 		t.Fatalf("fixture diff is %d bytes; test requires >%d to exercise truncation", len(pr.Diff), diffTruncationLimit)
 	}
 
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 	ctx := cfg.Teams[0].Context
 
 	if !strings.Contains(ctx, "[diff truncated]") {
@@ -105,7 +105,11 @@ func TestBuildConfig_TruncatesOversizeDiff(t *testing.T) {
 	// The full untruncated diff would push the team Context past the
 	// fixture diff length; assert the embedded diff is bounded by the
 	// truncation limit plus the footer.
-	embeddedDiff := ctx[strings.Index(ctx, "diff --git"):]
+	idx := strings.Index(ctx, "diff --git")
+	if idx < 0 {
+		t.Fatal("context missing diff fence")
+	}
+	embeddedDiff := ctx[idx:]
 	if len(embeddedDiff) > diffTruncationLimit+len("\n\n[diff truncated]\n")+64 {
 		t.Errorf("embedded diff length = %d, want <= %d (truncation limit + footer)", len(embeddedDiff), diffTruncationLimit)
 	}
@@ -118,7 +122,7 @@ func TestBuildConfig_LeavesUnderLimitUntouched(t *testing.T) {
 		URL:    "https://example.com/pr/42",
 		Diff:   "diff --git a/foo.go b/foo.go\n+func Foo() {}\n",
 	}
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 	ctx := cfg.Teams[0].Context
 
 	if strings.Contains(ctx, "[diff truncated]") {
@@ -144,7 +148,10 @@ func TestModelFromEnv(t *testing.T) {
 func TestMaxTurnsFromEnv(t *testing.T) {
 	t.Setenv("PR_AUDIT_MAX_TURNS", "")
 	if got := maxTurnsFromEnv(10); got != 10 {
-		t.Errorf("empty env: got %d, want 10", got)
+		t.Errorf("empty env, fallback=10: got %d, want 10", got)
+	}
+	if got := maxTurnsFromEnv(99); got != 99 {
+		t.Errorf("empty env, fallback=99: got %d, want 99 (fallback honored)", got)
 	}
 	t.Setenv("PR_AUDIT_MAX_TURNS", "25")
 	if got := maxTurnsFromEnv(10); got != 25 {
@@ -167,7 +174,7 @@ func TestMaxTurnsFromEnv(t *testing.T) {
 func TestBuildConfig_ModelFromEnvOverride(t *testing.T) {
 	t.Setenv("PR_AUDIT_MODEL", "opus")
 	pr := fixturePR(t)
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 	if cfg.Defaults.Model != "opus" {
 		t.Errorf("Defaults.Model = %q, want %q", cfg.Defaults.Model, "opus")
 	}
@@ -176,7 +183,7 @@ func TestBuildConfig_ModelFromEnvOverride(t *testing.T) {
 func TestBuildConfig_MaxTurnsFromEnvOverride(t *testing.T) {
 	t.Setenv("PR_AUDIT_MAX_TURNS", "33")
 	pr := fixturePR(t)
-	cfg := buildConfig(pr)
+	cfg := buildConfig(&pr)
 	if cfg.Defaults.MaxTurns != 33 {
 		t.Errorf("Defaults.MaxTurns = %d, want 33", cfg.Defaults.MaxTurns)
 	}

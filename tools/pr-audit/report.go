@@ -51,8 +51,10 @@ type jsonReport struct {
 // renderMarkdown renders a human-readable Markdown report from the
 // orchestra.Result. Result is non-nil even on partial failure
 // (P2.4 contract) — the renderer treats a nil result as a degenerate
-// case (no teams ran) and still emits the PR header.
-func renderMarkdown(result *orchestra.Result, pr PRData, workspace string, generatedAt time.Time) string {
+// case (no teams ran) and still emits the PR header. pr is taken by
+// pointer purely to avoid a 144-byte stack copy; the function does
+// not mutate it.
+func renderMarkdown(result *orchestra.Result, pr *PRData, workspace string, generatedAt time.Time) string {
 	var b strings.Builder
 	writeMarkdownHeader(&b, pr)
 	writeMarkdownAuditRun(&b, result, workspace)
@@ -61,7 +63,7 @@ func renderMarkdown(result *orchestra.Result, pr PRData, workspace string, gener
 	return b.String()
 }
 
-func writeMarkdownHeader(b *strings.Builder, pr PRData) {
+func writeMarkdownHeader(b *strings.Builder, pr *PRData) {
 	fmt.Fprintf(b, "# PR audit: #%d\n\n", pr.Number)
 	fmt.Fprintf(b, "- **Title.** %s\n", pr.Title)
 	if pr.URL != "" {
@@ -75,14 +77,14 @@ func writeMarkdownHeader(b *strings.Builder, pr PRData) {
 }
 
 func writeMarkdownAuditRun(b *strings.Builder, result *orchestra.Result, workspace string) {
-	status, totalCost, totalTurns, durationMs := summarize(result)
+	s := summarize(result)
 	fmt.Fprintln(b, "## Audit run")
 	fmt.Fprintln(b)
-	fmt.Fprintf(b, "- **Status.** %s\n", status)
+	fmt.Fprintf(b, "- **Status.** %s\n", s.Status)
 	fmt.Fprintf(b, "- **Workspace.** %s\n", workspace)
-	fmt.Fprintf(b, "- **Total cost.** $%.4f USD\n", totalCost)
-	fmt.Fprintf(b, "- **Total turns.** %d\n", totalTurns)
-	fmt.Fprintf(b, "- **Duration.** %dms\n", durationMs)
+	fmt.Fprintf(b, "- **Total cost.** $%.4f USD\n", s.TotalCost)
+	fmt.Fprintf(b, "- **Total turns.** %d\n", s.TotalTurns)
+	fmt.Fprintf(b, "- **Duration.** %dms\n", s.DurationMs)
 	fmt.Fprintln(b)
 }
 
@@ -91,7 +93,12 @@ func writeMarkdownTeams(b *strings.Builder, result *orchestra.Result) {
 		return
 	}
 	for _, name := range orderedTeamNames(result) {
-		t := result.Teams[name]
+		// Index into the map rather than `for _, t := range Teams` to
+		// avoid a 296-byte copy per iteration. TeamResult embeds
+		// TeamState which is itself wide; the gocritic linter flags
+		// the copy.
+		teams := result.Teams
+		t := teams[name]
 		fmt.Fprintf(b, "## %s\n\n", name)
 		fmt.Fprintf(b, "- **Status.** %s\n", nonEmpty(t.Status, "(unknown)"))
 		fmt.Fprintf(b, "- **Turns.** %d\n", t.NumTurns)
@@ -119,8 +126,10 @@ func writeMarkdownFooter(b *strings.Builder, generatedAt time.Time) {
 // the Markdown report. As with renderMarkdown, a nil result produces a
 // degenerate document with empty teams and status="failed" so callers
 // distinguish "audit ran" from "audit didn't run" via the status field.
-func renderJSON(result *orchestra.Result, pr PRData, workspace string, generatedAt time.Time) ([]byte, error) {
-	status, totalCost, totalTurns, durationMs := summarize(result)
+// pr is taken by pointer purely to avoid a 144-byte stack copy; the
+// function does not mutate it.
+func renderJSON(result *orchestra.Result, pr *PRData, workspace string, generatedAt time.Time) ([]byte, error) {
+	s := summarize(result)
 	teams := teamsJSON(result)
 	doc := jsonReport{
 		PR: reportMeta{
@@ -132,11 +141,11 @@ func renderJSON(result *orchestra.Result, pr PRData, workspace string, generated
 			Additions:   pr.Additions,
 			Deletions:   pr.Deletions,
 		},
-		Status:      status,
+		Status:      s.Status,
 		Workspace:   workspace,
-		CostUSD:     totalCost,
-		Turns:       totalTurns,
-		DurationMs:  durationMs,
+		CostUSD:     s.TotalCost,
+		Turns:       s.TotalTurns,
+		DurationMs:  s.DurationMs,
 		Teams:       teams,
 		GeneratedAt: generatedAt.UTC(),
 	}
@@ -147,24 +156,35 @@ func renderJSON(result *orchestra.Result, pr PRData, workspace string, generated
 	return out, nil
 }
 
-// summarize reduces a *Result to the four scalar fields the renderers
-// share: overall status (success / failed), total cost, total turns,
-// and duration. A team in any state other than "done" causes status to
-// be "failed".
-func summarize(result *orchestra.Result) (status string, totalCost float64, totalTurns int, durationMs int64) {
+// runSummary is the four scalar fields the Markdown and JSON renderers
+// share: overall status (success / failed), summed cost, summed turns,
+// and duration. Returned as a struct (not named returns, which the
+// linter forbids) so future additions don't shift the call signature.
+type runSummary struct {
+	Status     string
+	TotalCost  float64
+	TotalTurns int
+	DurationMs int64
+}
+
+// summarize reduces a *Result to a runSummary. A team in any state
+// other than "done" forces overall Status to "failed". A nil result
+// is treated as a degenerate failure with zero counts — keeps the
+// renderers safe to call before the engine has produced anything.
+func summarize(result *orchestra.Result) runSummary {
 	if result == nil {
-		return "failed", 0, 0, 0
+		return runSummary{Status: "failed"}
 	}
-	status = "success"
-	for _, t := range result.Teams {
-		totalCost += t.CostUSD
-		totalTurns += t.NumTurns
+	out := runSummary{Status: "success", DurationMs: result.DurationMs}
+	for name := range result.Teams {
+		t := result.Teams[name]
+		out.TotalCost += t.CostUSD
+		out.TotalTurns += t.NumTurns
 		if t.Status != "done" {
-			status = "failed"
+			out.Status = "failed"
 		}
 	}
-	durationMs = result.DurationMs
-	return status, totalCost, totalTurns, durationMs
+	return out
 }
 
 // teamsJSON flattens result.Teams into a deterministically-ordered
@@ -177,6 +197,9 @@ func teamsJSON(result *orchestra.Result) []reportTeam {
 	}
 	out := make([]reportTeam, 0, len(result.Teams))
 	for _, name := range orderedTeamNames(result) {
+		// Index into the map rather than `for _, t := range Teams`
+		// to avoid a 296-byte copy per iteration; TeamResult embeds
+		// the wide TeamState.
 		t := result.Teams[name]
 		out = append(out, reportTeam{
 			Name:    name,
