@@ -7,6 +7,41 @@ stable. Each release that touches the SDK surface gets an entry here.
 
 ## Unreleased
 
+### Experimental: breaking — `pkg/orchestra` validation result reshape (P2.5)
+
+The P2.5 chapter collapses the `(*Config, []Warning, error)` and
+`([]Warning, error)` tuples returned by `LoadConfig` and `Validate` into
+a single `*ValidationResult` carrying the parsed config, structured
+warnings, and structured errors. The reshape lifts hard validation
+errors to a typed `ConfigError` with the same shape as `Warning` and
+adds a `Field []string` path on both, so SDK consumers can render
+structured reports without parsing strings out of `err.Error()`. CLI
+output is byte-identical: warnings render the same and `result.Err()`
+preserves the existing `"validation errors:\n  - ..."` format.
+
+- **Reshaped**:
+  - `LoadConfig(path) (*ValidationResult, error)` — the `error` return
+    is now reserved for I/O / parse failures (file not found, malformed
+    YAML); structural validation issues live in `result.Errors`.
+  - `Validate(cfg *Config) *ValidationResult` — no `error` return;
+    `result.Err()` carries it. A nil `cfg` is treated as a hard
+    validation failure (one `ConfigError` entry) rather than a panic or
+    a synthesized error.
+  - `Warning` gains `Field []string`, the structured YAML path to the
+    offending node (empty for project-level issues). `Team` and
+    `Message` are unchanged; `String()` formatting is unchanged.
+- **Added**:
+  - `ValidationResult` type aliased from `internal/config.Result`, with
+    `Valid() bool` and `Err() error` methods.
+  - `ConfigError` type aliased from `internal/config.ConfigError` —
+    parallel to `Warning` with the same `{Field, Team, Message}` shape.
+  - `ErrInvalidConfig` sentinel — wrapped by `result.Err()` so callers
+    can `errors.Is(err, orchestra.ErrInvalidConfig)`.
+- **Removed**: the previous `(*Config, []Warning, error)` shape on
+  `LoadConfig` and the `([]Warning, error)` shape on `Validate`. There
+  is no back-compat shim — callers migrate as documented in
+  `docs/features/11-p25-validation-result.md`.
+
 ### Experimental: breaking — `pkg/orchestra` operational SDK (P2.4)
 
 The P2.4 chapter reshapes the SDK around an asynchronous `Handle` and adds

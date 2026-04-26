@@ -5,18 +5,21 @@
 //
 // One-shot blocking use:
 //
-//	cfg, warnings, err := orchestra.LoadConfig("orchestra.yaml")
-//	for _, w := range warnings {
+//	res, err := orchestra.LoadConfig("orchestra.yaml")
+//	if err != nil {
+//	    return err // I/O or parse failure
+//	}
+//	for _, w := range res.Warnings {
 //	    fmt.Fprintln(os.Stderr, w)
 //	}
+//	if !res.Valid() {
+//	    return res.Err()
+//	}
+//	out, err := orchestra.Run(ctx, res.Config)
 //	if err != nil {
 //	    return err
 //	}
-//	res, err := orchestra.Run(ctx, cfg)
-//	if err != nil {
-//	    return err
-//	}
-//	for name, team := range res.Teams {
+//	for name, team := range out.Teams {
 //	    fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
 //	        name, team.Status, team.NumTurns, team.CostUSD)
 //	}
