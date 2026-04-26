@@ -4,11 +4,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/event"
+	"github.com/itsHabib/orchestra/internal/messaging"
+	"github.com/itsHabib/orchestra/internal/spawner"
 )
+
+// steeringSendUserMessage indirects the MA send so steering tests can stub
+// the network call without booting a fake SDK server. Production callers leave
+// it pointing at [spawner.SendUserMessage].
+var steeringSendUserMessage = spawner.SendUserMessage
+
+// steeringSendUserInterrupt is the corresponding indirection for
+// [spawner.SendUserInterrupt].
+var steeringSendUserInterrupt = spawner.SendUserInterrupt
+
+// steeringSendRetries is the at-least-once retry budget [Handle.Send] applies
+// when delivering a user.message to the MA backend. Mirrors
+// defaultSteerRetryAttempts in cmd/msg.go so SDK and CLI deliveries observe
+// the same shape.
+const steeringSendRetries = 4
+
+// steeringSnapshotTimeout bounds the snapshot read used by [Handle.Send] and
+// [Handle.Interrupt] to verify team status before dispatching. Matches
+// [Handle.Status]'s 100ms budget — this is a cheap state-file read.
+const steeringSnapshotTimeout = 100 * time.Millisecond
+
+// steeringDispatchTimeout bounds the steering dispatch itself: a local-bus
+// write or an MA Send/Interrupt round-trip. The retry helper in
+// internal/spawner.SendUserMessage uses this same context to derive its own
+// per-attempt deadlines.
+const steeringDispatchTimeout = 30 * time.Second
 
 // Run executes the workflow described by cfg and returns its result. It is
 // a thin convenience for one-shot blocking callers, equivalent to:
@@ -155,6 +185,18 @@ type Handle struct {
 	// buffer since the last EventDropped emission. Reset to zero each time
 	// the dropped indicator is sent. Guarded by emitMu.
 	dropCount int
+
+	// backend records the resolved backend kind so Send/Interrupt can route
+	// to the right transport without re-reading the config. Set by the
+	// engine when it wires the steering dependencies.
+	backend string
+	// bus is the local-backend file message bus; nil under MA.
+	bus *messaging.Bus
+	// busInbox maps team name to its inbox folder name (e.g. "2-frontend").
+	// nil under MA.
+	busInbox map[string]string
+	// sessions is the MA session-events sender; nil under local.
+	sessions spawner.SessionEventSender
 }
 
 // snapshotter is the minimal contract the Handle needs from the run
@@ -342,30 +384,186 @@ func (h *Handle) deliverLocked(ev Event) {
 }
 
 // Send delivers a steering message to a running team — equivalent of
-// `orchestra msg <team> <message>` from the CLI.
+// `orchestra msg <team> <message>` from the CLI. The team must currently
+// be in status "running"; otherwise Send returns [ErrTeamNotRunning].
+// After [Handle.Wait] has returned, Send returns [ErrClosed].
 //
-// PR 1 stub: always returns [ErrClosed]. The real implementation lands
-// in PR 3 and will return [ErrTeamNotRunning] when the team's state is
-// not "running", or [ErrClosed] after [Handle.Wait] has returned.
+// On the local backend Send writes a [messaging.MsgCorrection] message
+// from sender "0-human" to the team's file-bus inbox using atomic
+// writes, mirroring `orchestra msg`'s on-disk shape so a running team
+// reading its inbox observes the same payload. Delivery is best-effort —
+// the team consumes its inbox only at injection points, so the message
+// is read whenever the team next checks for steering.
+//
+// On the managed-agents backend Send delivers a user.message event to
+// the team's session via [spawner.SendUserMessage], with the same
+// at-least-once retry budget the CLI uses (5 total HTTP attempts). The
+// agent may observe the same message twice in the rare 5xx-then-success
+// case.
 //
 // Experimental.
 func (h *Handle) Send(team, message string) error {
-	_ = team
-	_ = message
-	return ErrClosed
+	team = trimTeam(team)
+	if team == "" {
+		return errors.New("orchestra: empty team name")
+	}
+	select {
+	case <-h.done:
+		return ErrClosed
+	default:
+	}
+
+	deps, err := h.steeringDeps()
+	if err != nil {
+		return err
+	}
+	ts, ok := deps.state.Teams[team]
+	if !ok || ts.Status != "running" {
+		return ErrTeamNotRunning
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), steeringDispatchTimeout)
+	defer cancel()
+
+	if deps.backend == BackendManagedAgents {
+		if deps.sessions == nil {
+			return errors.New("orchestra: managed-agents session events client unavailable")
+		}
+		if ts.SessionID == "" {
+			return ErrTeamNotRunning
+		}
+		return steeringSendUserMessage(ctx, deps.sessions, ts.SessionID, message, steeringSendRetries)
+	}
+
+	if deps.bus == nil {
+		return errors.New("orchestra: local message bus unavailable")
+	}
+	folder, ok := deps.busInbox[team]
+	if !ok || folder == "" {
+		return ErrTeamNotRunning
+	}
+	return deps.bus.Send(newSteeringBusMessage(folder, message, time.Now().UTC()))
 }
 
 // Interrupt asks a running team to stop its current turn and return
 // control to the engine — equivalent of `orchestra interrupt <team>`.
+// Like [Handle.Send], the team must be in status "running"; otherwise
+// Interrupt returns [ErrTeamNotRunning]. After [Handle.Wait] has
+// returned, Interrupt returns [ErrClosed].
 //
-// PR 1 stub: always returns [ErrClosed]. The real implementation lands
-// in PR 3 and will return [ErrTeamNotRunning] when the team's state is
-// not "running", or [ErrClosed] after [Handle.Wait] has returned.
+// Interrupt is only meaningful for the managed-agents backend, which
+// has a steering channel mid-turn. Under the local backend Interrupt
+// returns [ErrInterruptNotSupported] — the local subprocess has no
+// out-of-band cancellation; cancellation works at the run level via
+// [Handle.Cancel].
+//
+// MA delivery is at-most-once (no retries) — a duplicate interrupt
+// could double-cancel a recovery cycle.
 //
 // Experimental.
 func (h *Handle) Interrupt(team string) error {
-	_ = team
-	return ErrClosed
+	team = trimTeam(team)
+	if team == "" {
+		return errors.New("orchestra: empty team name")
+	}
+	select {
+	case <-h.done:
+		return ErrClosed
+	default:
+	}
+
+	deps, err := h.steeringDeps()
+	if err != nil {
+		return err
+	}
+	if deps.backend != BackendManagedAgents {
+		return ErrInterruptNotSupported
+	}
+	ts, ok := deps.state.Teams[team]
+	if !ok || ts.Status != "running" {
+		return ErrTeamNotRunning
+	}
+	if ts.SessionID == "" {
+		return ErrTeamNotRunning
+	}
+	if deps.sessions == nil {
+		return errors.New("orchestra: managed-agents session events client unavailable")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), steeringDispatchTimeout)
+	defer cancel()
+	return steeringSendUserInterrupt(ctx, deps.sessions, ts.SessionID, 0)
+}
+
+// steeringHandleDeps bundles the per-call steering inputs — backend kind,
+// run-state snapshot, and the per-backend transport — so Send and
+// Interrupt can read them under a single RLock acquisition.
+type steeringHandleDeps struct {
+	state    *RunState
+	backend  string
+	bus      *messaging.Bus
+	busInbox map[string]string
+	sessions spawner.SessionEventSender
+}
+
+// steeringDeps captures the steering-relevant Handle fields under the
+// read lock and reads a state snapshot from the run service. Returns
+// ErrTeamNotRunning if the engine hasn't wired the run service yet (a
+// steering call before any tier began).
+func (h *Handle) steeringDeps() (steeringHandleDeps, error) {
+	h.mu.RLock()
+	deps := steeringHandleDeps{
+		backend:  h.backend,
+		bus:      h.bus,
+		busInbox: h.busInbox,
+		sessions: h.sessions,
+	}
+	svc := h.runService
+	h.mu.RUnlock()
+	if svc == nil {
+		return deps, ErrTeamNotRunning
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), steeringSnapshotTimeout)
+	defer cancel()
+	state, err := svc.Snapshot(ctx)
+	if err != nil {
+		return deps, fmt.Errorf("orchestra: steering snapshot: %w", err)
+	}
+	if state == nil {
+		return deps, ErrTeamNotRunning
+	}
+	deps.state = state
+	return deps, nil
+}
+
+// trimTeam normalizes the team argument: strips surrounding whitespace.
+// Defensive against callers that pass strings ending with newlines.
+func trimTeam(team string) string {
+	return strings.TrimSpace(team)
+}
+
+// newSteeringBusMessage constructs the messaging.Message that
+// [Handle.Send] writes to a team's local-backend inbox. Sender is
+// "0-human" to mirror what the orchestra-msg skill writes via the file
+// bus. The ID encodes the wall-clock millisecond plus the type so it
+// sorts chronologically alongside other inbox entries.
+func newSteeringBusMessage(recipientFolder, content string, now time.Time) *messaging.Message {
+	msgType := messaging.MsgCorrection
+	id := strconv.FormatInt(now.UnixMilli(), 10) + "-0-human-" + string(msgType)
+	subject := content
+	if len(subject) > 60 {
+		subject = subject[:60]
+	}
+	return &messaging.Message{
+		ID:        id,
+		Sender:    "0-human",
+		Recipient: recipientFolder,
+		Type:      msgType,
+		Subject:   subject,
+		Content:   content,
+		Timestamp: now,
+		Read:      false,
+	}
 }
 
 // setPhase atomically updates the run phase. Called from the engine
@@ -389,6 +587,24 @@ func (h *Handle) setCurrentTier(tierIdx int) {
 func (h *Handle) setRunService(s snapshotter) {
 	h.mu.Lock()
 	h.runService = s
+	h.mu.Unlock()
+}
+
+// setSteering wires the per-backend transports the Handle's Send and
+// Interrupt methods need. Called by the engine once initLocalBackend or
+// initManagedAgentsBackend has produced its dependencies. backend is
+// expected to match cfg.Backend.Kind ("local" or "managed_agents");
+// values are guarded by mu so concurrent Send calls don't race the
+// initial assignment.
+//
+// Either bus+inbox (local backend) or sessions (MA backend) should be
+// non-nil; the unused side is left zero.
+func (h *Handle) setSteering(backend string, bus *messaging.Bus, inbox map[string]string, sessions spawner.SessionEventSender) {
+	h.mu.Lock()
+	h.backend = backend
+	h.bus = bus
+	h.busInbox = inbox
+	h.sessions = sessions
 	h.mu.Unlock()
 }
 
@@ -540,3 +756,11 @@ var ErrTeamNotRunning = errors.New("orchestra: team not running")
 //
 // Experimental.
 var ErrClosed = errors.New("orchestra: handle closed")
+
+// ErrInterruptNotSupported is returned by [Handle.Interrupt] under the
+// local backend. The local subprocess transport does not expose a
+// mid-turn steering channel; cancel the run as a whole via
+// [Handle.Cancel] when local interruption is needed.
+//
+// Experimental.
+var ErrInterruptNotSupported = errors.New("orchestra: interrupt not supported for local backend")
