@@ -308,6 +308,74 @@ func TestRun_TakesOwnershipOfConfig(t *testing.T) {
 	}
 }
 
+// TestRun_EquivalentToStartPlusWait asserts that Run is a thin
+// convenience over Start + Wait — calling either path against equivalent
+// configs in independent workspaces produces equivalent Result shapes.
+func TestRun_EquivalentToStartPlusWait(t *testing.T) {
+	binDir := t.TempDir()
+	writeMockClaude(t, binDir, mockSuccessStream(), nil, 0, 0)
+	withPath(t, binDir)
+
+	// Run path.
+	runDir := t.TempDir()
+	runConfig := writeOneTeamConfig(t, runDir)
+	runCfg, _, err := orchestra.LoadConfig(runConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, runDir)
+	runRes, runErr := orchestra.Run(context.Background(), runCfg)
+	if runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if runRes == nil {
+		t.Fatal("Run returned nil result")
+	}
+
+	// Start + Wait path against an independent workspace.
+	startDir := t.TempDir()
+	startConfig := writeOneTeamConfig(t, startDir)
+	startCfg, _, err := orchestra.LoadConfig(startConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, startDir)
+	h, err := orchestra.Start(context.Background(), startCfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	startRes, startErr := h.Wait()
+	if startErr != nil {
+		t.Fatalf("Wait: %v", startErr)
+	}
+	if startRes == nil {
+		t.Fatal("Start+Wait returned nil result")
+	}
+
+	// Equivalent shapes: same project, same team set, same per-team
+	// status and turn count. Run vs Start should be observationally
+	// indistinguishable for blocking callers.
+	if runRes.Project != startRes.Project {
+		t.Errorf("Project differs: Run=%q Start=%q", runRes.Project, startRes.Project)
+	}
+	if len(runRes.Teams) != len(startRes.Teams) {
+		t.Errorf("Teams len differs: Run=%d Start=%d", len(runRes.Teams), len(startRes.Teams))
+	}
+	for name, runTeam := range runRes.Teams {
+		startTeam, ok := startRes.Teams[name]
+		if !ok {
+			t.Errorf("team %q present in Run result but missing from Start+Wait result", name)
+			continue
+		}
+		if runTeam.Status != startTeam.Status {
+			t.Errorf("team %q Status differs: Run=%q Start=%q", name, runTeam.Status, startTeam.Status)
+		}
+		if runTeam.NumTurns != startTeam.NumTurns {
+			t.Errorf("team %q NumTurns differs: Run=%d Start=%d", name, runTeam.NumTurns, startTeam.NumTurns)
+		}
+	}
+}
+
 // TestValidate_StandaloneCallerBuiltConfig exercises Validate on a
 // programmatically-built config — the path consumers without a YAML
 // file would take.

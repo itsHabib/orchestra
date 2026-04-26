@@ -101,10 +101,10 @@ const (
 	BackendManagedAgents = "managed_agents"
 )
 
-// ErrRunInProgress is returned by [Run] when another invocation against the
-// same workspace within the same process is already in flight. Different
-// workspace directories are independent. The cross-process case is handled
-// by the workspace exclusive lock in the underlying store.
+// ErrRunInProgress is returned by [Run] or [Start] when another invocation
+// against the same workspace within the same process is already in flight.
+// Different workspace directories are independent. The cross-process case
+// is handled by the workspace exclusive lock in the underlying store.
 //
 // Experimental: this sentinel is kept stable across breaking surface
 // changes so callers can rely on errors.Is checks.
