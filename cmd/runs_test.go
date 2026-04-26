@@ -10,6 +10,58 @@ import (
 	"github.com/itsHabib/orchestra/internal/store"
 )
 
+// TestBuildRunRecordForShow_ResolvesActiveAndArchive exercises the
+// runs-show migration helper that wraps orchestra.LoadRun. The cmd-side
+// renderer needs a runRecord with active/dir/modifiedAt populated, and
+// the SDK helper deliberately doesn't surface those — this test pins
+// the cmd-side reconstruction logic.
+func TestBuildRunRecordForShow_ResolvesActiveAndArchive(t *testing.T) {
+	workspace := t.TempDir()
+	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
+	tierZero := 0
+	activeState := &store.RunState{
+		Project: "active-project", RunID: "active-run", StartedAt: now,
+		Teams: map[string]store.TeamState{
+			"api": {Status: "running", Tier: &tierZero},
+		},
+	}
+	writeRunState(t, filepath.Join(workspace, "state.json"), activeState)
+	oldState := &store.RunState{
+		Project: "old-project", RunID: "old-run", StartedAt: now.Add(-2 * time.Hour),
+		Teams: map[string]store.TeamState{
+			"worker": {Status: "done", Tier: &tierZero},
+		},
+	}
+	writeRunState(t, filepath.Join(workspace, "archive", "old-run", "state.json"), oldState)
+
+	t.Run("active alias", func(t *testing.T) {
+		record, err := buildRunRecordForShow(workspace, "active", activeState)
+		if err != nil {
+			t.Fatalf("buildRunRecordForShow active: %v", err)
+		}
+		if !record.active || record.id != "active-run" {
+			t.Errorf("active record: %+v, want active-run with active=true", record)
+		}
+		if record.dir != workspace {
+			t.Errorf("active dir=%q, want %q", record.dir, workspace)
+		}
+	})
+
+	t.Run("explicit archived id", func(t *testing.T) {
+		record, err := buildRunRecordForShow(workspace, "old-run", oldState)
+		if err != nil {
+			t.Fatalf("buildRunRecordForShow archived: %v", err)
+		}
+		if record.active || record.id != "old-run" {
+			t.Errorf("archived record: %+v, want old-run with active=false", record)
+		}
+		wantDir := filepath.Join(workspace, "archive", "old-run")
+		if record.dir != wantDir {
+			t.Errorf("archived dir=%q, want %q", record.dir, wantDir)
+		}
+	})
+}
+
 func TestLoadRunRecordsReadsActiveAndArchive(t *testing.T) {
 	workspace := t.TempDir()
 	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)

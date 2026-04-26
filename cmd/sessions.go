@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/spawner"
+	"github.com/itsHabib/orchestra/pkg/orchestra"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +41,10 @@ var sessionsLsCmd = &cobra.Command{
 }
 
 func runSessionsLs(ctx context.Context, out io.Writer) error {
+	// Gate on backend before fetching rows so local-backend workspaces
+	// surface the same ErrLocalBackend they always have. orchestra.ListSessions
+	// returns an empty slice (no error) for that case to match the SDK
+	// contract; the CLI applies the stricter check.
 	state, err := loadActiveRunState(ctx, sessionsWorkspaceFlag)
 	if err != nil {
 		if errors.Is(err, spawner.ErrNoActiveRun) {
@@ -52,12 +57,19 @@ func runSessionsLs(ctx context.Context, out io.Writer) error {
 		return spawner.ErrLocalBackend
 	}
 
-	rows := spawner.ListTeamSessions(state)
+	// orchestra.ListSessions takes only a workspace dir — the underlying
+	// filestore read derives its own short-lived context per the SDK's
+	// "safe to call any time" contract. The cmd ctx remains the cobra
+	// invocation context, used elsewhere in the CLI.
+	rows, err := orchestra.ListSessions(sessionsWorkspaceFlag) //nolint:contextcheck // SDK signature deliberately excludes ctx; helper bounds its own read.
+	if err != nil {
+		return err
+	}
 	if !sessionsLsAllFlag {
 		filtered := rows[:0]
-		for _, row := range rows {
-			if row.Steerable {
-				filtered = append(filtered, row)
+		for i := range rows {
+			if rows[i].Steerable {
+				filtered = append(filtered, rows[i])
 			}
 		}
 		rows = filtered
@@ -66,13 +78,14 @@ func runSessionsLs(ctx context.Context, out io.Writer) error {
 	return nil
 }
 
-func printSessionsTable(w io.Writer, rows []spawner.TeamSession) {
+func printSessionsTable(w io.Writer, rows []orchestra.SessionInfo) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "TEAM\tSTATUS\tSTEERABLE\tSESSION_ID\tAGENT_ID\tLAST_EVENT_ID\tLAST_EVENT_AT")
-	for _, row := range rows {
+	for i := range rows {
+		row := &rows[i]
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			row.Team,
-			displayOrDash(row.Status),
+			displayOrDash(row.TeamStatus),
 			yesNo(row.Steerable),
 			displayOrDash(row.SessionID),
 			displayOrDash(row.AgentID),
