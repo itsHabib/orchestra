@@ -282,26 +282,32 @@ func TestValidationResult_ErrIsErrInvalidConfig(t *testing.T) {
 }
 
 // TestValidationResult_ErrFormatPreservesCLIByteOutput asserts that
-// res.Err().Error() produces a string starting with the expected
-// "validation errors:\n  - " prefix and contains each error's
-// String() form. CLI output relies on this for byte parity.
+// res.Err().Error() produces the exact pre-P2.5 multi-line format the
+// CLI prints. The previous version of this test only checked that the
+// formatted string contained each error's own String() output — a
+// tautology that missed a doubled `team "x":` prefix regression flagged
+// in PR #21 review. Lock the format down byte-for-byte against a fixed
+// fixture so any future drift trips the test.
 func TestValidationResult_ErrFormatPreservesCLIByteOutput(t *testing.T) {
 	cfg := &Config{
+		// project name missing → no-team error
+		Backend: Backend{Kind: "bogus"},
 		Teams: []Team{{
 			Name:      "a",
-			Tasks:     []Task{{Summary: "x", Details: "d", Verify: "v"}},
-			DependsOn: []string{"a"},
+			DependsOn: []string{"ghost"},
+			// no tasks → "at least one task is required"
 		}},
 	}
-	res := cfg.Validate()
-	got := res.Err().Error()
-	if !strings.HasPrefix(got, "validation errors:\n  - ") {
-		t.Fatalf("Err() string lacks CLI prefix: %q", got)
-	}
-	for _, e := range res.Errors {
-		if !strings.Contains(got, e.String()) {
-			t.Errorf("Err() string missing %q: full=%q", e.String(), got)
-		}
+	want := strings.Join([]string{
+		"validation errors:",
+		`  - project name is required`,
+		`  - backend.kind must be one of: local, managed_agents (got "bogus")`,
+		`  - team "a": at least one task is required`,
+		`  - team "a": depends on unknown team "ghost"`,
+	}, "\n")
+	got := cfg.Validate().Err().Error()
+	if got != want {
+		t.Fatalf("Err() format drift\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 

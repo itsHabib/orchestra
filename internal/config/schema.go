@@ -377,7 +377,7 @@ func validateTasks(t *Team, teamIdx int) validationResult {
 		errs = append(errs, ConfigError{
 			Field:   append(append([]string{}, teamFieldPrefix...), "tasks"),
 			Team:    t.Name,
-			Message: fmt.Sprintf("team %q: at least one task is required", t.Name),
+			Message: "at least one task is required",
 		})
 	}
 	for i, task := range t.Tasks {
@@ -386,7 +386,7 @@ func validateTasks(t *Team, teamIdx int) validationResult {
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, taskFieldPrefix...), "summary"),
 				Team:    t.Name,
-				Message: fmt.Sprintf("team %q: task %d has empty summary", t.Name, i+1),
+				Message: fmt.Sprintf("task %d has empty summary", i+1),
 			})
 		}
 		if task.Details == "" {
@@ -415,14 +415,14 @@ func validateDependencies(t *Team, teamIdx int, seen map[string]bool) []ConfigEr
 			errs = append(errs, ConfigError{
 				Field:   field,
 				Team:    t.Name,
-				Message: fmt.Sprintf("team %q: cannot depend on itself", t.Name),
+				Message: "cannot depend on itself",
 			})
 		}
 		if !seen[dep] {
 			errs = append(errs, ConfigError{
 				Field:   field,
 				Team:    t.Name,
-				Message: fmt.Sprintf("team %q: depends on unknown team %q", t.Name, dep),
+				Message: fmt.Sprintf("depends on unknown team %q", dep),
 			})
 		}
 	}

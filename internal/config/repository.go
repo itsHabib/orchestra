@@ -80,7 +80,7 @@ func (c *Config) validateRepositoryHard() []ConfigError {
 				errs = append(errs, ConfigError{
 					Field:   []string{"backend", "managed_agents", "open_pull_requests"},
 					Team:    c.Teams[i].Name,
-					Message: fmt.Sprintf("team %q: backend.managed_agents.open_pull_requests requires a repository (set backend.managed_agents.repository or environment_override.repository)", c.Teams[i].Name),
+					Message: "backend.managed_agents.open_pull_requests requires a repository (set backend.managed_agents.repository or environment_override.repository)",
 				})
 			}
 		}
