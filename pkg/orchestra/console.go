@@ -2,6 +2,7 @@ package orchestra
 
 import (
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -28,7 +29,17 @@ var printEventLoggers = &printEventState{
 // loggerFor returns (and lazily constructs) the Logger associated with w.
 // PrintEvent uses one Logger per writer so output written to different
 // destinations doesn't share team-color state.
+//
+// Some io.Writer implementations have non-comparable underlying types
+// (e.g. structs with slice or map fields) — using one as a map key would
+// panic at runtime. Such writers skip the cache and get a fresh Logger
+// per call; they lose stable team-color state but the program does not
+// crash. Pointer-typed writers like os.Stdout (the CLI path) take the
+// fast cached path.
 func (s *printEventState) loggerFor(w io.Writer) *olog.Logger {
+	if !reflect.TypeOf(w).Comparable() {
+		return olog.NewWithWriter(w)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if l, ok := s.loggers[w]; ok {
