@@ -17,10 +17,16 @@ import (
 // steeringSendUserMessage indirects the MA send so steering tests can stub
 // the network call without booting a fake SDK server. Production callers leave
 // it pointing at [spawner.SendUserMessage].
+//
+// NOT goroutine-safe: tests that mutate this var must run sequentially. Today
+// only local-backend steering tests exist so there is no contention; before
+// adding parallel MA steering tests, switch to per-call injection or an
+// atomic.Pointer wrapper.
 var steeringSendUserMessage = spawner.SendUserMessage
 
 // steeringSendUserInterrupt is the corresponding indirection for
-// [spawner.SendUserInterrupt].
+// [spawner.SendUserInterrupt]. Same goroutine-safety caveat as
+// [steeringSendUserMessage].
 var steeringSendUserInterrupt = spawner.SendUserInterrupt
 
 // steeringSendRetries is the at-least-once retry budget [Handle.Send] applies
@@ -551,8 +557,10 @@ func newSteeringBusMessage(recipientFolder, content string, now time.Time) *mess
 	msgType := messaging.MsgCorrection
 	id := strconv.FormatInt(now.UnixMilli(), 10) + "-0-human-" + string(msgType)
 	subject := content
-	if len(subject) > 60 {
-		subject = subject[:60]
+	// Truncate at rune boundaries so multibyte characters straddling byte 60
+	// (accents, emoji, CJK) don't leave invalid UTF-8 behind in the inbox.
+	if runes := []rune(subject); len(runes) > 60 {
+		subject = string(runes[:60])
 	}
 	return &messaging.Message{
 		ID:        id,
