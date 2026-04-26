@@ -284,7 +284,7 @@ const (
 	PhaseInitializing Phase = "initializing"
 	// PhaseRunning indicates that the engine has begun dispatching
 	// tiers. It remains the phase until all tiers finish (success or
-	// failure) or the run is cancelled.
+	// failure) or the run is canceled.
 	PhaseRunning Phase = "running"
 	// PhaseCompleting indicates that all tiers have returned and the
 	// engine is settling: stopping the coordinator, building the final

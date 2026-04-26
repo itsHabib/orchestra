@@ -2,6 +2,7 @@ package orchestra_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +12,7 @@ import (
 )
 
 // TestStart_Cancel_ReturnsPartialResult exercises the Cancel path: a
-// long-running mock-claude is cancelled mid-tier via h.Cancel(); Wait()
+// long-running mock-claude is canceled mid-tier via h.Cancel(); Wait()
 // must still return a non-nil Result reflecting partial state alongside
 // a non-nil error. Mirrors TestRun_ContextCancellationReturnsPartialResult
 // but drives cancellation through the Handle instead of the caller's ctx.
@@ -42,7 +43,7 @@ func TestStart_Cancel_ReturnsPartialResult(t *testing.T) {
 
 	res, err := h.Wait()
 	if err == nil {
-		t.Fatal("Wait: expected error from cancelled run, got nil")
+		t.Fatal("Wait: expected error from canceled run, got nil")
 	}
 	if res == nil {
 		t.Fatal("Wait: expected partial result after Cancel, got nil")
@@ -51,7 +52,7 @@ func TestStart_Cancel_ReturnsPartialResult(t *testing.T) {
 		t.Errorf("Project=%q, want minimal-sdk", res.Project)
 	}
 	if _, ok := res.Teams["solo"]; !ok {
-		t.Errorf("solo team missing from cancelled-run Result.Teams: %+v", res.Teams)
+		t.Errorf("solo team missing from canceled-run Result.Teams: %+v", res.Teams)
 	}
 
 	// Wait again — the (*Result, error) tuple should be cached, not
@@ -60,7 +61,7 @@ func TestStart_Cancel_ReturnsPartialResult(t *testing.T) {
 	if res2 != res {
 		t.Errorf("second Wait returned different *Result pointer (%p vs %p)", res2, res)
 	}
-	if err2 != err {
+	if !errors.Is(err2, err) {
 		t.Errorf("second Wait returned different error: first=%v second=%v", err, err2)
 	}
 }
