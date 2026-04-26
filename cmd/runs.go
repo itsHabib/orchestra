@@ -79,6 +79,11 @@ func workspaceForRunsCmd() string {
 // already carries the full [orchestra.RunState] pointer plus the active
 // flag and file mtime; we just rewrap into the cmd-internal record type
 // so the existing renderer keeps producing byte-identical rows.
+//
+// Archive directories are derived from RunSummary.RunID, which is the
+// state's RunID when present and the archive directory name otherwise.
+// In normal operation the two agree; legacy archives or manually edited
+// state files where they diverge would compute the wrong dir here.
 func summariesToRecords(summaries []orchestra.RunSummary) []runRecord {
 	workspace := workspaceForRunsCmd()
 	out := make([]runRecord, 0, len(summaries))
@@ -104,10 +109,10 @@ func summariesToRecords(summaries []orchestra.RunSummary) []runRecord {
 // requires the file mtime and the on-disk dir, neither of which the SDK
 // surface exposes — recompute them locally so output stays byte-identical.
 //
-// The "active" alias resolves to the workspace's state.json directly. For
-// any other run-id, the archive directory takes precedence so the same id
-// arriving once as "active" and again as its concrete value resolves to
-// the same record either way.
+// Archive lookup happens first regardless of whether the caller asked
+// for the "active" alias, because LoadRun resolves "active" to the most
+// recent archive when no live run exists. Falling back to the workspace
+// state.json second handles the live-run case.
 func buildRunRecordForShow(workspace, runID string, state *orchestra.RunState) (runRecord, error) {
 	if state == nil {
 		return runRecord{}, fmt.Errorf("run %q has no state", runID)
@@ -117,23 +122,19 @@ func buildRunRecordForShow(workspace, runID string, state *orchestra.RunState) (
 		resolvedID = state.RunID
 	}
 
-	// Try archive first when the caller asked for a specific id. If the
-	// archive lookup misses we fall through to the active state.json —
-	// `LoadRun(workspace, "active")` and `LoadRun(workspace, "<active-id>")`
-	// both resolve to the same state, so the active path is the canonical
-	// fallback.
-	if runID != "active" {
-		archiveStatePath := filepath.Join(runArchiveDir(workspace, resolvedID), "state.json")
-		if info, err := os.Stat(archiveStatePath); err == nil {
-			return runRecord{
-				id:         resolvedID,
-				dir:        runArchiveDir(workspace, resolvedID),
-				state:      state,
-				modifiedAt: info.ModTime().UTC(),
-			}, nil
-		} else if !os.IsNotExist(err) {
-			return runRecord{}, err
-		}
+	// Try the archive directory first using the resolved RunID. This makes
+	// `runs show active` work in archived-only workspaces where LoadRun
+	// returned the most recent archive instead of a live run.
+	archiveStatePath := filepath.Join(runArchiveDir(workspace, resolvedID), "state.json")
+	if info, err := os.Stat(archiveStatePath); err == nil {
+		return runRecord{
+			id:         resolvedID,
+			dir:        runArchiveDir(workspace, resolvedID),
+			state:      state,
+			modifiedAt: info.ModTime().UTC(),
+		}, nil
+	} else if !os.IsNotExist(err) {
+		return runRecord{}, err
 	}
 
 	activeInfo, err := os.Stat(filepath.Join(workspace, "state.json"))
