@@ -24,7 +24,7 @@ type managedSession interface {
 
 type startTeamMAFunc func(context.Context, *Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
 
-func (r *orchestrationRun) runTeamMA(ctx context.Context, team *Team, state *store.RunState) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) runTeamMA(ctx context.Context, tierIdx int, team *Team, state *store.RunState) (*workspace.TeamResult, error) {
 	logWriter, err := r.ws.NDJSONLogWriter(team.Name)
 	if err != nil {
 		return nil, err
@@ -39,8 +39,8 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, team *Team, state *sto
 		return nil, err
 	}
 
-	for event := range events {
-		r.reportMAEvent(team.Name, event)
+	for ev := range events {
+		r.reportMAEvent(tierIdx, team.Name, ev)
 	}
 
 	return r.finalizeMATeam(ctx, teamCtx, team, session)
@@ -421,7 +421,7 @@ func (r *orchestrationRun) maybeOpenPullRequest(ctx context.Context, team *Team,
 			artifact.PullRequestURL = existing.URL
 		}
 	default:
-		r.logger.Warn("team %s: open pull request: %v", team.Name, err)
+		r.emitWarn("team %s: open pull request: %v", team.Name, err)
 	}
 }
 
@@ -438,18 +438,37 @@ func (r *orchestrationRun) recordMASession(ctx context.Context, teamName, sessio
 	})
 }
 
-func (r *orchestrationRun) reportMAEvent(teamName string, event spawner.Event) {
+func (r *orchestrationRun) reportMAEvent(tierIdx int, teamName string, event spawner.Event) {
 	switch ev := event.(type) {
 	case spawner.AgentMessageEvent:
 		if ev.Text != "" {
-			r.logger.TeamMsg(teamName, "%s", truncateForLog(compactForLog(ev.Text), 140))
+			r.emitTeamMessage(tierIdx, teamName, "%s", truncateForLog(compactForLog(ev.Text)))
 		}
+	case spawner.AgentToolUseEvent:
+		input := compactForLog(fmt.Sprintf("%v", ev.ToolUse.Input))
+		r.emit(Event{
+			Kind:    EventToolCall,
+			Tier:    tierIdx,
+			Team:    teamName,
+			Tool:    ev.ToolUse.Name,
+			Message: truncateForLog(input),
+			At:      time.Now(),
+		})
+	case spawner.AgentToolResultEvent:
+		result := compactForLog(fmt.Sprintf("%v", ev.ToolResult.Content))
+		r.emit(Event{
+			Kind:    EventToolResult,
+			Tier:    tierIdx,
+			Team:    teamName,
+			Message: truncateForLog(result),
+			At:      time.Now(),
+		})
 	case spawner.SessionStatusRunningEvent:
-		r.logger.TeamMsg(teamName, "managed-agents session running")
+		r.emitTeamMessage(tierIdx, teamName, "managed-agents session running")
 	case spawner.SessionStatusIdleEvent:
-		r.logger.TeamMsg(teamName, "managed-agents session idle (%s)", ev.Status.StopReason.Type)
+		r.emitTeamMessage(tierIdx, teamName, "managed-agents session idle (%s)", ev.Status.StopReason.Type)
 	case spawner.SpanModelRequestEndEvent:
-		r.logger.TeamMsg(teamName, "tokens %s in / %s out", fmtTokens(ev.Usage.InputTokens), fmtTokens(ev.Usage.OutputTokens))
+		r.emitTeamMessage(tierIdx, teamName, "tokens %s in / %s out", fmtTokens(ev.Usage.InputTokens), fmtTokens(ev.Usage.OutputTokens))
 	case spawner.UserMessageEchoEvent:
 		// Skip the bootstrap prompt the orchestrator itself sent via
 		// Session.Send — labeling it as a human nudge would be both
@@ -459,16 +478,16 @@ func (r *orchestrationRun) reportMAEvent(teamName string, event spawner.Event) {
 		if ev.FromOrchestrator {
 			return
 		}
-		text := truncateForLog(compactForLog(ev.Text), 140)
+		text := truncateForLog(compactForLog(ev.Text))
 		if text == "" {
 			text = "(empty)"
 		}
-		r.logger.TeamMsg(teamName, "human: %s", text)
+		r.emitTeamMessage(tierIdx, teamName, "human: %s", text)
 	case spawner.UserInterruptEchoEvent:
 		if ev.FromOrchestrator {
 			return
 		}
-		r.logger.TeamMsg(teamName, "human: <interrupt>")
+		r.emitTeamMessage(tierIdx, teamName, "human: <interrupt>")
 	}
 }
 
@@ -490,9 +509,14 @@ func compactForLog(s string) string {
 	return strings.Join(fields, " ")
 }
 
-func truncateForLog(s string, maxLen int) string {
-	if len(s) <= maxLen {
+// maxMALogLine bounds how much of a managed-agents agent or tool payload
+// is rendered into a single log line. Long enough to be useful, short
+// enough that one verbose tool call doesn't drown out the run.
+const maxMALogLine = 140
+
+func truncateForLog(s string) string {
+	if len(s) <= maxMALogLine {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return s[:maxMALogLine] + "..."
 }

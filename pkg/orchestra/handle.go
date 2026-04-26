@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/itsHabib/orchestra/internal/event"
 )
 
 // Run executes the workflow described by cfg and returns its result. It is
@@ -18,8 +20,7 @@ import (
 //	return h.Wait()
 //
 // Use [Run] when you don't need a [Handle]. Use [Start] when you want
-// status snapshots, programmatic cancellation, or (in later PRs) events
-// and steering.
+// status snapshots, programmatic cancellation, or events and steering.
 //
 // Run takes ownership of cfg for the call duration. It may call
 // ResolveDefaults / Validate on the pointer; concurrent caller mutation
@@ -80,14 +81,18 @@ func Start(ctx context.Context, cfg *Config, opts ...Option) (*Handle, error) {
 
 	engineCtx, cancel := context.WithCancel(ctx)
 	h := &Handle{
-		done:        make(chan struct{}),
-		cancel:      cancel,
-		phase:       PhaseInitializing,
-		currentTier: -1,
-		startedAt:   time.Now(),
+		done:         make(chan struct{}),
+		cancel:       cancel,
+		phase:        PhaseInitializing,
+		currentTier:  -1,
+		startedAt:    time.Now(),
+		events:       make(chan Event, options.eventBuffer),
+		eventHandler: options.eventHandler,
 	}
 
 	go func() {
+		defer close(h.events)
+		defer h.flushDropped()
 		defer close(h.done)
 		defer h.setPhase(PhaseDone)
 		defer release()
@@ -98,6 +103,7 @@ func Start(ctx context.Context, cfg *Config, opts ...Option) (*Handle, error) {
 			}
 		}()
 		h.result, h.runErr = runWithLockedWorkspace(engineCtx, cfg, &options, absWorkspace, h)
+		h.Emit(Event{Kind: EventRunComplete, Tier: -1, At: time.Now()})
 	}()
 
 	return h, nil
@@ -107,7 +113,7 @@ func Start(ctx context.Context, cfg *Config, opts ...Option) (*Handle, error) {
 // the channel returned by [Handle.Events], which is single-consumer.
 // After [Handle.Wait] has returned, [Handle.Send] / [Handle.Interrupt]
 // return [ErrClosed]; [Handle.Cancel] becomes a no-op without error;
-// [Handle.Events] returns the same already-closed channel.
+// [Handle.Events] returns the same channel, now closed.
 //
 // Experimental.
 type Handle struct {
@@ -133,6 +139,22 @@ type Handle struct {
 	phase       Phase
 	currentTier int
 	startedAt   time.Time
+
+	// events is the bounded channel returned by Events(). Closed once the
+	// engine goroutine has emitted EventRunComplete.
+	events chan Event
+	// eventHandler is the optional synchronous callback set via
+	// WithEventHandler. Invoked on the emit path before the channel send.
+	eventHandler func(Event)
+	// emitMu serializes the drop-oldest sequence so concurrent Emit calls
+	// don't race the receive-then-send pattern. Single mutex is fine —
+	// emission is fast (channel ops only) and the engine emits at most
+	// one event per state transition per team.
+	emitMu sync.Mutex
+	// dropCount accumulates the number of events dropped from the bounded
+	// buffer since the last EventDropped emission. Reset to zero each time
+	// the dropped indicator is sent. Guarded by emitMu.
+	dropCount int
 }
 
 // snapshotter is the minimal contract the Handle needs from the run
@@ -169,7 +191,7 @@ func (h *Handle) Cancel() {
 //
 // Best-effort consistent: individual fields are internally consistent,
 // but multiple fields read together may straddle a state transition.
-// For strict consistency, consume [Handle.Events] (wired in PR 2).
+// For strict consistency, consume [Handle.Events].
 //
 // Experimental.
 func (h *Handle) Status() Status {
@@ -207,13 +229,110 @@ func (h *Handle) Status() Status {
 	return status
 }
 
-// Events returns a receive-only channel of structured run events. In
-// PR 1 the channel is a package-level pre-closed stub so the API shape
-// compiles; real event emission is wired in PR 2.
+// Events returns a receive-only channel of structured run events. Events
+// from a single team are delivered in order; events across parallel teams
+// in the same tier are not strictly ordered. The channel closes when the
+// run reaches a terminal state.
+//
+// Single-consumer. Calling Events multiple times returns the same channel;
+// sharing the channel between goroutines yields nondeterministic delivery
+// (standard Go channel semantics).
+//
+// If the consumer falls behind, the bounded buffer (default 256, set via
+// [WithEventBuffer]) drops the oldest event and the next emission is
+// preceded by an [EventDropped] event so the consumer can detect
+// backpressure.
 //
 // Experimental.
 func (h *Handle) Events() <-chan Event {
-	return closedEventChan
+	return h.events
+}
+
+// Emit implements the engine-side [event.Emitter] contract: deliver ev to
+// the optional synchronous handler and the bounded channel. Bounded
+// channel is drop-oldest — when full, Emit dequeues one buffered event,
+// increments the drop counter, and sends ev. The next emission is
+// preceded by an [EventDropped] event with the accumulated count.
+//
+// Emit is safe for concurrent use by team goroutines. Internally the
+// drop-oldest sequence is mutex-guarded so the receive-then-send pair is
+// atomic with respect to other emitters.
+//
+//nolint:gocritic // Event-by-value is part of the public Emitter contract; pointer would surprise SDK callers.
+func (h *Handle) Emit(ev Event) {
+	if h.eventHandler != nil {
+		h.eventHandler(ev)
+	}
+	h.emitMu.Lock()
+	defer h.emitMu.Unlock()
+
+	// If we have prior drops to surface, deliver the synthetic event
+	// before the real one. The synthetic event uses the same drop-oldest
+	// path on overflow — losing the dropped indicator itself is fine
+	// because the count keeps accumulating until the consumer catches up.
+	if h.dropCount > 0 && ev.Kind != EventDropped {
+		dropped := Event{
+			Kind:      EventDropped,
+			Tier:      -1,
+			DropCount: h.dropCount,
+			At:        time.Now(),
+		}
+		h.dropCount = 0
+		h.deliverLocked(dropped)
+	}
+	h.deliverLocked(ev)
+}
+
+// flushDropped emits a final EventDropped if any events were dropped
+// during the run. Called from the engine epilogue after the last real
+// event has been emitted but before the channel is closed, so consumers
+// that drain after Wait() see backpressure that accumulated in the tail
+// of the run. To make room, flushDropped drops one buffered event from
+// h.events if necessary.
+func (h *Handle) flushDropped() {
+	h.emitMu.Lock()
+	defer h.emitMu.Unlock()
+	if h.dropCount == 0 {
+		return
+	}
+	dropped := Event{
+		Kind:      EventDropped,
+		Tier:      -1,
+		DropCount: h.dropCount,
+		At:        time.Now(),
+	}
+	h.dropCount = 0
+	h.deliverLocked(dropped)
+}
+
+// deliverLocked attempts a non-blocking send on h.events. On overflow it
+// drains exactly one event (the oldest) and retries. dropCount is
+// incremented for each dropped event so the next non-Dropped emission can
+// surface the count via EventDropped. Caller must hold h.emitMu.
+//
+//nolint:gocritic // Mirrors the Emit contract; converting to pointer here would force allocations on the hot path for no win.
+func (h *Handle) deliverLocked(ev Event) {
+	select {
+	case h.events <- ev:
+		return
+	default:
+	}
+	// Buffer full: drop oldest, retry. Receive can race with a closing
+	// channel only after the engine has finished the run, at which point
+	// no Emit should be in flight; default the receive to skip blocking.
+	select {
+	case <-h.events:
+		h.dropCount++
+	default:
+	}
+	select {
+	case h.events <- ev:
+	default:
+		// Pathological: still full after dropping. Treat ev itself as
+		// dropped; the running counter will surface it on the next
+		// successful send.
+		h.dropCount++
+	}
 }
 
 // Send delivers a steering message to a running team — equivalent of
@@ -338,31 +457,66 @@ type TeamSnapshot struct {
 // === Event ================================================================
 
 // EventKind enumerates the structured event types emitted during a run.
-// PR 1 declares the type so the API shape compiles; PR 2 introduces the
-// individual kind constants and wires emission.
+// EventKind is an alias for [event.Kind] so the SDK surface stays
+// independent of the internal package layout while engine code emits a
+// single concrete type.
 //
 // Experimental.
-type EventKind int
+type EventKind = event.Kind
 
-// Event is a structured observation of a runtime event. PR 1 declares
-// the type so the API shape compiles; PR 2 populates fields and emits
-// instances on the Events channel.
+// Event is a structured observation of a run-time event. Field
+// population is per-Kind; consult the doc on each Kind constant for
+// which fields are non-zero. Aliased from [event.Event].
 //
 // Experimental.
-type Event struct {
-	Kind EventKind
-	At   time.Time
-}
+type Event = event.Event
 
-// closedEventChan is the package-level pre-closed channel returned by
-// [Handle.Events] in PR 1. PR 2 replaces this with a per-Handle bounded
-// channel driven by the engine emitter. Typed as receive-only so package
-// code cannot accidentally send on it.
-var closedEventChan <-chan Event = func() chan Event {
-	c := make(chan Event)
-	close(c)
-	return c
-}()
+// Event kinds. Each constant's doc on [event.Kind] describes when the
+// event fires and which Event fields are populated.
+//
+// Experimental.
+const (
+	// EventTierStart fires once at the top of each tier, before any
+	// team in the tier begins. Carries tier index and the joined team
+	// list as Message.
+	EventTierStart = event.KindTierStart
+	// EventTeamStart fires once per team when its goroutine begins.
+	EventTeamStart = event.KindTeamStart
+	// EventTeamMessage carries the agent's natural-language output.
+	// On the local backend this is the raw spawner ProgressFunc line;
+	// on the managed-agents backend it is the agent.message text or
+	// the user.message echo (with "human:" prefix).
+	EventTeamMessage = event.KindTeamMessage
+	// EventToolCall fires when an agent invokes a tool. Today only the
+	// managed-agents backend distinguishes tool calls from natural
+	// output; the local backend collapses everything to
+	// EventTeamMessage.
+	EventToolCall = event.KindToolCall
+	// EventToolResult fires when a tool returns its result to the
+	// agent. Today only the managed-agents backend emits this.
+	EventToolResult = event.KindToolResult
+	// EventTeamComplete fires when a team finishes successfully.
+	EventTeamComplete = event.KindTeamComplete
+	// EventTeamFailed fires when a team's run errors out.
+	EventTeamFailed = event.KindTeamFailed
+	// EventTierComplete fires once at the end of each tier, after every
+	// team in the tier has settled.
+	EventTierComplete = event.KindTierComplete
+	// EventRunComplete fires once when the engine has finished all
+	// tiers and is about to close the events channel.
+	EventRunComplete = event.KindRunComplete
+	// EventDropped is synthetic — emitted when the bounded buffer
+	// dropped one or more events. DropCount carries the cumulative
+	// count since the last EventDropped.
+	EventDropped = event.KindDropped
+	// EventInfo carries an engine-level informational message.
+	EventInfo = event.KindInfo
+	// EventWarn carries an engine-level non-fatal warning.
+	EventWarn = event.KindWarn
+	// EventError carries an engine-level error message; the run's
+	// actual error is still surfaced via Wait()'s return value.
+	EventError = event.KindError
+)
 
 // === Errors ===============================================================
 
