@@ -46,7 +46,7 @@ func fieldPathProjectAndBackendCases() []fieldPathCase {
 				}},
 			},
 			wantErr:   []string{"project name is required"},
-			wantField: []string{"name"},
+			wantField: nil, // project-level → empty Field per §5.3
 		},
 		{
 			name: "unknown backend kind",

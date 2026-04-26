@@ -258,8 +258,12 @@ func (c *Config) Validate() *Result {
 func (c *Config) validateTopLevel() []ConfigError {
 	var errs []ConfigError
 	if c.Name == "" {
+		// Project-level: empty Field. The doc's §5.3 convention is
+		// that the missing project-name field is the canonical
+		// "empty Field" example so consumers can distinguish
+		// project-wide issues from nested ones without inspecting
+		// Message text.
 		errs = append(errs, ConfigError{
-			Field:   []string{"name"},
 			Message: "project name is required",
 		})
 	}
