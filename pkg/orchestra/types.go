@@ -69,10 +69,46 @@ type Member = config.Member
 type Task = config.Task
 
 // Warning represents a non-fatal validation issue surfaced by LoadConfig
-// or Validate.
+// or Validate. It does not block execution. Field is the structured YAML
+// path to the offending node (empty for project-level issues); Team is
+// the denormalized team name when Field points into a team subtree.
 //
 // Experimental: aliased from internal/config.
 type Warning = config.Warning
+
+// ConfigError is a hard validation failure surfaced by [LoadConfig] or
+// [Validate]. Same shape and semantics as [Warning]; only the severity
+// differs. A non-empty Errors slice on a [ValidationResult] makes
+// [ValidationResult.Valid] return false and [ValidationResult.Err]
+// return non-nil.
+//
+// Experimental: aliased from internal/config.
+type ConfigError = config.ConfigError
+
+// ValidationResult is the aggregate output of [LoadConfig] and
+// [Validate]: the parsed config (when valid), the structured warnings
+// (soft issues), and the structured errors (hard validation failures).
+// Use [ValidationResult.Valid] to gate further use of Config; use
+// [ValidationResult.Err] for an error-shaped view of the validation
+// failures suitable for `if err != nil` patterns.
+//
+// Experimental: aliased from internal/config; field set may grow.
+type ValidationResult = config.Result
+
+// ErrInvalidConfig is wrapped by [ValidationResult.Err] whenever the
+// result has at least one entry in Errors. Callers can use errors.Is to
+// recognize validation failures regardless of how the formatted message
+// changes:
+//
+//	res, err := orchestra.LoadConfig("orchestra.yaml")
+//	if err != nil {
+//	    return err // I/O or parse failure
+//	}
+//	if errors.Is(res.Err(), orchestra.ErrInvalidConfig) { ... }
+//
+// Experimental: this sentinel is kept stable across breaking surface
+// changes so callers can rely on errors.Is checks.
+var ErrInvalidConfig = config.ErrInvalidConfig
 
 // RunState is the persistent run document. Run-time observers can read it
 // from the workspace via tools that already understand the schema.

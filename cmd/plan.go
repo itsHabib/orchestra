@@ -24,14 +24,19 @@ var planCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
-		cfg, warnings, err := config.Load(args[0])
+		res, err := config.Load(args[0])
 		if err != nil {
 			logger.Error("Config error: %s", err)
 			os.Exit(1)
 		}
-		for _, w := range warnings {
+		for _, w := range res.Warnings {
 			logger.Warn("%s", w)
 		}
+		if !res.Valid() {
+			logger.Error("Config error: %s", res.Err())
+			os.Exit(1)
+		}
+		cfg := res.Config
 
 		tiers, err := dag.BuildTiers(cfg.Teams)
 		if err != nil {

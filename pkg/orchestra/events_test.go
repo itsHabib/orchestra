@@ -23,10 +23,11 @@ func TestStart_HandleEvents_DeliversInOrder(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -67,10 +68,11 @@ func TestEventChannel_DropsOldestUnderBackpressure(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -112,10 +114,11 @@ func TestWithEventHandler_FiresInline(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	loaded, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := loaded.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -168,10 +171,11 @@ func TestWithEventBuffer_ZeroIsClampedToOne(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 

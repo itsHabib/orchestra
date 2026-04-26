@@ -23,19 +23,19 @@ func TestListRuns_RoundTripsArchive(t *testing.T) {
 	configPath := writeOneTeamConfig(t, workDir)
 	chdir(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
+	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
 	// Second run forces the first one into the archive directory.
-	cfg2, _, err := orchestra.LoadConfig(configPath)
+	res2, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orchestra.Run(context.Background(), cfg2); err != nil {
+	if _, err := orchestra.Run(context.Background(), res2.Config); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
 
@@ -89,11 +89,11 @@ func TestLoadRun_UnknownRunReturnsNotExist(t *testing.T) {
 	configPath := writeOneTeamConfig(t, workDir)
 	chdir(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
+	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -115,11 +115,11 @@ func TestLoadRun_ActiveAlias_ResolvesCurrentRun(t *testing.T) {
 	configPath := writeOneTeamConfig(t, workDir)
 	chdir(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
+	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -149,11 +149,11 @@ func TestListSessions_LocalBackendReturnsEmpty(t *testing.T) {
 	configPath := writeOneTeamConfig(t, workDir)
 	chdir(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
+	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 

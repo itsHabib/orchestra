@@ -28,10 +28,11 @@ func TestHandle_Send_LocalBackend_DeliversToInbox(t *testing.T) {
 
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -129,10 +130,11 @@ func TestHandle_Send_TeamNotRunning_ReturnsErrTeamNotRunning(t *testing.T) {
 
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -162,10 +164,11 @@ func TestHandle_Send_AfterWait_ReturnsErrClosed(t *testing.T) {
 
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -191,10 +194,11 @@ func TestHandle_Interrupt_LocalBackend_ReturnsNotSupported(t *testing.T) {
 
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := res.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 

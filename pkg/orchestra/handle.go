@@ -110,9 +110,9 @@ func Start(ctx context.Context, cfg *Config, opts ...Option) (*Handle, error) {
 	}
 
 	cfg.ResolveDefaults()
-	if _, err := cfg.Validate(); err != nil {
+	if vr := cfg.Validate(); !vr.Valid() {
 		release()
-		return nil, fmt.Errorf("orchestra: validate config: %w", err)
+		return nil, fmt.Errorf("orchestra: validate config: %w", vr.Err())
 	}
 
 	engineCtx, cancel := context.WithCancel(ctx)

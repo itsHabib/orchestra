@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,12 +49,19 @@ teams:
 		t.Fatal(err)
 	}
 
-	cfg, warnings, err := Load(path)
+	res, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings: %v", warnings)
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", res.Warnings)
+	}
+	cfg := res.Config
+	if cfg == nil {
+		t.Fatal("Config is nil on a valid result")
 	}
 	if cfg.Name != "test-project" {
 		t.Fatalf("expected test-project, got %s", cfg.Name)
@@ -82,16 +90,22 @@ func TestLoad_InvalidYAML(t *testing.T) {
 	if err := os.WriteFile(path, []byte(":::invalid"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Load(path)
+	res, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+	}
+	if res != nil {
+		t.Fatalf("expected nil result on parse error, got %+v", res)
 	}
 }
 
 func TestLoad_MissingFile(t *testing.T) {
-	_, _, err := Load("/nonexistent/file.yaml")
+	res, err := Load("/nonexistent/file.yaml")
 	if err == nil {
 		t.Fatal("expected error for missing file")
+	}
+	if res != nil {
+		t.Fatalf("expected nil result on I/O error, got %+v", res)
 	}
 }
 
@@ -105,11 +119,20 @@ teams: []
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Load(path)
-	if err == nil {
-		t.Fatal("expected validation error")
+	res, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned an error for a structural validation failure (validation issues should live in res.Errors, not error): %v", err)
 	}
-	if !strings.Contains(err.Error(), "project name") {
-		t.Fatalf("unexpected error: %v", err)
+	if res.Valid() {
+		t.Fatal("expected validation errors")
+	}
+	if !errors.Is(res.Err(), ErrInvalidConfig) {
+		t.Fatalf("res.Err() does not wrap ErrInvalidConfig: %v", res.Err())
+	}
+	if !strings.Contains(res.Err().Error(), "project name") {
+		t.Fatalf("unexpected err: %v", res.Err())
+	}
+	if res.Config != nil {
+		t.Fatalf("Config should be nil on invalid result, got %+v", res.Config)
 	}
 }

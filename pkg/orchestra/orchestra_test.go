@@ -41,10 +41,11 @@ teams:
 		t.Fatal(err)
 	}
 
-	cfg, _, err := orchestra.LoadConfig(path)
+	res, err := orchestra.LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
+	cfg := res.Config
 	if cfg.Backend.Kind != orchestra.BackendLocal {
 		t.Fatalf("Backend.Kind=%q, want %q", cfg.Backend.Kind, orchestra.BackendLocal)
 	}
@@ -66,10 +67,11 @@ func TestRun_LocalBackend_PopulatesResult(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	loaded, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
+	cfg := loaded.Config
 
 	withPath(t, binDir)
 	chdir(t, workDir)
@@ -116,10 +118,11 @@ func TestRun_ConcurrentSameWorkspaceReturnsErrRunInProgress(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	res, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
+	cfg := res.Config
 
 	withPath(t, binDir)
 	chdir(t, workDir)
@@ -165,14 +168,16 @@ func TestRun_ConcurrentDifferentWorkspacesIndependent(t *testing.T) {
 	configPathA := writeOneTeamConfig(t, rootA)
 	configPathB := writeOneTeamConfig(t, rootB)
 
-	cfgA, _, err := orchestra.LoadConfig(configPathA)
+	resA, err := orchestra.LoadConfig(configPathA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfgB, _, err := orchestra.LoadConfig(configPathB)
+	cfgA := resA.Config
+	resB, err := orchestra.LoadConfig(configPathB)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfgB := resB.Config
 
 	withPath(t, binDir)
 	chdir(t, rootA)
@@ -210,10 +215,11 @@ func TestRun_TierZeroFailureReturnsResultAndError(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	loaded, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := loaded.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -245,10 +251,11 @@ func TestRun_ContextCancellationReturnsPartialResult(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	loaded, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := loaded.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -319,10 +326,11 @@ func TestRun_EquivalentToStartPlusWait(t *testing.T) {
 	// Run path.
 	runDir := t.TempDir()
 	runConfig := writeOneTeamConfig(t, runDir)
-	runCfg, _, err := orchestra.LoadConfig(runConfig)
+	runLoaded, err := orchestra.LoadConfig(runConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
+	runCfg := runLoaded.Config
 	chdir(t, runDir)
 	runRes, runErr := orchestra.Run(context.Background(), runCfg)
 	if runErr != nil {
@@ -335,10 +343,11 @@ func TestRun_EquivalentToStartPlusWait(t *testing.T) {
 	// Start + Wait path against an independent workspace.
 	startDir := t.TempDir()
 	startConfig := writeOneTeamConfig(t, startDir)
-	startCfg, _, err := orchestra.LoadConfig(startConfig)
+	startLoaded, err := orchestra.LoadConfig(startConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
+	startCfg := startLoaded.Config
 	chdir(t, startDir)
 	h, err := orchestra.Start(context.Background(), startCfg)
 	if err != nil {
@@ -392,8 +401,8 @@ func TestValidate_StandaloneCallerBuiltConfig(t *testing.T) {
 			},
 		},
 	}
-	if _, err := orchestra.Validate(cfg); err != nil {
-		t.Fatalf("Validate: %v", err)
+	if vr := orchestra.Validate(cfg); !vr.Valid() {
+		t.Fatalf("Validate: %v", vr.Err())
 	}
 	if cfg.Defaults.Model != "sonnet" {
 		t.Errorf("Defaults.Model=%q, want sonnet", cfg.Defaults.Model)

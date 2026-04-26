@@ -238,23 +238,27 @@ import (
 )
 
 func main() {
-    cfg, warnings, err := orchestra.LoadConfig("orchestra.yaml")
-    for _, w := range warnings {
-        fmt.Fprintln(os.Stderr, w)
-    }
+    res, err := orchestra.LoadConfig("orchestra.yaml")
     if err != nil {
         fmt.Fprintln(os.Stderr, err)
         os.Exit(1)
     }
+    for _, w := range res.Warnings {
+        fmt.Fprintln(os.Stderr, w)
+    }
+    if !res.Valid() {
+        fmt.Fprintln(os.Stderr, res.Err())
+        os.Exit(1)
+    }
 
-    res, err := orchestra.Run(context.Background(), cfg,
+    out, err := orchestra.Run(context.Background(), res.Config,
         orchestra.WithLogger(orchestra.NewCLILogger()),
     )
     if err != nil {
         fmt.Fprintln(os.Stderr, err)
         os.Exit(1)
     }
-    for name, team := range res.Teams {
+    for name, team := range out.Teams {
         fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
             name, team.Status, team.NumTurns, team.CostUSD)
     }

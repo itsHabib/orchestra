@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -181,12 +182,26 @@ func (c *Config) ResolveDefaults() {
 	c.resolveRepositoryDefaults()
 }
 
-// Warning represents a non-fatal validation issue.
+// Warning represents a non-fatal validation issue surfaced by [Load]
+// or [Config.Validate]. It does not block execution.
+//
+// pkg/orchestra re-exports this type as orchestra.Warning.
 type Warning struct {
-	Team    string
+	// Field is the structured YAML path to the offending node, e.g.
+	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
+	// team 0's third task. Empty for project-level issues.
+	Field []string
+	// Team is the denormalized team name when Field points into a team
+	// subtree; empty otherwise. Exists for ergonomic display so
+	// String() can render `team "foo": message` without walking Field
+	// back into Config. Programmatic consumers should prefer Field.
+	Team string
+	// Message is the human-readable description of the issue.
 	Message string
 }
 
+// String returns the human-readable form: `team "foo": message` when
+// Team is non-empty, else just Message.
 func (w Warning) String() string {
 	if w.Team != "" {
 		return fmt.Sprintf("team %q: %s", w.Team, w.Message)
@@ -194,9 +209,24 @@ func (w Warning) String() string {
 	return w.Message
 }
 
-// Validate checks the config for errors and returns warnings.
-// Hard errors prevent execution. Warnings are returned separately.
-func (c *Config) Validate() ([]Warning, error) {
+// Validate runs the config validators and returns a [Result] aggregating
+// the parsed config (when valid), structured warnings, and structured
+// errors. Use [Result.Valid] to gate further use of the config; use
+// [Result.Err] for an error-shaped view of validation failures suitable
+// for `if err != nil` patterns.
+//
+// Validate never returns nil. When at least one entry exists in
+// Result.Errors, Result.Config is nil so consumers cannot accidentally
+// hand an invalid config to downstream code.
+//
+// pkg/orchestra re-exports the Result shape as orchestra.ValidationResult.
+func (c *Config) Validate() *Result {
+	if c == nil {
+		return &Result{
+			Errors: []ConfigError{{Message: "nil config"}},
+		}
+	}
+
 	var warnings []Warning
 	errs := c.validateTopLevel()
 
@@ -211,20 +241,31 @@ func (c *Config) Validate() ([]Warning, error) {
 	errs = append(errs, c.validateRepositoryHard()...)
 
 	// Check for cycles using DFS
-	if err := detectCycles(c.Teams); err != nil {
-		errs = append(errs, err.Error())
+	if cycleErr := detectCycles(c.Teams); cycleErr != nil {
+		errs = append(errs, *cycleErr)
 	}
 
-	if len(errs) > 0 {
-		return warnings, fmt.Errorf("validation errors:\n  - %s", strings.Join(errs, "\n  - "))
+	res := &Result{
+		Warnings: warnings,
+		Errors:   errs,
 	}
-	return warnings, nil
+	if res.Valid() {
+		res.Config = c
+	}
+	return res
 }
 
-func (c *Config) validateTopLevel() []string {
-	var errs []string
+func (c *Config) validateTopLevel() []ConfigError {
+	var errs []ConfigError
 	if c.Name == "" {
-		errs = append(errs, "project name is required")
+		// Project-level: empty Field. The doc's §5.3 convention is
+		// that the missing project-name field is the canonical
+		// "empty Field" example so consumers can distinguish
+		// project-wide issues from nested ones without inspecting
+		// Message text.
+		errs = append(errs, ConfigError{
+			Message: "project name is required",
+		})
 	}
 	backend := c.Backend.Kind
 	if backend == "" {
@@ -233,13 +274,22 @@ func (c *Config) validateTopLevel() []string {
 	switch backend {
 	case "local", "managed_agents":
 	default:
-		errs = append(errs, fmt.Sprintf("backend.kind must be one of: local, managed_agents (got %q)", c.Backend.Kind))
+		errs = append(errs, ConfigError{
+			Field:   []string{"backend", "kind"},
+			Message: fmt.Sprintf("backend.kind must be one of: local, managed_agents (got %q)", c.Backend.Kind),
+		})
 	}
 	if len(c.Teams) == 0 {
-		errs = append(errs, "at least one team is required")
+		errs = append(errs, ConfigError{
+			Field:   []string{"teams"},
+			Message: "at least one team is required",
+		})
 	}
 	if c.Defaults.MAConcurrentSessions < 0 {
-		errs = append(errs, fmt.Sprintf("defaults.ma_concurrent_sessions must be >= 0 (got %d)", c.Defaults.MAConcurrentSessions))
+		errs = append(errs, ConfigError{
+			Field:   []string{"defaults", "ma_concurrent_sessions"},
+			Message: fmt.Sprintf("defaults.ma_concurrent_sessions must be >= 0 (got %d)", c.Defaults.MAConcurrentSessions),
+		})
 	}
 	return errs
 }
@@ -250,11 +300,15 @@ func (c *Config) validateBackendWarnings() []Warning {
 	}
 	var warnings []Warning
 	if c.Coordinator.Enabled {
-		warnings = append(warnings, Warning{Message: "coordinator is not supported under backend.kind=managed_agents"})
+		warnings = append(warnings, Warning{
+			Field:   []string{"coordinator", "enabled"},
+			Message: "coordinator is not supported under backend.kind=managed_agents",
+		})
 	}
 	for i := range c.Teams {
 		if c.Teams[i].HasMembers() {
 			warnings = append(warnings, Warning{
+				Field:   []string{"teams", strconv.Itoa(i), "members"},
 				Team:    c.Teams[i].Name,
 				Message: "members are not supported under backend.kind=managed_agents",
 			})
@@ -265,25 +319,32 @@ func (c *Config) validateBackendWarnings() []Warning {
 
 type teamNameValidation struct {
 	seen map[string]bool
-	errs []string
+	errs []ConfigError
 }
 
 type validationResult struct {
 	warnings []Warning
-	errs     []string
+	errs     []ConfigError
 }
 
 func (c *Config) validateTeamNames() teamNameValidation {
 	seen := make(map[string]bool)
-	var errs []string
+	var errs []ConfigError
 	for i := range c.Teams {
 		t := &c.Teams[i]
 		if t.Name == "" {
-			errs = append(errs, "team name cannot be empty")
+			errs = append(errs, ConfigError{
+				Field:   []string{"teams", strconv.Itoa(i), "name"},
+				Message: "team name cannot be empty",
+			})
 			continue
 		}
 		if seen[t.Name] {
-			errs = append(errs, fmt.Sprintf("duplicate team name: %q", t.Name))
+			errs = append(errs, ConfigError{
+				Field:   []string{"teams", strconv.Itoa(i), "name"},
+				Team:    t.Name,
+				Message: fmt.Sprintf("duplicate team name: %q", t.Name),
+			})
 		}
 		seen[t.Name] = true
 	}
@@ -292,66 +353,94 @@ func (c *Config) validateTeamNames() teamNameValidation {
 
 func (c *Config) validateTeams(seen map[string]bool) validationResult {
 	var warnings []Warning
-	var errs []string
+	var errs []ConfigError
 	for i := range c.Teams {
 		t := &c.Teams[i]
 		if t.Name == "" {
 			continue
 		}
-		taskValidation := validateTasks(t)
+		taskValidation := validateTasks(t, i)
 		warnings = append(warnings, taskValidation.warnings...)
 		errs = append(errs, taskValidation.errs...)
-		errs = append(errs, validateDependencies(t, seen)...)
-		warnings = append(warnings, validateTeamSize(t)...)
-		warnings = append(warnings, validateTaskRatio(t)...)
+		errs = append(errs, validateDependencies(t, i, seen)...)
+		warnings = append(warnings, validateTeamSize(t, i)...)
+		warnings = append(warnings, validateTaskRatio(t, i)...)
 	}
 	return validationResult{warnings: warnings, errs: errs}
 }
 
-func validateTasks(t *Team) validationResult {
+func validateTasks(t *Team, teamIdx int) validationResult {
 	var warnings []Warning
-	var errs []string
+	var errs []ConfigError
+	teamFieldPrefix := []string{"teams", strconv.Itoa(teamIdx)}
 	if len(t.Tasks) == 0 {
-		errs = append(errs, fmt.Sprintf("team %q: at least one task is required", t.Name))
+		errs = append(errs, ConfigError{
+			Field:   append(append([]string{}, teamFieldPrefix...), "tasks"),
+			Team:    t.Name,
+			Message: "at least one task is required",
+		})
 	}
 	for i, task := range t.Tasks {
+		taskFieldPrefix := append(append([]string{}, teamFieldPrefix...), "tasks", strconv.Itoa(i))
 		if task.Summary == "" {
-			errs = append(errs, fmt.Sprintf("team %q: task %d has empty summary", t.Name, i+1))
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, taskFieldPrefix...), "summary"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("task %d has empty summary", i+1),
+			})
 		}
 		if task.Details == "" {
-			warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary)})
+			warnings = append(warnings, Warning{
+				Field:   append(append([]string{}, taskFieldPrefix...), "details"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary),
+			})
 		}
 		if task.Verify == "" {
-			warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary)})
+			warnings = append(warnings, Warning{
+				Field:   append(append([]string{}, taskFieldPrefix...), "verify"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary),
+			})
 		}
 	}
 	return validationResult{warnings: warnings, errs: errs}
 }
 
-func validateDependencies(t *Team, seen map[string]bool) []string {
-	var errs []string
+func validateDependencies(t *Team, teamIdx int, seen map[string]bool) []ConfigError {
+	var errs []ConfigError
+	field := []string{"teams", strconv.Itoa(teamIdx), "depends_on"}
 	for _, dep := range t.DependsOn {
 		if dep == t.Name {
-			errs = append(errs, fmt.Sprintf("team %q: cannot depend on itself", t.Name))
+			errs = append(errs, ConfigError{
+				Field:   field,
+				Team:    t.Name,
+				Message: "cannot depend on itself",
+			})
 		}
 		if !seen[dep] {
-			errs = append(errs, fmt.Sprintf("team %q: depends on unknown team %q", t.Name, dep))
+			errs = append(errs, ConfigError{
+				Field:   field,
+				Team:    t.Name,
+				Message: fmt.Sprintf("depends on unknown team %q", dep),
+			})
 		}
 	}
 	return errs
 }
 
-func validateTeamSize(t *Team) []Warning {
+func validateTeamSize(t *Team, teamIdx int) []Warning {
 	if len(t.Members) <= 5 {
 		return nil
 	}
 	return []Warning{{
+		Field:   []string{"teams", strconv.Itoa(teamIdx), "members"},
 		Team:    t.Name,
 		Message: fmt.Sprintf("has %d members (recommended: 3-5); consider splitting into smaller teams", len(t.Members)),
 	}}
 }
 
-func validateTaskRatio(t *Team) []Warning {
+func validateTaskRatio(t *Team, teamIdx int) []Warning {
 	divisor := len(t.Members)
 	if divisor == 0 {
 		divisor = 1
@@ -361,12 +450,13 @@ func validateTaskRatio(t *Team) []Warning {
 		return nil
 	}
 	return []Warning{{
+		Field:   []string{"teams", strconv.Itoa(teamIdx), "tasks"},
 		Team:    t.Name,
 		Message: fmt.Sprintf("task/member ratio is %d (recommended: 2-8)", ratio),
 	}}
 }
 
-func detectCycles(teams []Team) error {
+func detectCycles(teams []Team) *ConfigError {
 	const (
 		white = iota
 		gray
@@ -382,27 +472,33 @@ func detectCycles(teams []Team) error {
 		deps[teams[i].Name] = teams[i].DependsOn
 	}
 
-	var visit func(name string) error
-	visit = func(name string) error {
+	var found *ConfigError
+	var visit func(name string) bool
+	visit = func(name string) bool {
 		color[name] = gray
 		for _, dep := range deps[name] {
 			if color[dep] == gray {
-				return fmt.Errorf("dependency cycle detected involving team %q", dep)
+				found = &ConfigError{
+					Field:   []string{"teams"},
+					Team:    dep,
+					Message: fmt.Sprintf("dependency cycle detected involving team %q", dep),
+				}
+				return true
 			}
 			if color[dep] == white {
-				if err := visit(dep); err != nil {
-					return err
+				if visit(dep) {
+					return true
 				}
 			}
 		}
 		color[name] = black
-		return nil
+		return false
 	}
 
 	for i := range teams {
 		if color[teams[i].Name] == white {
-			if err := visit(teams[i].Name); err != nil {
-				return err
+			if visit(teams[i].Name) {
+				return found
 			}
 		}
 	}

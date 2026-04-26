@@ -19,18 +19,22 @@ var initCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
-		cfg, warnings, err := config.Load(args[0])
+		res, err := config.Load(args[0])
 		if err != nil {
 			logger.Error("Validation failed: %s", err)
 			os.Exit(1)
 		}
 
-		for _, w := range warnings {
+		for _, w := range res.Warnings {
 			logger.Warn("%s", w)
+		}
+		if !res.Valid() {
+			logger.Error("Validation failed: %s", res.Err())
+			os.Exit(1)
 		}
 
 		runService := newRunService(workspaceDir, logger)
-		active, err := runService.Begin(context.Background(), cfg)
+		active, err := runService.Begin(context.Background(), res.Config)
 		if err != nil {
 			logger.Error("Failed to init workspace: %s", err)
 			os.Exit(1)

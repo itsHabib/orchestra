@@ -53,12 +53,12 @@ func TestRepository_ValidateURLFailure(t *testing.T) {
 		Teams: mustValidTeams(),
 	}
 	cfg.ResolveDefaults()
-	_, err := cfg.Validate()
-	if err == nil {
+	res := cfg.Validate()
+	if res.Valid() {
 		t.Fatal("expected error for ssh url")
 	}
-	if !strings.Contains(err.Error(), "backend.managed_agents.repository.url") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errorsContain(res.Errors, "backend.managed_agents.repository.url") {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
 }
 
@@ -74,12 +74,12 @@ func TestRepository_OpenPRRequiresRepository(t *testing.T) {
 		Teams: mustValidTeams(),
 	}
 	cfg.ResolveDefaults()
-	_, err := cfg.Validate()
-	if err == nil {
+	res := cfg.Validate()
+	if res.Valid() {
 		t.Fatal("expected error: open_pull_requests without repository")
 	}
-	if !strings.Contains(err.Error(), "open_pull_requests requires a repository") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errorsContain(res.Errors, "open_pull_requests requires a repository") {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
 }
 
@@ -104,8 +104,9 @@ func TestRepository_OverrideShadowsProject(t *testing.T) {
 		},
 	}
 	cfg.ResolveDefaults()
-	if _, err := cfg.Validate(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
 	got := cfg.Teams[0].EffectiveRepository(cfg)
 	if got == nil || got.URL != "https://github.com/other/repo" {
@@ -136,22 +137,22 @@ func TestRepository_CrossRepoDependsOnWarns(t *testing.T) {
 		},
 	}
 	cfg.ResolveDefaults()
-	warnings, err := cfg.Validate()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if len(warnings) == 0 {
+	if len(res.Warnings) == 0 {
 		t.Fatal("expected at least one warning")
 	}
 	found := false
-	for _, w := range warnings {
+	for _, w := range res.Warnings {
 		if w.Team == "beta" && strings.Contains(w.Message, "different repository") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected cross-repo warning, got: %v", warnings)
+		t.Fatalf("expected cross-repo warning, got: %v", res.Warnings)
 	}
 }
 
