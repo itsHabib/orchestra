@@ -1,0 +1,2557 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f4141b8..e23e7ff 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,41 @@ stable. Each release that touches the SDK surface gets an entry here.
+ 
+ ## Unreleased
+ 
++### Experimental: breaking — `pkg/orchestra` validation result reshape (P2.5)
++
++The P2.5 chapter collapses the `(*Config, []Warning, error)` and
++`([]Warning, error)` tuples returned by `LoadConfig` and `Validate` into
++a single `*ValidationResult` carrying the parsed config, structured
++warnings, and structured errors. The reshape lifts hard validation
++errors to a typed `ConfigError` with the same shape as `Warning` and
++adds a `Field []string` path on both, so SDK consumers can render
++structured reports without parsing strings out of `err.Error()`. CLI
++output is byte-identical: warnings render the same and `result.Err()`
++preserves the existing `"validation errors:\n  - ..."` format.
++
++- **Reshaped**:
++  - `LoadConfig(path) (*ValidationResult, error)` — the `error` return
++    is now reserved for I/O / parse failures (file not found, malformed
++    YAML); structural validation issues live in `result.Errors`.
++  - `Validate(cfg *Config) *ValidationResult` — no `error` return;
++    `result.Err()` carries it. A nil `cfg` is treated as a hard
++    validation failure (one `ConfigError` entry) rather than a panic or
++    a synthesized error.
++  - `Warning` gains `Field []string`, the structured YAML path to the
++    offending node (empty for project-level issues). `Team` and
++    `Message` are unchanged; `String()` formatting is unchanged.
++- **Added**:
++  - `ValidationResult` type aliased from `internal/config.Result`, with
++    `Valid() bool` and `Err() error` methods.
++  - `ConfigError` type aliased from `internal/config.ConfigError` —
++    parallel to `Warning` with the same `{Field, Team, Message}` shape.
++  - `ErrInvalidConfig` sentinel — wrapped by `result.Err()` so callers
++    can `errors.Is(err, orchestra.ErrInvalidConfig)`.
++- **Removed**: the previous `(*Config, []Warning, error)` shape on
++  `LoadConfig` and the `([]Warning, error)` shape on `Validate`. There
++  is no back-compat shim — callers migrate as documented in
++  `docs/features/11-p25-validation-result.md`.
++
+ ### Experimental: breaking — `pkg/orchestra` operational SDK (P2.4)
+ 
+ The P2.4 chapter reshapes the SDK around an asynchronous `Handle` and adds
+diff --git a/README.md b/README.md
+index a618bc9..206fb3c 100644
+--- a/README.md
++++ b/README.md
+@@ -238,23 +238,27 @@ import (
+ )
+ 
+ func main() {
+-    cfg, warnings, err := orchestra.LoadConfig("orchestra.yaml")
+-    for _, w := range warnings {
+-        fmt.Fprintln(os.Stderr, w)
+-    }
++    res, err := orchestra.LoadConfig("orchestra.yaml")
+     if err != nil {
+         fmt.Fprintln(os.Stderr, err)
+         os.Exit(1)
+     }
++    for _, w := range res.Warnings {
++        fmt.Fprintln(os.Stderr, w)
++    }
++    if !res.Valid() {
++        fmt.Fprintln(os.Stderr, res.Err())
++        os.Exit(1)
++    }
+ 
+-    res, err := orchestra.Run(context.Background(), cfg,
++    out, err := orchestra.Run(context.Background(), res.Config,
+         orchestra.WithLogger(orchestra.NewCLILogger()),
+     )
+     if err != nil {
+         fmt.Fprintln(os.Stderr, err)
+         os.Exit(1)
+     }
+-    for name, team := range res.Teams {
++    for name, team := range out.Teams {
+         fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
+             name, team.Status, team.NumTurns, team.CostUSD)
+     }
+diff --git a/cmd/init_cmd.go b/cmd/init_cmd.go
+index deb1186..6330e16 100644
+--- a/cmd/init_cmd.go
++++ b/cmd/init_cmd.go
+@@ -19,18 +19,22 @@ var initCmd = &cobra.Command{
+ 	Run: func(_ *cobra.Command, args []string) {
+ 		logger := olog.New()
+ 
+-		cfg, warnings, err := config.Load(args[0])
++		res, err := config.Load(args[0])
+ 		if err != nil {
+ 			logger.Error("Validation failed: %s", err)
+ 			os.Exit(1)
+ 		}
+ 
+-		for _, w := range warnings {
++		for _, w := range res.Warnings {
+ 			logger.Warn("%s", w)
+ 		}
++		if !res.Valid() {
++			logger.Error("Validation failed: %s", res.Err())
++			os.Exit(1)
++		}
+ 
+ 		runService := newRunService(workspaceDir, logger)
+-		active, err := runService.Begin(context.Background(), cfg)
++		active, err := runService.Begin(context.Background(), res.Config)
+ 		if err != nil {
+ 			logger.Error("Failed to init workspace: %s", err)
+ 			os.Exit(1)
+diff --git a/cmd/plan.go b/cmd/plan.go
+index d4eaf5e..5d40dfd 100644
+--- a/cmd/plan.go
++++ b/cmd/plan.go
+@@ -24,14 +24,19 @@ var planCmd = &cobra.Command{
+ 	Run: func(_ *cobra.Command, args []string) {
+ 		logger := olog.New()
+ 
+-		cfg, warnings, err := config.Load(args[0])
++		res, err := config.Load(args[0])
+ 		if err != nil {
+ 			logger.Error("Config error: %s", err)
+ 			os.Exit(1)
+ 		}
+-		for _, w := range warnings {
++		for _, w := range res.Warnings {
+ 			logger.Warn("%s", w)
+ 		}
++		if !res.Valid() {
++			logger.Error("Config error: %s", res.Err())
++			os.Exit(1)
++		}
++		cfg := res.Config
+ 
+ 		tiers, err := dag.BuildTiers(cfg.Teams)
+ 		if err != nil {
+diff --git a/cmd/run.go b/cmd/run.go
+index 573aa3f..f9a8a51 100644
+--- a/cmd/run.go
++++ b/cmd/run.go
+@@ -16,7 +16,7 @@ var runCmd = &cobra.Command{
+ 	Short: "Full orchestration: init, DAG, spawn tiers, collect, summary",
+ 	Args:  cobra.ExactArgs(1),
+ 	Run: func(_ *cobra.Command, args []string) {
+-		cfg, warnings, err := orchestra.LoadConfig(args[0])
++		res, err := orchestra.LoadConfig(args[0])
+ 		if err != nil {
+ 			orchestra.PrintEvent(os.Stdout, orchestra.Event{
+ 				Kind:    orchestra.EventError,
+@@ -26,7 +26,7 @@ var runCmd = &cobra.Command{
+ 			})
+ 			os.Exit(1)
+ 		}
+-		for _, w := range warnings {
++		for _, w := range res.Warnings {
+ 			orchestra.PrintEvent(os.Stdout, orchestra.Event{
+ 				Kind:    orchestra.EventWarn,
+ 				Tier:    -1,
+@@ -34,9 +34,18 @@ var runCmd = &cobra.Command{
+ 				At:      time.Now(),
+ 			})
+ 		}
++		if !res.Valid() {
++			orchestra.PrintEvent(os.Stdout, orchestra.Event{
++				Kind:    orchestra.EventError,
++				Tier:    -1,
++				Message: fmt.Sprintf("Config error: %s", res.Err()),
++				At:      time.Now(),
++			})
++			os.Exit(1)
++		}
+ 
+ 		wallStart := time.Now()
+-		result, err := orchestra.Run(context.Background(), cfg,
++		result, err := orchestra.Run(context.Background(), res.Config,
+ 			orchestra.WithWorkspaceDir(workspaceDir),
+ 			orchestra.WithEventHandler(func(ev orchestra.Event) {
+ 				orchestra.PrintEvent(os.Stdout, ev)
+diff --git a/cmd/spawn.go b/cmd/spawn.go
+index 63aeb97..e4e009d 100644
+--- a/cmd/spawn.go
++++ b/cmd/spawn.go
+@@ -22,11 +22,19 @@ var spawnCmd = &cobra.Command{
+ 	Run: func(_ *cobra.Command, args []string) {
+ 		logger := olog.New()
+ 
+-		cfg, _, err := config.Load(args[0])
++		res, err := config.Load(args[0])
+ 		if err != nil {
+ 			logger.Error("Validation failed: %s", err)
+ 			os.Exit(1)
+ 		}
++		// spawn is a debug entrypoint for a single team; intentionally skips
++		// the res.Warnings render loop the other commands do (pre-P2.5
++		// behavior preserved per design doc NF6 byte-identical output).
++		if !res.Valid() {
++			logger.Error("Validation failed: %s", res.Err())
++			os.Exit(1)
++		}
++		cfg := res.Config
+ 
+ 		team := cfg.TeamByName(teamFlag)
+ 		if team == nil {
+diff --git a/cmd/validate.go b/cmd/validate.go
+index f38b7c4..a16f5fa 100644
+--- a/cmd/validate.go
++++ b/cmd/validate.go
+@@ -16,16 +16,22 @@ var validateCmd = &cobra.Command{
+ 	Run: func(_ *cobra.Command, args []string) {
+ 		logger := olog.New()
+ 
+-		cfg, warnings, err := config.Load(args[0])
++		res, err := config.Load(args[0])
+ 		if err != nil {
+ 			logger.Error("Validation failed: %s", err)
+ 			os.Exit(1)
+ 		}
+ 
+-		for _, w := range warnings {
++		for _, w := range res.Warnings {
+ 			logger.Warn("%s", w)
+ 		}
+ 
++		if !res.Valid() {
++			logger.Error("Validation failed: %s", res.Err())
++			os.Exit(1)
++		}
++
++		cfg := res.Config
+ 		logger.Success("Config is valid: %d teams, project %q", len(cfg.Teams), cfg.Name)
+ 
+ 		// Print team summary
+diff --git a/docs/features/11-p25-validation-result.md b/docs/features/11-p25-validation-result.md
+new file mode 100644
+index 0000000..3b7520b
+--- /dev/null
++++ b/docs/features/11-p25-validation-result.md
+@@ -0,0 +1,430 @@
++# Feature: P2.5 — `ValidationResult` for `LoadConfig` / `Validate`
++
++Status: **Proposed**
++Owner: @itsHabib
++Depends on: P2.0 ([07-p20-minimum-sdk-surface.md](./07-p20-minimum-sdk-surface.md)) (shipped), P2.4 ([10-p24-operational-sdk.md](./10-p24-operational-sdk.md)) (shipped)
++Relates to: [DESIGN-v2.md](../DESIGN-v2.md) §13 Phase 2 — the second of two slim follow-ups deferred from P2.4 (see P2.4 §1, §3 out-of-scope, §8 Q6). Strongly recommended to land before tagging v0.1.0 so the first tagged release has the validation surface settled.
++Target: replace the `(*Config, []Warning, error)` and `([]Warning, error)` tuples returned by `pkg/orchestra.LoadConfig` / `pkg/orchestra.Validate` with a single `*ValidationResult` value that carries the parsed `*Config`, structured `Warnings`, structured `Errors` (each with a field path), and convenience methods (`Valid() bool`, `Err() error`).
++
++---
++
++## 1. Why this chapter exists (and why now)
++
++P2.4 named this reshape but explicitly deferred it ("the decide-loadconfig dogfood synthesis is **not** part of this chapter — it covers a different surface and lands as its own slim follow-up", P2.4 §1). The reasons to do it now, before v0.1.0:
++
++- **The current tuple forces every caller to demux `warnings` / `error` and gives up structure on the way.** Hard validation errors are joined into one opaque string by `Config.Validate` ([internal/config/schema.go:218-220](../../internal/config/schema.go)):
++
++  ```go
++  return warnings, fmt.Errorf("validation errors:\n  - %s", strings.Join(errs, "\n  - "))
++  ```
++
++  An SDK consumer that wants to render a structured report (a TUI, a dashboard, an IDE squiggle, an audit tool) has to parse strings out of `err.Error()`. Field-level context (which team, which task, which yaml field) has already been thrown away by the time the tuple returns.
++
++- **The asymmetry between warnings and errors is artificial.** Today warnings are typed (`Warning{Team, Message}`) and errors are stringly-typed. Both are validation issues — they should share a structure. The dogfood synthesis from P2.0 / P2.4 review concluded: lift errors to a typed `ConfigError` with the same shape as `Warning`, and bundle both with the parsed `*Config` into one `ValidationResult`.
++
++- **`pkg/orchestra` is still Experimental and there are no external consumers pinned.** The acceptable-breaking window closes at v0.1.0. The runway after P2.4 is: (1) MA backend integration test in CI, (2) decide type-alias strategy for `RunState`/`TeamState`, (3) file extractions in `pkg/orchestra`, (4) flaky-test fix, (5) a real consumer on the SDK, (6) `CONTRIBUTING.md`. None of those need the validation surface to settle, but a real consumer (item 5) very much does.
++
++- **CLI parity is trivially preserved.** `cmd/validate.go`, `cmd/run.go`, `cmd/plan.go`, `cmd/init_cmd.go`, `cmd/spawn.go` all consume the existing tuple in the same way (warn each warning, exit-1 on error). The CLI rendering becomes one iteration over `result.Warnings` and one print of `result.Err()` — byte-identical output via `Err()` preserving the `"validation errors:\n  - ..."` format.
++
++The package is Experimental, no external consumers are pinned to P2.0's shapes, and P2.4 already established the precedent of replacing rather than extending. This chapter takes the same freedom for the validation surface.
++
++---
++
++## 2. Requirements
++
++**Functional.**
++
++- F1. A new `ValidationResult` type aggregates `*Config`, `[]Warning`, and `[]ConfigError` into a single value. Exported from `pkg/orchestra`.
++- F2. `LoadConfig(path string) (*ValidationResult, error)` replaces the current `(*Config, []Warning, error)` shape. The `error` return is reserved for I/O / parse failures (file not found, malformed YAML); structural validation issues live in `result.Errors`. `result` is non-nil whenever `error == nil`.
++- F3. `Validate(cfg *Config) *ValidationResult` replaces the current `([]Warning, error)` shape. No `error` return — `result.Err()` carries it. Validation has no I/O so no separate error class to surface.
++- F4. `result.Valid() bool` returns `len(result.Errors) == 0`. Warnings do not affect validity.
++- F5. `result.Err() error` returns `nil` when `Valid()`. Otherwise returns a wrapped error preserving the existing `"validation errors:\n  - <msg>\n  - <msg>..."` format so the CLI's `orchestra validate` output stays byte-identical and any caller doing `fmt.Println(err)` keeps working. The wrapped error is `errors.Is`-equal to a new sentinel `ErrInvalidConfig`.
++- F6. `result.Config` is the parsed, defaults-resolved `*Config`. **Nil** when `Valid() == false` (i.e., hard validation errors) so consumers cannot accidentally hand an invalid config to `Run`. Also nil when `LoadConfig` returned a non-nil `error` (parse / IO failure).
++- F7. `Warning` and `ConfigError` are two parallel types with the same field set: `Field []string`, `Team string`, `Message string`. They share semantics — only their semantic category differs. `Warning.String()` and `ConfigError.String()` preserve the existing `team %q: %s` / `%s` formats so CLI rendering is unchanged.
++- F8. `Field []string` is the structured path to the offending YAML node, e.g. `["teams", "0", "tasks", "2", "verify"]` for a missing verify on team 0's third task. Empty slice means project-level (e.g. missing project name, unknown backend.kind). Populated by every existing validator in `internal/config/schema.go` and `internal/config/repository.go`; no validator omits it.
++- F9. `Team string` denormalizes the team name when `Field` points into a team subtree. Empty otherwise. Exists for ergonomic display — matches today's `Warning.Team` field — so callers don't have to walk Field + index back into Config to print "team \"backend\": ...". Programmatic consumers should prefer `Field` as the source of truth.
++- F10. `internal/config.Load(path) (*Result, error)` and `(*Config).Validate() *Result` — internal counterparts to F2/F3 — adopt the same shape, so the CLI (which calls `internal/config` directly today) and the SDK share one validation implementation. The `Result` type lives in `internal/config` and is re-exported via type alias from `pkg/orchestra` as `ValidationResult` (matching the existing `Config = config.Config`, `Warning = config.Warning` pattern in [pkg/orchestra/types.go](../../pkg/orchestra/types.go)).
++- F11. The five CLI call sites (`cmd/validate.go`, `cmd/run.go`, `cmd/plan.go`, `cmd/init_cmd.go`, `cmd/spawn.go`) migrate to the new shape. External CLI behavior is byte-identical for `orchestra validate`, `orchestra run`, `orchestra plan`, `orchestra init`, `orchestra spawn`.
++
++**Non-functional.**
++
++- NF1. **Hard break.** `pkg/orchestra` is Experimental; no external consumers are pinned. The old tuple shapes go away — no back-compat shim. CHANGELOG entry under "Experimental: breaking" documents the migration.
++- NF2. **No new direct dependencies in `go.mod`.** Reuse `errors`, `fmt`, `strings` from stdlib. The structured `Field` path is just `[]string` — no AST library, no path-DSL package.
++- NF3. **No transitive `internal/` exposure.** `ValidationResult`, `Warning`, `ConfigError`, and `ErrInvalidConfig` are exported from `pkg/orchestra` only. Same enforcement as P2.0 NF3 / P2.4 NF5.
++- NF4. **Godoc on every new exported identifier.** Same standard as P2.4. Package doc snippet rewritten for the new `LoadConfig` shape.
++- NF5. **Validators populate `Field` on every issue.** Adding `Field` is the chapter's main value-add; an unpopulated `Field` defeats the purpose. The reshape touches every validator in `internal/config/schema.go` and `internal/config/repository.go`; tests assert `Field` is non-empty (or empty for project-level issues, with explicit assertion).
++- NF6. **CLI parity is byte-identical.** `cmd/validate.go` output (warnings + success line + per-team summary), `cmd/run.go` output (warnings + run output), `cmd/plan.go` output, `cmd/init_cmd.go` output, `cmd/spawn.go` output: all unchanged externally.
++
++---
++
++## 3. Scope
++
++### In-scope
++
++- **New types** (in `internal/config`, re-exported from `pkg/orchestra` via type alias):
++  - `Result` (re-exported as `ValidationResult`) — the aggregate `{Config, Warnings, Errors}` plus `Valid() bool`, `Err() error` methods.
++  - `ConfigError` — typed counterpart to `Warning` for hard validation failures. Same `{Field []string, Team string, Message string}` shape, same `String()` semantics.
++- **Reshaped existing types:**
++  - `Warning` grows `Field []string`. Existing `Team string` and `Message string` retained. `String()` unchanged.
++- **New sentinel:** `pkg/orchestra.ErrInvalidConfig`. Returned via `errors.Is` from `result.Err()` when `!result.Valid()`. Lets callers do `if errors.Is(err, orchestra.ErrInvalidConfig)` for typed handling.
++- **Reshaped functions:**
++  - `internal/config.Load(path) (*Result, error)`
++  - `(*config.Config).Validate() *Result`
++  - `pkg/orchestra.LoadConfig(path) (*ValidationResult, error)`
++  - `pkg/orchestra.Validate(cfg *Config) *ValidationResult`
++- **Validator changes** in `internal/config/schema.go` + `internal/config/repository.go`:
++  - Every error appended to the local `errs []string` slice becomes a `ConfigError{Field, Team, Message}` appended to a new `errs []ConfigError` slice. `validateTopLevel`, `validateTeamNames`, `validateTeams`, `validateTasks`, `validateDependencies`, `detectCycles`, `validateRepositoryHard` all touched.
++  - Every warning gains a `Field` value (today they only carry `Team` + `Message`). `validateBackendWarnings`, `validateTeamSize`, `validateTaskRatio`, `validateRepositoryWarnings`, `validateTasks` (the empty-details / empty-verify warnings) all touched.
++- **CLI migration** — all five sites convert `(cfg, warnings, err)` to `result := config.Load(path)` (or `orchestra.LoadConfig`) and iterate `result.Warnings`:
++  - [cmd/validate.go](../../cmd/validate.go) — uses `config.Load`
++  - [cmd/run.go](../../cmd/run.go) — uses `orchestra.LoadConfig`
++  - [cmd/plan.go](../../cmd/plan.go) — uses `config.Load`
++  - [cmd/init_cmd.go](../../cmd/init_cmd.go) — uses `config.Load`
++  - [cmd/spawn.go](../../cmd/spawn.go) — uses `config.Load` (currently discards warnings)
++- **Test migrations:**
++  - `internal/config/schema_test.go`, `internal/config/loader_test.go`, `internal/config/repository_test.go` — every assertion against `(warnings, err)` becomes an assertion against `result.Warnings` / `result.Errors` / `result.Valid()`.
++  - `pkg/orchestra/orchestra_test.go`, `pkg/orchestra/handle_test.go`, `pkg/orchestra/events_test.go`, `pkg/orchestra/inspect_test.go`, `pkg/orchestra/steering_test.go` — every `cfg, _, err := orchestra.LoadConfig(...)` becomes `res, err := orchestra.LoadConfig(...); cfg := res.Config`.
++- **New tests** asserting the chapter's value-add:
++  - `TestValidate_PopulatesFieldPath` — every validator populates `Field`. Table-driven across each validator that emits issues, asserting on the expected `[]string` path.
++  - `TestValidate_WarningsAndErrorsCoexist` — a config with both soft and hard issues returns both slices populated and `Valid() == false`.
++  - `TestValidationResult_ErrIsErrInvalidConfig` — `errors.Is(result.Err(), orchestra.ErrInvalidConfig)` is true when invalid, `result.Err() == nil` when valid.
++  - `TestValidationResult_ErrFormatPreservesCLIByteOutput` — the `Err().Error()` string round-trips the existing `"validation errors:\n  - ...\n  - ..."` format the CLI relies on.
++  - `TestLoadConfig_ParseErrorReturnsErrorNotResult` — malformed YAML returns `(nil, error)` — the `error` channel is reserved for I/O / parse, not validation.
++  - `TestValidate_NilConfigReturnsConfigError` — `Validate(nil)` returns `&ValidationResult{Errors: [...]}` (no panic, no error return).
++  - `TestValidate_ConfigNilWhenInvalid` — for a config that fails validation, `result.Config == nil`.
++- **Doc updates:**
++  - [pkg/orchestra/doc.go](../../pkg/orchestra/doc.go) — package-doc snippet rewritten to use `result := orchestra.LoadConfig(path)`.
++  - [README.md](../../README.md) — line 241's snippet (`cfg, warnings, err := orchestra.LoadConfig("orchestra.yaml")`) rewritten.
++  - Godoc on `ValidationResult`, `ConfigError`, `Warning` (refresh), `LoadConfig`, `Validate`, `Valid`, `Err`, `ErrInvalidConfig`.
++- **CHANGELOG entry** under `## Unreleased` → new `### Experimental: breaking — pkg/orchestra validation result reshape (P2.5)` section, listing removed shapes (`(*Config, []Warning, error)` / `([]Warning, error)`) and added types (`ValidationResult`, `ConfigError`, `ErrInvalidConfig`, reshaped `Warning`).
++
++### Out-of-scope
++
++- **YAML line / column tracking on `Field`.** Would require keeping `yaml.Node` references through `Validate`. Real value but a much bigger lift; defer until a consumer asks. Open Q.
++- **Render helpers on `ValidationResult`** — e.g. `(r *ValidationResult) PrintTo(w io.Writer)`, `Summary() string`. CLI iteration is four lines today; a render method is premature abstraction. Cut.
++- **JSON marshaling of `ValidationResult` and an `orchestra validate --json` flag.** No consumer has asked. Defer.
++- **Filter helpers** like `WarningsForTeam(name)`, `ErrorsForField(prefix)`. Premature; callers can `for _, w := range result.Warnings { if w.Team == x { ... } }`.
++- **Splitting `Warning` and `ConfigError` into a unified `Issue` with a `Severity` field.** Considered (see "Borderline" in §1's lean-scope brief). Two parallel types matches what the brief named and what consumers ask for ("warnings" and "errors" are domain-distinct). Open Q for a future merge if a consumer wants severity-based filtering.
++- **Schema changes.** No new YAML fields; this is purely a Go-API surface reshape.
++- **Stability commitment.** Experimental tier holds.
++- **Back-compat shim.** Hard break; no `LoadConfigLegacy` or `WarningsAndError` wrapper. P2.4 set this precedent and the chapter inherits it.
++
++---
++
++## 4. API surface
++
++### 4.1 `pkg/orchestra/types.go` (additions / reshapes)
++
++```go
++package orchestra
++
++import (
++    "errors"
++
++    "github.com/itsHabib/orchestra/internal/config"
++)
++
++// ValidationResult is the aggregate output of [LoadConfig] and [Validate]:
++// the parsed config (when valid), the structured warnings (soft issues), and
++// the structured errors (hard validation failures). Use Valid to gate
++// further use of Config; use Err for an error-shaped view of the validation
++// failures suitable for `if err != nil` patterns.
++//
++// Experimental: aliased from internal/config; field set may grow.
++type ValidationResult = config.Result
++
++// Warning is a soft validation issue surfaced by [LoadConfig] or [Validate].
++// It does not block execution. Field is the structured YAML path to the
++// offending node (empty for project-level issues); Team is the denormalized
++// team name when Field points into a team subtree.
++//
++// Experimental: aliased from internal/config.
++type Warning = config.Warning
++
++// ConfigError is a hard validation failure surfaced by [LoadConfig] or
++// [Validate]. Same shape and semantics as [Warning]; only the severity
++// differs. A non-empty Errors slice on a [ValidationResult] makes
++// Valid return false and Err return non-nil.
++//
++// Experimental: aliased from internal/config.
++type ConfigError = config.ConfigError
++
++// ErrInvalidConfig is wrapped by [ValidationResult.Err] whenever the result
++// has at least one entry in Errors. Callers can use errors.Is to recognize
++// validation failures regardless of how the formatted message changes:
++//
++//   res, err := orchestra.LoadConfig("orchestra.yaml")
++//   if errors.Is(err, orchestra.ErrInvalidConfig) { ... }
++//
++// Experimental: this sentinel is kept stable across breaking surface
++// changes so callers can rely on errors.Is checks.
++var ErrInvalidConfig = errors.New("orchestra: invalid config")
++```
++
++### 4.2 `pkg/orchestra/run.go` (reshaped)
++
++```go
++// LoadConfig parses a YAML config from path, applies defaults, and runs
++// validation. Returns a [ValidationResult] aggregating the parsed config,
++// any warnings, and any errors. The error return is reserved for I/O or
++// parse failures (file not found, malformed YAML); structural validation
++// issues live in result.Errors.
++//
++// Typical use:
++//
++//   res, err := orchestra.LoadConfig("orchestra.yaml")
++//   if err != nil {
++//       return err // I/O or parse failure
++//   }
++//   for _, w := range res.Warnings {
++//       fmt.Fprintln(os.Stderr, w)
++//   }
++//   if !res.Valid() {
++//       return res.Err()
++//   }
++//   _, err = orchestra.Run(ctx, res.Config)
++//
++// Experimental.
++func LoadConfig(path string) (*ValidationResult, error)
++
++// Validate runs the config validator standalone. Useful for callers that
++// build configs programmatically. Mirrors what [Run] does internally:
++// applies ResolveDefaults to cfg, then validates. A nil cfg is treated as
++// a hard validation failure (one ConfigError entry, empty Field) rather
++// than a panic — Validate never returns nil.
++//
++// Experimental.
++func Validate(cfg *Config) *ValidationResult
++```
++
++### 4.3 `internal/config` (the source-of-truth shape)
++
++```go
++// Result is the aggregate output of Load and (*Config).Validate.
++// pkg/orchestra re-exports this as ValidationResult.
++type Result struct {
++    // Config is the parsed, defaults-resolved config. Nil when the result
++    // is invalid (Valid() == false) or when Load returned a non-nil error.
++    Config *Config
++
++    // Warnings is the slice of soft validation issues. Order is the order
++    // each validator emitted them; same as today's []Warning slice.
++    Warnings []Warning
++
++    // Errors is the slice of hard validation failures. Empty when Valid().
++    Errors []ConfigError
++}
++
++// Valid returns true when no hard validation errors were recorded.
++// Warnings do not affect validity.
++func (r *Result) Valid() bool { return len(r.Errors) == 0 }
++
++// Err returns nil when Valid. Otherwise returns an error wrapping
++// ErrInvalidConfig with the formatted "validation errors:\n  - ..." text
++// the CLI relies on for byte-identical output. Use errors.Is to test
++// for invalidity:
++//
++//   if errors.Is(res.Err(), orchestra.ErrInvalidConfig) { ... }
++func (r *Result) Err() error
++
++// Warning is a soft validation issue.
++type Warning struct {
++    // Field is the structured YAML path to the offending node, e.g.
++    // {"teams", "0", "tasks", "2", "verify"} for a missing verify on
++    // team 0's third task. Empty for project-level issues (missing
++    // project name, unknown backend.kind, etc.).
++    Field []string
++    // Team is the denormalized team name when Field points into a team
++    // subtree; empty otherwise. Exists for ergonomic display so String()
++    // can render "team \"foo\": message" without walking Field back into
++    // Config. Programmatic consumers should prefer Field.
++    Team string
++    // Message is the human-readable description of the issue.
++    Message string
++}
++
++// String returns the human-readable form preserved from pre-P2.5:
++// `team "foo": message` when Team is non-empty, else just Message.
++func (w Warning) String() string
++
++// ConfigError is a hard validation failure with the same shape and
++// semantics as Warning. Two parallel types — not a unified Issue with
++// Severity — because the warning vs. error distinction is domain-meaningful
++// and consumers iterate the slice they care about.
++type ConfigError struct {
++    Field   []string
++    Team    string
++    Message string
++}
++
++// String matches Warning.String exactly.
++func (e ConfigError) String() string
++
++// Load reads and parses an orchestra config from the given YAML file path.
++// Resolves defaults and validates. The error return is reserved for I/O
++// or parse failures; structural validation issues live in result.Errors.
++func Load(path string) (*Result, error)
++
++// Validate is a method on *Config that returns a *Result. Replaces the
++// pre-P2.5 ([]Warning, error) tuple. Never returns nil.
++func (c *Config) Validate() *Result
++```
++
++### 4.4 Sample call-site migrations
++
++**`cmd/validate.go` before:**
++
++```go
++cfg, warnings, err := config.Load(args[0])
++if err != nil {
++    logger.Error("Validation failed: %s", err)
++    os.Exit(1)
++}
++for _, w := range warnings {
++    logger.Warn("%s", w)
++}
++logger.Success("Config is valid: %d teams, project %q", len(cfg.Teams), cfg.Name)
++```
++
++**after:**
++
++```go
++res, err := config.Load(args[0])
++if err != nil {
++    logger.Error("Validation failed: %s", err)
++    os.Exit(1)
++}
++for _, w := range res.Warnings {
++    logger.Warn("%s", w)
++}
++if !res.Valid() {
++    logger.Error("Validation failed: %s", res.Err())
++    os.Exit(1)
++}
++logger.Success("Config is valid: %d teams, project %q", len(res.Config.Teams), res.Config.Name)
++```
++
++External output is byte-identical: warnings render the same (`Warning.String()` unchanged), and `res.Err()` produces the same `"validation errors:\n  - ..."` string the previous `err` carried.
++
++**`pkg/orchestra/orchestra_test.go` migration pattern:**
++
++```go
++// Before
++cfg, _, err := orchestra.LoadConfig(configPath)
++if err != nil { t.Fatal(err) }
++
++// After
++res, err := orchestra.LoadConfig(configPath)
++if err != nil { t.Fatal(err) }
++cfg := res.Config
++```
++
++(Tests that explicitly want to inspect warnings or errors gain `res.Warnings` / `res.Errors` access without a separate function call.)
++
++---
++
++## 5. Semantics & lifecycle
++
++### 5.1 Result population matrix
++
++| Scenario                                       | `error` (LoadConfig only) | `result.Config` | `result.Warnings`     | `result.Errors`             | `result.Valid()` |
++| ---------------------------------------------- | ------------------------- | --------------- | --------------------- | --------------------------- | ---------------- |
++| File not found / malformed YAML                | non-nil                   | nil (no result) | n/a (no result)       | n/a (no result)             | n/a              |
++| Parse OK, validation OK, no warnings           | nil                       | non-nil         | empty                 | empty                       | true             |
++| Parse OK, validation OK, warnings present      | nil                       | non-nil         | populated             | empty                       | true             |
++| Parse OK, validation failed (no warnings)      | nil                       | **nil**         | empty                 | populated                   | false            |
++| Parse OK, validation failed, warnings present  | nil                       | **nil**         | populated             | populated                   | false            |
++| `Validate(nil)` (no `error` return)            | n/a                       | nil             | empty                 | one entry, empty Field      | false            |
++
++Key: when `Valid() == false`, `Config` is nil — consumers cannot accidentally hand an invalid config to `Run`. When `LoadConfig` returns `error != nil`, the result is also nil (parse couldn't even produce a config to validate).
++
++### 5.2 `Err()` format
++
++`Result.Err()` returns nil when `Valid()`. Otherwise it returns an error built from the existing format string in [internal/config/schema.go:218-220](../../internal/config/schema.go), wrapped with `ErrInvalidConfig`:
++
++```go
++return fmt.Errorf("validation errors:\n  - %s%w",
++    strings.Join(messages, "\n  - "), wrapInvalidConfig{})
++```
++
++(or equivalent — the implementation-level choice is `errors.Join` vs a custom wrapper, with the constraint that `Err().Error()` produces the existing string and `errors.Is(err, ErrInvalidConfig)` is true.)
++
++CLI byte-parity: `cmd/validate.go` printing `res.Err()` produces the same multi-line message today's `logger.Error("Validation failed: %s", err)` produces.
++
++### 5.3 `Field` path conventions
++
++- Project-level issues: empty slice. Examples: missing project name, unknown `backend.kind`, negative `defaults.ma_concurrent_sessions`.
++- Team-scoped issues: starts with `["teams", "<index>"]`. The index is the position in the YAML array; not the team name. The denormalized `Team` field carries the name.
++- Nested team issues: `["teams", "<index>", "tasks", "<index>", "<field>"]` for tasks, `["teams", "<index>", "depends_on"]` for dependency issues, `["teams", "<index>", "members"]` for member-related warnings.
++- Backend issues: `["backend", "kind"]`, `["backend", "managed_agents", "repository", "url"]`, etc.
++- Coordinator issues: `["coordinator", "<field>"]`.
++
++The path is a `[]string` of literal YAML field names and stringified array indices — no expression DSL (no `[0]` brackets, no `.` separators). Consumers print however they want; an example helper `FieldPathString(field []string) string` is **not** part of this chapter (consumers can `strings.Join(field, ".")` or build a richer formatter).
++
++### 5.4 Why two parallel types instead of unified `Issue{Severity}`
++
++Considered and rejected:
++
++- Two domain categories. Soft and hard issues are semantically distinct in this codebase — warnings document YAML smells (members under managed_agents, large team size) while errors document structural breakage (missing field, dependency cycle). Consumers iterate the slice they care about.
++- Most callers want one or the other, not both. CLI: warnings to stderr, error to exit-1. SDK consumers (the future TUI / dashboard / audit tool): warnings as info badges, errors as blocking modals.
++- A `Severity` field on a unified type forces every consumer to filter by severity. Two slices is ergonomic.
++- Unification is reversible later. Adding a `Severity` field to a unified `Issue` and replacing the two slices is mechanical if a consumer ever needs severity-based aggregation. The reverse (splitting an `Issue` back into two types) is breaking.
++
++Open Q tracks this — if a real consumer needs severity-aware filtering before v0.1.0, the merge happens. Until then, two types.
++
++### 5.5 Why `LoadConfig` keeps an `error` return but `Validate` doesn't
++
++`LoadConfig` does I/O (reads a file, parses YAML). I/O failures are a different error class from structural validation — transient (file not found, permission denied) vs. permanent (config wrong). Keeping them in the `error` return preserves the standard Go idiom (`if err != nil { return err }`) for the I/O class.
++
++`Validate` is pure — given a `*Config`, no I/O happens. There's no second error class to surface. A single `*ValidationResult` return matches the brief's preferred shape (Q3 of the user-supplied decision list) and removes a redundant return value.
++
++Asymmetry is intentional and documented in the godoc on each function.
++
++---
++
++## 6. Implementation order
++
++One PR. The reshape is simultaneous across `internal/config` and `pkg/orchestra` because they share a return type — a partial migration would break the build mid-stream.
++
++Suggested commit-by-commit ordering inside the single PR:
++
++1. **Add new types** in `internal/config`: `Result`, `ConfigError`, sentinel `ErrInvalidConfig`. Add the new `Field []string` to `Warning`. Don't touch validators or callers yet — package compiles, all existing tests still pass against the old function signatures.
++2. **Reshape validators**: `validateTopLevel`, `validateTeamNames`, `validateTeams`, `validateTasks`, `validateDependencies`, `detectCycles`, `validateRepositoryHard`, `validateBackendWarnings`, `validateTeamSize`, `validateTaskRatio`, `validateRepositoryWarnings`. Each gains `Field` population. Internal-only changes; existing `(*Config).Validate()` signature still in place but accumulates `[]ConfigError` internally.
++3. **Reshape `(*Config).Validate()` and `config.Load`** to return `*Result` / `(*Result, error)`. Migrate `internal/config/loader_test.go`, `schema_test.go`, `repository_test.go` simultaneously. Internal package now compiles + tests pass against new shape.
++4. **Reshape `pkg/orchestra.LoadConfig` and `pkg/orchestra.Validate`** to the new shape. Re-export the new types via type alias in `pkg/orchestra/types.go`. Migrate the five `pkg/orchestra/*_test.go` files. SDK package compiles + tests pass.
++5. **Migrate the five CLI call sites** (`cmd/validate.go`, `cmd/run.go`, `cmd/plan.go`, `cmd/init_cmd.go`, `cmd/spawn.go`). CLI builds + integration tests pass.
++6. **Update doc snippets** in `pkg/orchestra/doc.go` and `README.md`. Add CHANGELOG entry.
++7. **Add new tests** asserting the chapter's value-add: `TestValidate_PopulatesFieldPath`, `TestValidate_WarningsAndErrorsCoexist`, `TestValidationResult_ErrIsErrInvalidConfig`, `TestValidationResult_ErrFormatPreservesCLIByteOutput`, `TestLoadConfig_ParseErrorReturnsErrorNotResult`, `TestValidate_NilConfigReturnsConfigError`, `TestValidate_ConfigNilWhenInvalid`.
++
++---
++
++## 7. Acceptance criteria (chapter-level)
++
++- [ ] `pkg/orchestra` exports `ValidationResult` (alias of `internal/config.Result`), `ConfigError` (alias of `internal/config.ConfigError`), reshaped `Warning` (with `Field []string`), `ErrInvalidConfig`.
++- [ ] `pkg/orchestra.LoadConfig` returns `(*ValidationResult, error)`; `pkg/orchestra.Validate` returns `*ValidationResult`.
++- [ ] `internal/config.Load` returns `(*Result, error)`; `(*Config).Validate()` returns `*Result`.
++- [ ] Every validator in `internal/config/schema.go` and `internal/config/repository.go` populates `Field` on every issue it emits.
++- [ ] The five CLI commands produce byte-identical external output to pre-chapter for `orchestra validate`, `orchestra run`, `orchestra plan`, `orchestra init`, `orchestra spawn`.
++- [ ] `errors.Is(result.Err(), orchestra.ErrInvalidConfig)` is true whenever `!result.Valid()` and false otherwise.
++- [ ] `result.Err().Error()` on an invalid config produces the existing `"validation errors:\n  - ...\n  - ..."` format; CLI message strings are unchanged.
++- [ ] All migrated tests pass; new tests for `Field` population, sentinel wrapping, and parse-error-vs-validation-error separation pass.
++- [ ] Godoc on every new exported identifier; package doc snippet rewritten.
++- [ ] CHANGELOG entry under "Experimental: breaking" listing removed shapes and added types.
++- [ ] No new direct dependencies in `go.mod`.
++- [ ] `make vet`, `make test`, `go test -race ./...`, `go tool golangci-lint run ./...` all green.
++
++---
++
++## 8. Open questions
++
++1. **YAML line / column tracking on `Field`.** A natural future extension: `Warning` and `ConfigError` grow a `Line int` / `Column int` populated from `yaml.Node.Line` / `yaml.Node.Column`. Requires keeping a parsed `yaml.Node` tree alongside the unmarshaled `*Config` and threading node references through the validators. Real value for IDE consumers (squiggle on the right line). Big lift — the entire validator surface would need refactoring. Defer until a consumer asks. Lean: when the IDE/LSP consumer materializes, this is the next chapter on this surface.
++
++2. **`Field` path string helper.** A `FieldPathString(field []string) string` (or `(w Warning) FieldPath() string`) that renders `["teams", "0", "tasks", "2", "verify"]` as `"teams[0].tasks[2].verify"` would simplify CLI rendering. Skipped from this chapter — `strings.Join(field, ".")` is one line at the call site, and bracket-vs-dot rendering is opinionated. Add when a consumer wants it.
++
++3. **Unifying `Warning` + `ConfigError` into `Issue{Severity}`.** Two parallel types is the chapter's choice. If a future consumer wants severity-based filtering or a unified diagnostics stream (LSP-style), the merge is mechanical: introduce `type Issue = Warning` + `type Severity int` constants + `Issues []Issue` slice, deprecate the two-slice shape. Not on the critical path.
++
++4. **`ValidationResult` rendering helper.** `(r *ValidationResult) PrintTo(w io.Writer)` would replace the four-line iteration loops in the CLI. Cut from this chapter as premature abstraction. Worth revisiting when the SDK gets its first real consumer (TUI / dashboard) and that consumer wants a "render a validation report" primitive.
++
++5. **`Validate` name collision with `(*Config).Validate()`.** The package-level `pkg/orchestra.Validate(cfg)` and the method `cfg.Validate()` (now returning `*Result`) coexist. Today the method exists on `*config.Config` (which is the type-alias target of `pkg/orchestra.Config`). Callers can do either `cfg.Validate()` or `orchestra.Validate(cfg)`; both return `*ValidationResult`. Documented in godoc; not a problem in practice. Lean: keep both — the method is convenient for code that already has a `*Config`, the function is convenient for code that may have a nil `*Config`.
++
++6. **Pre-`ResolveDefaults` validation.** `Validate` calls `ResolveDefaults` before validating, matching today's behavior. A future caller might want to validate the raw YAML-as-loaded shape (before defaults). Skipped — no consumer has asked, and validating the raw shape would emit warnings for fields the defaults would have filled in. Add as `ValidateRaw` or `ValidateOptions{ResolveDefaults: false}` if a consumer surfaces.
+diff --git a/internal/config/loader.go b/internal/config/loader.go
+index 340bee8..8e41297 100644
+--- a/internal/config/loader.go
++++ b/internal/config/loader.go
+@@ -8,24 +8,24 @@ import (
+ )
+ 
+ // Load reads and parses an orchestra config from the given YAML file path.
+-// It resolves defaults and validates the config before returning.
+-func Load(path string) (*Config, []Warning, error) {
++// It resolves defaults and validates the config before returning. The
++// returned [Result] aggregates the parsed config (when valid), the
++// warnings, and the errors. The error return is reserved for I/O or
++// parse failures (file not found, malformed YAML); structural validation
++// issues live in result.Errors.
++//
++// pkg/orchestra re-exports Load as orchestra.LoadConfig.
++func Load(path string) (*Result, error) {
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+-		return nil, nil, fmt.Errorf("reading config: %w", err)
++		return nil, fmt.Errorf("reading config: %w", err)
+ 	}
+ 
+ 	var cfg Config
+ 	if err := yaml.Unmarshal(data, &cfg); err != nil {
+-		return nil, nil, fmt.Errorf("parsing config: %w", err)
++		return nil, fmt.Errorf("parsing config: %w", err)
+ 	}
+ 
+ 	cfg.ResolveDefaults()
+-
+-	warnings, err := cfg.Validate()
+-	if err != nil {
+-		return nil, warnings, err
+-	}
+-
+-	return &cfg, warnings, nil
++	return cfg.Validate(), nil
+ }
+diff --git a/internal/config/loader_test.go b/internal/config/loader_test.go
+index 9f1452b..4deafa6 100644
+--- a/internal/config/loader_test.go
++++ b/internal/config/loader_test.go
+@@ -1,6 +1,7 @@
+ package config
+ 
+ import (
++	"errors"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -48,12 +49,19 @@ teams:
+ 		t.Fatal(err)
+ 	}
+ 
+-	cfg, warnings, err := Load(path)
++	res, err := Load(path)
+ 	if err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+-	if len(warnings) != 0 {
+-		t.Fatalf("unexpected warnings: %v", warnings)
++	if !res.Valid() {
++		t.Fatalf("unexpected errors: %v", res.Errors)
++	}
++	if len(res.Warnings) != 0 {
++		t.Fatalf("unexpected warnings: %v", res.Warnings)
++	}
++	cfg := res.Config
++	if cfg == nil {
++		t.Fatal("Config is nil on a valid result")
+ 	}
+ 	if cfg.Name != "test-project" {
+ 		t.Fatalf("expected test-project, got %s", cfg.Name)
+@@ -82,17 +90,23 @@ func TestLoad_InvalidYAML(t *testing.T) {
+ 	if err := os.WriteFile(path, []byte(":::invalid"), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	_, _, err := Load(path)
++	res, err := Load(path)
+ 	if err == nil {
+ 		t.Fatal("expected error for invalid YAML")
+ 	}
++	if res != nil {
++		t.Fatalf("expected nil result on parse error, got %+v", res)
++	}
+ }
+ 
+ func TestLoad_MissingFile(t *testing.T) {
+-	_, _, err := Load("/nonexistent/file.yaml")
++	res, err := Load("/nonexistent/file.yaml")
+ 	if err == nil {
+ 		t.Fatal("expected error for missing file")
+ 	}
++	if res != nil {
++		t.Fatalf("expected nil result on I/O error, got %+v", res)
++	}
+ }
+ 
+ func TestLoad_ValidationError(t *testing.T) {
+@@ -105,11 +119,20 @@ teams: []
+ 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	_, _, err := Load(path)
+-	if err == nil {
+-		t.Fatal("expected validation error")
++	res, err := Load(path)
++	if err != nil {
++		t.Fatalf("Load returned an error for a structural validation failure (validation issues should live in res.Errors, not error): %v", err)
+ 	}
+-	if !strings.Contains(err.Error(), "project name") {
+-		t.Fatalf("unexpected error: %v", err)
++	if res.Valid() {
++		t.Fatal("expected validation errors")
++	}
++	if !errors.Is(res.Err(), ErrInvalidConfig) {
++		t.Fatalf("res.Err() does not wrap ErrInvalidConfig: %v", res.Err())
++	}
++	if !strings.Contains(res.Err().Error(), "project name") {
++		t.Fatalf("unexpected err: %v", res.Err())
++	}
++	if res.Config != nil {
++		t.Fatalf("Config should be nil on invalid result, got %+v", res.Config)
+ 	}
+ }
+diff --git a/internal/config/repository.go b/internal/config/repository.go
+index 872ed6e..b12da97 100644
+--- a/internal/config/repository.go
++++ b/internal/config/repository.go
+@@ -2,6 +2,7 @@ package config
+ 
+ import (
+ 	"fmt"
++	"strconv"
+ 
+ 	"github.com/itsHabib/orchestra/internal/ghhost"
+ )
+@@ -52,40 +53,55 @@ func (c *Config) resolveRepositoryDefaults() {
+ 
+ // validateRepositoryHard returns hard errors for repository configuration.
+ // Only consulted when Backend.Kind == "managed_agents".
+-func (c *Config) validateRepositoryHard() []string {
++func (c *Config) validateRepositoryHard() []ConfigError {
+ 	if c.Backend.Kind != "managed_agents" {
+ 		return nil
+ 	}
+-	var errs []string
++	var errs []ConfigError
+ 
+ 	if c.Backend.ManagedAgents != nil && c.Backend.ManagedAgents.Repository != nil {
+-		errs = append(errs, validateRepositorySpec("backend.managed_agents.repository", c.Backend.ManagedAgents.Repository)...)
++		basePath := "backend.managed_agents.repository"
++		baseField := []string{"backend", "managed_agents", "repository"}
++		errs = append(errs, validateRepositorySpec(basePath, baseField, "", c.Backend.ManagedAgents.Repository)...)
+ 	}
+ 	for i := range c.Teams {
+ 		spec := c.Teams[i].EnvironmentOverride.Repository
+ 		if spec == nil {
+ 			continue
+ 		}
+-		path := fmt.Sprintf("teams[%q].environment_override.repository", c.Teams[i].Name)
+-		errs = append(errs, validateRepositorySpec(path, spec)...)
++		basePath := fmt.Sprintf("teams[%q].environment_override.repository", c.Teams[i].Name)
++		baseField := []string{"teams", strconv.Itoa(i), "environment_override", "repository"}
++		errs = append(errs, validateRepositorySpec(basePath, baseField, c.Teams[i].Name, spec)...)
+ 	}
+ 
+ 	if c.Backend.ManagedAgents != nil && c.Backend.ManagedAgents.OpenPullRequests {
+ 		for i := range c.Teams {
+ 			if c.Teams[i].EffectiveRepository(c) == nil {
+-				errs = append(errs, fmt.Sprintf("team %q: backend.managed_agents.open_pull_requests requires a repository (set backend.managed_agents.repository or environment_override.repository)", c.Teams[i].Name))
++				errs = append(errs, ConfigError{
++					Field:   []string{"backend", "managed_agents", "open_pull_requests"},
++					Team:    c.Teams[i].Name,
++					Message: "backend.managed_agents.open_pull_requests requires a repository (set backend.managed_agents.repository or environment_override.repository)",
++				})
+ 			}
+ 		}
+ 	}
+ 	return errs
+ }
+ 
+-func validateRepositorySpec(path string, spec *RepositorySpec) []string {
++func validateRepositorySpec(basePath string, baseField []string, team string, spec *RepositorySpec) []ConfigError {
+ 	if spec.URL == "" {
+-		return []string{path + ".url is required"}
++		return []ConfigError{{
++			Field:   append(append([]string{}, baseField...), "url"),
++			Team:    team,
++			Message: basePath + ".url is required",
++		}}
+ 	}
+ 	if _, _, err := ghhost.ParseRepoURL(spec.URL); err != nil {
+-		return []string{fmt.Sprintf("%s.url %q invalid: %v", path, spec.URL, err)}
++		return []ConfigError{{
++			Field:   append(append([]string{}, baseField...), "url"),
++			Team:    team,
++			Message: fmt.Sprintf("%s.url %q invalid: %v", basePath, spec.URL, err),
++		}}
+ 	}
+ 	return nil
+ }
+@@ -116,6 +132,7 @@ func (c *Config) validateRepositoryWarnings() []Warning {
+ 				continue
+ 			}
+ 			warnings = append(warnings, Warning{
++				Field:   []string{"teams", strconv.Itoa(i), "depends_on"},
+ 				Team:    t.Name,
+ 				Message: fmt.Sprintf("depends on %q which uses a different repository (%q vs %q); cross-repo upstream branches are not mounted", dep, depRepo, myRepo),
+ 			})
+diff --git a/internal/config/repository_test.go b/internal/config/repository_test.go
+index f330f65..694fba8 100644
+--- a/internal/config/repository_test.go
++++ b/internal/config/repository_test.go
+@@ -53,12 +53,12 @@ func TestRepository_ValidateURLFailure(t *testing.T) {
+ 		Teams: mustValidTeams(),
+ 	}
+ 	cfg.ResolveDefaults()
+-	_, err := cfg.Validate()
+-	if err == nil {
++	res := cfg.Validate()
++	if res.Valid() {
+ 		t.Fatal("expected error for ssh url")
+ 	}
+-	if !strings.Contains(err.Error(), "backend.managed_agents.repository.url") {
+-		t.Fatalf("unexpected error: %v", err)
++	if !errorsContain(res.Errors, "backend.managed_agents.repository.url") {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -74,12 +74,12 @@ func TestRepository_OpenPRRequiresRepository(t *testing.T) {
+ 		Teams: mustValidTeams(),
+ 	}
+ 	cfg.ResolveDefaults()
+-	_, err := cfg.Validate()
+-	if err == nil {
++	res := cfg.Validate()
++	if res.Valid() {
+ 		t.Fatal("expected error: open_pull_requests without repository")
+ 	}
+-	if !strings.Contains(err.Error(), "open_pull_requests requires a repository") {
+-		t.Fatalf("unexpected error: %v", err)
++	if !errorsContain(res.Errors, "open_pull_requests requires a repository") {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -104,8 +104,9 @@ func TestRepository_OverrideShadowsProject(t *testing.T) {
+ 		},
+ 	}
+ 	cfg.ResolveDefaults()
+-	if _, err := cfg.Validate(); err != nil {
+-		t.Fatalf("unexpected error: %v", err)
++	res := cfg.Validate()
++	if !res.Valid() {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+ 	got := cfg.Teams[0].EffectiveRepository(cfg)
+ 	if got == nil || got.URL != "https://github.com/other/repo" {
+@@ -136,22 +137,22 @@ func TestRepository_CrossRepoDependsOnWarns(t *testing.T) {
+ 		},
+ 	}
+ 	cfg.ResolveDefaults()
+-	warnings, err := cfg.Validate()
+-	if err != nil {
+-		t.Fatalf("unexpected error: %v", err)
++	res := cfg.Validate()
++	if !res.Valid() {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+-	if len(warnings) == 0 {
++	if len(res.Warnings) == 0 {
+ 		t.Fatal("expected at least one warning")
+ 	}
+ 	found := false
+-	for _, w := range warnings {
++	for _, w := range res.Warnings {
+ 		if w.Team == "beta" && strings.Contains(w.Message, "different repository") {
+ 			found = true
+ 			break
+ 		}
+ 	}
+ 	if !found {
+-		t.Fatalf("expected cross-repo warning, got: %v", warnings)
++		t.Fatalf("expected cross-repo warning, got: %v", res.Warnings)
+ 	}
+ }
+ 
+diff --git a/internal/config/result.go b/internal/config/result.go
+new file mode 100644
+index 0000000..24fe270
+--- /dev/null
++++ b/internal/config/result.go
+@@ -0,0 +1,110 @@
++package config
++
++import (
++	"errors"
++	"fmt"
++	"strings"
++)
++
++// ErrInvalidConfig is wrapped by [Result.Err] whenever the result has at
++// least one entry in Errors. Callers can use errors.Is to recognize
++// validation failures regardless of how the formatted message changes:
++//
++//	res := cfg.Validate()
++//	if errors.Is(res.Err(), config.ErrInvalidConfig) { ... }
++//
++// pkg/orchestra re-exports this sentinel as orchestra.ErrInvalidConfig.
++var ErrInvalidConfig = errors.New("orchestra: invalid config")
++
++// Result is the aggregate output of [Load] and [Config.Validate]. It
++// carries the parsed config (when valid), the structured warnings, and
++// the structured errors. Use [Result.Valid] to gate further use of
++// Config; use [Result.Err] for an error-shaped view of the validation
++// failures suitable for `if err != nil` patterns.
++//
++// pkg/orchestra re-exports this type as orchestra.ValidationResult.
++type Result struct {
++	// Config is the parsed, defaults-resolved config. Nil when the
++	// result is invalid (Valid() == false) or when Load returned a
++	// non-nil error.
++	Config *Config
++
++	// Warnings is the slice of soft validation issues. Order is the
++	// order each validator emitted them; same as the pre-P2.5
++	// []Warning slice.
++	Warnings []Warning
++
++	// Errors is the slice of hard validation failures. Empty when
++	// Valid().
++	Errors []ConfigError
++}
++
++// Valid returns true when no hard validation errors were recorded.
++// Warnings do not affect validity.
++func (r *Result) Valid() bool {
++	return r != nil && len(r.Errors) == 0
++}
++
++// Err returns nil when Valid. Otherwise it returns an error wrapping
++// [ErrInvalidConfig] with the formatted "validation errors:\n  - ..."
++// text the CLI relies on for byte-identical output. Use errors.Is to
++// test for invalidity:
++//
++//	if errors.Is(res.Err(), config.ErrInvalidConfig) { ... }
++func (r *Result) Err() error {
++	if r.Valid() {
++		return nil
++	}
++	msgs := make([]string, len(r.Errors))
++	for i, e := range r.Errors {
++		msgs[i] = e.String()
++	}
++	return &invalidConfigError{
++		msg: "validation errors:\n  - " + strings.Join(msgs, "\n  - "),
++	}
++}
++
++// invalidConfigError carries the formatted multi-line "validation
++// errors:\n  - ..." string the CLI prints byte-for-byte and unwraps to
++// [ErrInvalidConfig] so callers can match with errors.Is.
++type invalidConfigError struct {
++	msg string
++}
++
++func (e *invalidConfigError) Error() string { return e.msg }
++func (e *invalidConfigError) Unwrap() error { return ErrInvalidConfig }
++
++// ConfigError is a hard validation failure with the same shape and
++// semantics as [Warning]. Two parallel types — not a unified Issue with
++// Severity — because the warning vs. error distinction is
++// domain-meaningful and consumers iterate the slice they care about.
++//
++// pkg/orchestra re-exports this type as orchestra.ConfigError; the
++// "config.ConfigError" stutter inside this package is intentional and
++// matches the SDK-facing alias.
++//
++//revive:disable-next-line:exported
++type ConfigError struct {
++	// Field is the structured YAML path to the offending node, e.g.
++	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
++	// team 0's third task. Empty for project-level issues (missing
++	// project name, unknown backend.kind, etc.).
++	Field []string
++	// Team is the denormalized team name when Field points into a team
++	// subtree; empty otherwise. Exists for ergonomic display so
++	// String() can render `team "foo": message` without walking Field
++	// back into Config. Programmatic consumers should prefer Field.
++	Team string
++	// Message is the human-readable description of the issue.
++	Message string
++}
++
++// String returns the human-readable form: `team "foo": message` when
++// Team is non-empty, else just Message. Matches [Warning.String]
++// exactly so CLI rendering is unchanged.
++func (e ConfigError) String() string {
++	if e.Team != "" {
++		return fmt.Sprintf("team %q: %s", e.Team, e.Message)
++	}
++	return e.Message
++}
+diff --git a/internal/config/result_test.go b/internal/config/result_test.go
+new file mode 100644
+index 0000000..b2a3b76
+--- /dev/null
++++ b/internal/config/result_test.go
+@@ -0,0 +1,388 @@
++package config
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"reflect"
++	"strings"
++	"testing"
++)
++
++// TestValidate_PopulatesFieldPath asserts that every validator emits
++// issues with a structured Field path. Table-driven across each
++// validator that emits issues; covers project-level, team-scoped,
++// nested, backend, and warning paths.
++func TestValidate_PopulatesFieldPath(t *testing.T) {
++	cases := []fieldPathCase{}
++	cases = append(cases, fieldPathProjectAndBackendCases()...)
++	cases = append(cases, fieldPathTeamCases()...)
++	cases = append(cases, fieldPathRepositoryCases()...)
++	cases = append(cases, fieldPathWarningCases()...)
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			assertFieldPath(t, tc.cfg.Validate(), tc.wantErr, tc.wantField, tc.wantWarn, tc.wantWarnField)
++		})
++	}
++}
++
++type fieldPathCase struct {
++	name          string
++	cfg           *Config
++	wantErr       []string // substring expected in the matching ConfigError
++	wantField     []string // expected Field path on the matching ConfigError
++	wantWarn      []string // substring expected in the matching Warning
++	wantWarnField []string // expected Field path on the matching Warning
++}
++
++func fieldPathProjectAndBackendCases() []fieldPathCase {
++	return []fieldPathCase{
++		{
++			name: "missing project name",
++			cfg: &Config{
++				Teams: []Team{{
++					Name:  "a",
++					Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
++				}},
++			},
++			wantErr:   []string{"project name is required"},
++			wantField: nil, // project-level → empty Field per §5.3
++		},
++		{
++			name: "unknown backend kind",
++			cfg: &Config{
++				Name:    "p",
++				Backend: Backend{Kind: "bogus"},
++				Teams: []Team{{
++					Name:  "a",
++					Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
++				}},
++			},
++			wantErr:   []string{"backend.kind must be"},
++			wantField: []string{"backend", "kind"},
++		},
++	}
++}
++
++func fieldPathTeamCases() []fieldPathCase {
++	return []fieldPathCase{
++		{
++			name: "missing task summary",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{{
++					Name: "a",
++					Tasks: []Task{
++						{Summary: "ok", Details: "d", Verify: "v"},
++						{Summary: "ok", Details: "d", Verify: "v"},
++						{Summary: "", Details: "d", Verify: "v"},
++					},
++				}},
++			},
++			wantErr:   []string{"empty summary"},
++			wantField: []string{"teams", "0", "tasks", "2", "summary"},
++		},
++		{
++			name: "self-referencing dependency",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{{
++					Name:      "a",
++					Tasks:     []Task{{Summary: "x", Details: "d", Verify: "v"}},
++					DependsOn: []string{"a"},
++				}},
++			},
++			wantErr:   []string{"cannot depend on itself"},
++			wantField: []string{"teams", "0", "depends_on"},
++		},
++		{
++			name: "unknown dependency",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{{
++					Name:      "a",
++					Tasks:     []Task{{Summary: "x", Details: "d", Verify: "v"}},
++					DependsOn: []string{"ghost"},
++				}},
++			},
++			wantErr:   []string{"unknown team"},
++			wantField: []string{"teams", "0", "depends_on"},
++		},
++		{
++			name: "dependency cycle",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{
++					{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}, DependsOn: []string{"b"}},
++					{Name: "b", Tasks: []Task{{Summary: "y", Details: "d", Verify: "v"}}, DependsOn: []string{"a"}},
++				},
++			},
++			wantErr:   []string{"cycle"},
++			wantField: []string{"teams"},
++		},
++	}
++}
++
++func fieldPathRepositoryCases() []fieldPathCase {
++	return []fieldPathCase{
++		{
++			name: "missing repository url under managed_agents",
++			cfg: &Config{
++				Name: "p",
++				Backend: Backend{
++					Kind: "managed_agents",
++					ManagedAgents: &ManagedAgentsBackend{
++						Repository: &RepositorySpec{URL: ""},
++					},
++				},
++				Teams: []Team{{
++					Name:  "a",
++					Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
++				}},
++			},
++			wantErr:   []string{"backend.managed_agents.repository.url"},
++			wantField: []string{"backend", "managed_agents", "repository", "url"},
++		},
++	}
++}
++
++func fieldPathWarningCases() []fieldPathCase {
++	return []fieldPathCase{
++		{
++			name: "team-size warning",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{{
++					Name:    "a",
++					Members: []Member{{Role: "1"}, {Role: "2"}, {Role: "3"}, {Role: "4"}, {Role: "5"}, {Role: "6"}},
++					Tasks:   manyTasks(12),
++				}},
++			},
++			wantWarn:      []string{"members"},
++			wantWarnField: []string{"teams", "0", "members"},
++		},
++		{
++			name: "task-quality warning (empty details)",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{{
++					Name:  "a",
++					Tasks: []Task{{Summary: "do stuff"}},
++				}},
++			},
++			wantWarn:      []string{"empty details"},
++			wantWarnField: []string{"teams", "0", "tasks", "0", "details"},
++		},
++		{
++			name: "task-quality warning (empty verify)",
++			cfg: &Config{
++				Name: "p",
++				Teams: []Team{{
++					Name:  "a",
++					Tasks: []Task{{Summary: "do stuff", Details: "d"}},
++				}},
++			},
++			wantWarn:      []string{"empty verify"},
++			wantWarnField: []string{"teams", "0", "tasks", "0", "verify"},
++		},
++	}
++}
++
++// manyTasks returns n tasks with non-empty details/verify so they
++// don't trip the task-quality warnings during fixture construction.
++func manyTasks(n int) []Task {
++	out := make([]Task, n)
++	for i := range out {
++		out[i] = Task{Summary: "t", Details: "d", Verify: "v"}
++	}
++	return out
++}
++
++// assertFieldPath verifies that a [Result] contains a matching
++// ConfigError or Warning with the expected Field path.
++func assertFieldPath(t *testing.T, res *Result, wantErr, wantField, wantWarn, wantWarnField []string) {
++	t.Helper()
++	if len(wantErr) > 0 {
++		match := findError(res.Errors, wantErr[0])
++		if match == nil {
++			t.Fatalf("no ConfigError matched %q; got: %v", wantErr[0], res.Errors)
++		}
++		if !reflect.DeepEqual(match.Field, wantField) {
++			t.Errorf("Field = %v, want %v (message: %q)", match.Field, wantField, match.Message)
++		}
++	}
++	if len(wantWarn) > 0 {
++		match := findWarning(res.Warnings, wantWarn[0])
++		if match == nil {
++			t.Fatalf("no Warning matched %q; got: %v", wantWarn[0], res.Warnings)
++		}
++		if !reflect.DeepEqual(match.Field, wantWarnField) {
++			t.Errorf("Field = %v, want %v (message: %q)", match.Field, wantWarnField, match.Message)
++		}
++	}
++}
++
++// TestValidate_WarningsAndErrorsCoexist asserts that warnings and
++// errors are accumulated independently — a config with both soft and
++// hard issues populates both slices and is invalid.
++func TestValidate_WarningsAndErrorsCoexist(t *testing.T) {
++	cfg := &Config{
++		// project name missing → hard error
++		Backend: Backend{Kind: "managed_agents"},
++		Teams: []Team{{
++			Name:    "a",
++			Members: []Member{{Role: "dev"}}, // members under managed_agents → warning
++			Tasks: []Task{
++				{Summary: "x", Details: "d", Verify: "v"},
++				{Summary: "x", Details: "", Verify: ""}, // empty details/verify → warnings
++			},
++		}},
++	}
++	res := cfg.Validate()
++	if res.Valid() {
++		t.Fatal("expected invalid result")
++	}
++	if len(res.Errors) == 0 {
++		t.Fatal("expected at least one error")
++	}
++	if len(res.Warnings) == 0 {
++		t.Fatal("expected at least one warning")
++	}
++	if res.Config != nil {
++		t.Errorf("expected nil Config on invalid result, got %+v", res.Config)
++	}
++}
++
++// TestValidationResult_ErrIsErrInvalidConfig asserts the sentinel-wrap
++// contract: errors.Is is true for invalid configs and Err is nil for
++// valid configs.
++func TestValidationResult_ErrIsErrInvalidConfig(t *testing.T) {
++	bad := &Config{
++		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
++	}
++	res := bad.Validate()
++	if res.Err() == nil {
++		t.Fatal("invalid config: Err() returned nil")
++	}
++	if !errors.Is(res.Err(), ErrInvalidConfig) {
++		t.Fatalf("invalid config: errors.Is(Err, ErrInvalidConfig) is false; err=%v", res.Err())
++	}
++
++	good := &Config{
++		Name: "p",
++		Teams: []Team{{
++			Name:  "a",
++			Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
++		}},
++	}
++	res = good.Validate()
++	if res.Err() != nil {
++		t.Fatalf("valid config: Err() = %v, want nil", res.Err())
++	}
++}
++
++// TestValidationResult_ErrFormatPreservesCLIByteOutput asserts that
++// res.Err().Error() produces the exact pre-P2.5 multi-line format the
++// CLI prints. The previous version of this test only checked that the
++// formatted string contained each error's own String() output — a
++// tautology that missed a doubled `team "x":` prefix regression flagged
++// in PR #21 review. Lock the format down byte-for-byte against a fixed
++// fixture so any future drift trips the test.
++func TestValidationResult_ErrFormatPreservesCLIByteOutput(t *testing.T) {
++	cfg := &Config{
++		// project name missing → no-team error
++		Backend: Backend{Kind: "bogus"},
++		Teams: []Team{{
++			Name:      "a",
++			DependsOn: []string{"ghost"},
++			// no tasks → "at least one task is required"
++		}},
++	}
++	want := strings.Join([]string{
++		"validation errors:",
++		`  - project name is required`,
++		`  - backend.kind must be one of: local, managed_agents (got "bogus")`,
++		`  - team "a": at least one task is required`,
++		`  - team "a": depends on unknown team "ghost"`,
++	}, "\n")
++	got := cfg.Validate().Err().Error()
++	if got != want {
++		t.Fatalf("Err() format drift\n--- got ---\n%s\n--- want ---\n%s", got, want)
++	}
++}
++
++// TestLoadConfig_ParseErrorReturnsErrorNotResult asserts that
++// malformed YAML produces (nil, error) — the error channel is reserved
++// for I/O / parse failures, not validation.
++func TestLoadConfig_ParseErrorReturnsErrorNotResult(t *testing.T) {
++	dir := t.TempDir()
++	path := filepath.Join(dir, "bad.yaml")
++	if err := os.WriteFile(path, []byte(":::not yaml"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	res, err := Load(path)
++	if err == nil {
++		t.Fatal("expected error for malformed YAML")
++	}
++	if res != nil {
++		t.Fatalf("expected nil result on parse error, got %+v", res)
++	}
++}
++
++// TestValidate_NilConfigReturnsConfigError asserts that Validate(nil)
++// returns a non-nil Result with one ConfigError entry rather than
++// panicking.
++func TestValidate_NilConfigReturnsConfigError(t *testing.T) {
++	var cfg *Config
++	res := cfg.Validate()
++	if res == nil {
++		t.Fatal("Validate(nil): got nil Result, want one with a ConfigError entry")
++	}
++	if res.Valid() {
++		t.Fatal("Validate(nil): expected invalid result")
++	}
++	if len(res.Errors) == 0 {
++		t.Fatal("Validate(nil): expected at least one ConfigError")
++	}
++	if !strings.Contains(res.Errors[0].Message, "nil config") {
++		t.Errorf("Validate(nil): unexpected Message %q", res.Errors[0].Message)
++	}
++}
++
++// TestValidate_ConfigNilWhenInvalid asserts that res.Config is nil for
++// configs that fail validation, so consumers cannot accidentally hand
++// an invalid config to Run.
++func TestValidate_ConfigNilWhenInvalid(t *testing.T) {
++	cfg := &Config{
++		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
++	}
++	res := cfg.Validate()
++	if res.Valid() {
++		t.Fatal("expected invalid result")
++	}
++	if res.Config != nil {
++		t.Errorf("expected res.Config == nil on invalid result, got %+v", res.Config)
++	}
++}
++
++// findError returns the first ConfigError whose Message contains
++// substr, or nil.
++func findError(errs []ConfigError, substr string) *ConfigError {
++	for i := range errs {
++		if strings.Contains(errs[i].Message, substr) {
++			return &errs[i]
++		}
++	}
++	return nil
++}
++
++// findWarning returns the first Warning whose Message contains
++// substr, or nil.
++func findWarning(warns []Warning, substr string) *Warning {
++	for i := range warns {
++		if strings.Contains(warns[i].Message, substr) {
++			return &warns[i]
++		}
++	}
++	return nil
++}
+diff --git a/internal/config/schema.go b/internal/config/schema.go
+index ae8be85..dfc9685 100644
+--- a/internal/config/schema.go
++++ b/internal/config/schema.go
+@@ -3,6 +3,7 @@ package config
+ import (
+ 	"errors"
+ 	"fmt"
++	"strconv"
+ 	"strings"
+ 
+ 	"gopkg.in/yaml.v3"
+@@ -181,12 +182,26 @@ func (c *Config) ResolveDefaults() {
+ 	c.resolveRepositoryDefaults()
+ }
+ 
+-// Warning represents a non-fatal validation issue.
++// Warning represents a non-fatal validation issue surfaced by [Load]
++// or [Config.Validate]. It does not block execution.
++//
++// pkg/orchestra re-exports this type as orchestra.Warning.
+ type Warning struct {
+-	Team    string
++	// Field is the structured YAML path to the offending node, e.g.
++	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
++	// team 0's third task. Empty for project-level issues.
++	Field []string
++	// Team is the denormalized team name when Field points into a team
++	// subtree; empty otherwise. Exists for ergonomic display so
++	// String() can render `team "foo": message` without walking Field
++	// back into Config. Programmatic consumers should prefer Field.
++	Team string
++	// Message is the human-readable description of the issue.
+ 	Message string
+ }
+ 
++// String returns the human-readable form: `team "foo": message` when
++// Team is non-empty, else just Message.
+ func (w Warning) String() string {
+ 	if w.Team != "" {
+ 		return fmt.Sprintf("team %q: %s", w.Team, w.Message)
+@@ -194,9 +209,24 @@ func (w Warning) String() string {
+ 	return w.Message
+ }
+ 
+-// Validate checks the config for errors and returns warnings.
+-// Hard errors prevent execution. Warnings are returned separately.
+-func (c *Config) Validate() ([]Warning, error) {
++// Validate runs the config validators and returns a [Result] aggregating
++// the parsed config (when valid), structured warnings, and structured
++// errors. Use [Result.Valid] to gate further use of the config; use
++// [Result.Err] for an error-shaped view of validation failures suitable
++// for `if err != nil` patterns.
++//
++// Validate never returns nil. When at least one entry exists in
++// Result.Errors, Result.Config is nil so consumers cannot accidentally
++// hand an invalid config to downstream code.
++//
++// pkg/orchestra re-exports the Result shape as orchestra.ValidationResult.
++func (c *Config) Validate() *Result {
++	if c == nil {
++		return &Result{
++			Errors: []ConfigError{{Message: "nil config"}},
++		}
++	}
++
+ 	var warnings []Warning
+ 	errs := c.validateTopLevel()
+ 
+@@ -211,20 +241,31 @@ func (c *Config) Validate() ([]Warning, error) {
+ 	errs = append(errs, c.validateRepositoryHard()...)
+ 
+ 	// Check for cycles using DFS
+-	if err := detectCycles(c.Teams); err != nil {
+-		errs = append(errs, err.Error())
++	if cycleErr := detectCycles(c.Teams); cycleErr != nil {
++		errs = append(errs, *cycleErr)
+ 	}
+ 
+-	if len(errs) > 0 {
+-		return warnings, fmt.Errorf("validation errors:\n  - %s", strings.Join(errs, "\n  - "))
++	res := &Result{
++		Warnings: warnings,
++		Errors:   errs,
++	}
++	if res.Valid() {
++		res.Config = c
+ 	}
+-	return warnings, nil
++	return res
+ }
+ 
+-func (c *Config) validateTopLevel() []string {
+-	var errs []string
++func (c *Config) validateTopLevel() []ConfigError {
++	var errs []ConfigError
+ 	if c.Name == "" {
+-		errs = append(errs, "project name is required")
++		// Project-level: empty Field. The doc's §5.3 convention is
++		// that the missing project-name field is the canonical
++		// "empty Field" example so consumers can distinguish
++		// project-wide issues from nested ones without inspecting
++		// Message text.
++		errs = append(errs, ConfigError{
++			Message: "project name is required",
++		})
+ 	}
+ 	backend := c.Backend.Kind
+ 	if backend == "" {
+@@ -233,13 +274,22 @@ func (c *Config) validateTopLevel() []string {
+ 	switch backend {
+ 	case "local", "managed_agents":
+ 	default:
+-		errs = append(errs, fmt.Sprintf("backend.kind must be one of: local, managed_agents (got %q)", c.Backend.Kind))
++		errs = append(errs, ConfigError{
++			Field:   []string{"backend", "kind"},
++			Message: fmt.Sprintf("backend.kind must be one of: local, managed_agents (got %q)", c.Backend.Kind),
++		})
+ 	}
+ 	if len(c.Teams) == 0 {
+-		errs = append(errs, "at least one team is required")
++		errs = append(errs, ConfigError{
++			Field:   []string{"teams"},
++			Message: "at least one team is required",
++		})
+ 	}
+ 	if c.Defaults.MAConcurrentSessions < 0 {
+-		errs = append(errs, fmt.Sprintf("defaults.ma_concurrent_sessions must be >= 0 (got %d)", c.Defaults.MAConcurrentSessions))
++		errs = append(errs, ConfigError{
++			Field:   []string{"defaults", "ma_concurrent_sessions"},
++			Message: fmt.Sprintf("defaults.ma_concurrent_sessions must be >= 0 (got %d)", c.Defaults.MAConcurrentSessions),
++		})
+ 	}
+ 	return errs
+ }
+@@ -250,11 +300,15 @@ func (c *Config) validateBackendWarnings() []Warning {
+ 	}
+ 	var warnings []Warning
+ 	if c.Coordinator.Enabled {
+-		warnings = append(warnings, Warning{Message: "coordinator is not supported under backend.kind=managed_agents"})
++		warnings = append(warnings, Warning{
++			Field:   []string{"coordinator", "enabled"},
++			Message: "coordinator is not supported under backend.kind=managed_agents",
++		})
+ 	}
+ 	for i := range c.Teams {
+ 		if c.Teams[i].HasMembers() {
+ 			warnings = append(warnings, Warning{
++				Field:   []string{"teams", strconv.Itoa(i), "members"},
+ 				Team:    c.Teams[i].Name,
+ 				Message: "members are not supported under backend.kind=managed_agents",
+ 			})
+@@ -265,25 +319,32 @@ func (c *Config) validateBackendWarnings() []Warning {
+ 
+ type teamNameValidation struct {
+ 	seen map[string]bool
+-	errs []string
++	errs []ConfigError
+ }
+ 
+ type validationResult struct {
+ 	warnings []Warning
+-	errs     []string
++	errs     []ConfigError
+ }
+ 
+ func (c *Config) validateTeamNames() teamNameValidation {
+ 	seen := make(map[string]bool)
+-	var errs []string
++	var errs []ConfigError
+ 	for i := range c.Teams {
+ 		t := &c.Teams[i]
+ 		if t.Name == "" {
+-			errs = append(errs, "team name cannot be empty")
++			errs = append(errs, ConfigError{
++				Field:   []string{"teams", strconv.Itoa(i), "name"},
++				Message: "team name cannot be empty",
++			})
+ 			continue
+ 		}
+ 		if seen[t.Name] {
+-			errs = append(errs, fmt.Sprintf("duplicate team name: %q", t.Name))
++			errs = append(errs, ConfigError{
++				Field:   []string{"teams", strconv.Itoa(i), "name"},
++				Team:    t.Name,
++				Message: fmt.Sprintf("duplicate team name: %q", t.Name),
++			})
+ 		}
+ 		seen[t.Name] = true
+ 	}
+@@ -292,66 +353,94 @@ func (c *Config) validateTeamNames() teamNameValidation {
+ 
+ func (c *Config) validateTeams(seen map[string]bool) validationResult {
+ 	var warnings []Warning
+-	var errs []string
++	var errs []ConfigError
+ 	for i := range c.Teams {
+ 		t := &c.Teams[i]
+ 		if t.Name == "" {
+ 			continue
+ 		}
+-		taskValidation := validateTasks(t)
++		taskValidation := validateTasks(t, i)
+ 		warnings = append(warnings, taskValidation.warnings...)
+ 		errs = append(errs, taskValidation.errs...)
+-		errs = append(errs, validateDependencies(t, seen)...)
+-		warnings = append(warnings, validateTeamSize(t)...)
+-		warnings = append(warnings, validateTaskRatio(t)...)
++		errs = append(errs, validateDependencies(t, i, seen)...)
++		warnings = append(warnings, validateTeamSize(t, i)...)
++		warnings = append(warnings, validateTaskRatio(t, i)...)
+ 	}
+ 	return validationResult{warnings: warnings, errs: errs}
+ }
+ 
+-func validateTasks(t *Team) validationResult {
++func validateTasks(t *Team, teamIdx int) validationResult {
+ 	var warnings []Warning
+-	var errs []string
++	var errs []ConfigError
++	teamFieldPrefix := []string{"teams", strconv.Itoa(teamIdx)}
+ 	if len(t.Tasks) == 0 {
+-		errs = append(errs, fmt.Sprintf("team %q: at least one task is required", t.Name))
++		errs = append(errs, ConfigError{
++			Field:   append(append([]string{}, teamFieldPrefix...), "tasks"),
++			Team:    t.Name,
++			Message: "at least one task is required",
++		})
+ 	}
+ 	for i, task := range t.Tasks {
++		taskFieldPrefix := append(append([]string{}, teamFieldPrefix...), "tasks", strconv.Itoa(i))
+ 		if task.Summary == "" {
+-			errs = append(errs, fmt.Sprintf("team %q: task %d has empty summary", t.Name, i+1))
++			errs = append(errs, ConfigError{
++				Field:   append(append([]string{}, taskFieldPrefix...), "summary"),
++				Team:    t.Name,
++				Message: fmt.Sprintf("task %d has empty summary", i+1),
++			})
+ 		}
+ 		if task.Details == "" {
+-			warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary)})
++			warnings = append(warnings, Warning{
++				Field:   append(append([]string{}, taskFieldPrefix...), "details"),
++				Team:    t.Name,
++				Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary),
++			})
+ 		}
+ 		if task.Verify == "" {
+-			warnings = append(warnings, Warning{Team: t.Name, Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary)})
++			warnings = append(warnings, Warning{
++				Field:   append(append([]string{}, taskFieldPrefix...), "verify"),
++				Team:    t.Name,
++				Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary),
++			})
+ 		}
+ 	}
+ 	return validationResult{warnings: warnings, errs: errs}
+ }
+ 
+-func validateDependencies(t *Team, seen map[string]bool) []string {
+-	var errs []string
++func validateDependencies(t *Team, teamIdx int, seen map[string]bool) []ConfigError {
++	var errs []ConfigError
++	field := []string{"teams", strconv.Itoa(teamIdx), "depends_on"}
+ 	for _, dep := range t.DependsOn {
+ 		if dep == t.Name {
+-			errs = append(errs, fmt.Sprintf("team %q: cannot depend on itself", t.Name))
++			errs = append(errs, ConfigError{
++				Field:   field,
++				Team:    t.Name,
++				Message: "cannot depend on itself",
++			})
+ 		}
+ 		if !seen[dep] {
+-			errs = append(errs, fmt.Sprintf("team %q: depends on unknown team %q", t.Name, dep))
++			errs = append(errs, ConfigError{
++				Field:   field,
++				Team:    t.Name,
++				Message: fmt.Sprintf("depends on unknown team %q", dep),
++			})
+ 		}
+ 	}
+ 	return errs
+ }
+ 
+-func validateTeamSize(t *Team) []Warning {
++func validateTeamSize(t *Team, teamIdx int) []Warning {
+ 	if len(t.Members) <= 5 {
+ 		return nil
+ 	}
+ 	return []Warning{{
++		Field:   []string{"teams", strconv.Itoa(teamIdx), "members"},
+ 		Team:    t.Name,
+ 		Message: fmt.Sprintf("has %d members (recommended: 3-5); consider splitting into smaller teams", len(t.Members)),
+ 	}}
+ }
+ 
+-func validateTaskRatio(t *Team) []Warning {
++func validateTaskRatio(t *Team, teamIdx int) []Warning {
+ 	divisor := len(t.Members)
+ 	if divisor == 0 {
+ 		divisor = 1
+@@ -361,12 +450,13 @@ func validateTaskRatio(t *Team) []Warning {
+ 		return nil
+ 	}
+ 	return []Warning{{
++		Field:   []string{"teams", strconv.Itoa(teamIdx), "tasks"},
+ 		Team:    t.Name,
+ 		Message: fmt.Sprintf("task/member ratio is %d (recommended: 2-8)", ratio),
+ 	}}
+ }
+ 
+-func detectCycles(teams []Team) error {
++func detectCycles(teams []Team) *ConfigError {
+ 	const (
+ 		white = iota
+ 		gray
+@@ -382,27 +472,33 @@ func detectCycles(teams []Team) error {
+ 		deps[teams[i].Name] = teams[i].DependsOn
+ 	}
+ 
+-	var visit func(name string) error
+-	visit = func(name string) error {
++	var found *ConfigError
++	var visit func(name string) bool
++	visit = func(name string) bool {
+ 		color[name] = gray
+ 		for _, dep := range deps[name] {
+ 			if color[dep] == gray {
+-				return fmt.Errorf("dependency cycle detected involving team %q", dep)
++				found = &ConfigError{
++					Field:   []string{"teams"},
++					Team:    dep,
++					Message: fmt.Sprintf("dependency cycle detected involving team %q", dep),
++				}
++				return true
+ 			}
+ 			if color[dep] == white {
+-				if err := visit(dep); err != nil {
+-					return err
++				if visit(dep) {
++					return true
+ 				}
+ 			}
+ 		}
+ 		color[name] = black
+-		return nil
++		return false
+ 	}
+ 
+ 	for i := range teams {
+ 		if color[teams[i].Name] == white {
+-			if err := visit(teams[i].Name); err != nil {
+-				return err
++			if visit(teams[i].Name) {
++				return found
+ 			}
+ 		}
+ 	}
+diff --git a/internal/config/schema_test.go b/internal/config/schema_test.go
+index 9b4ee08..a7bc1a2 100644
+--- a/internal/config/schema_test.go
++++ b/internal/config/schema_test.go
+@@ -21,12 +21,15 @@ func TestValidate_ValidConfig(t *testing.T) {
+ 			},
+ 		},
+ 	}
+-	warnings, err := cfg.Validate()
+-	if err != nil {
+-		t.Fatalf("unexpected error: %v", err)
++	res := cfg.Validate()
++	if !res.Valid() {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+-	if len(warnings) != 0 {
+-		t.Fatalf("unexpected warnings: %v", warnings)
++	if len(res.Warnings) != 0 {
++		t.Fatalf("unexpected warnings: %v", res.Warnings)
++	}
++	if res.Config != cfg {
++		t.Fatalf("Config not populated on valid result")
+ 	}
+ }
+ 
+@@ -34,20 +37,20 @@ func TestValidate_EmptyName(t *testing.T) {
+ 	cfg := &Config{
+ 		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil {
+-		t.Fatal("expected error for empty project name")
++	res := cfg.Validate()
++	if res.Valid() {
++		t.Fatal("expected validation to fail for empty project name")
+ 	}
+-	if !strings.Contains(err.Error(), "project name is required") {
+-		t.Fatalf("unexpected error: %v", err)
++	if !errorsContain(res.Errors, "project name is required") {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+ }
+ 
+ func TestValidate_EmptyTeams(t *testing.T) {
+ 	cfg := &Config{Name: "p"}
+-	_, err := cfg.Validate()
+-	if err == nil {
+-		t.Fatal("expected error for empty teams")
++	res := cfg.Validate()
++	if res.Valid() {
++		t.Fatal("expected validation to fail for empty teams")
+ 	}
+ }
+ 
+@@ -59,9 +62,9 @@ func TestValidate_DuplicateTeamNames(t *testing.T) {
+ 			{Name: "a", Tasks: []Task{{Summary: "y"}}},
+ 		},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "duplicate team name") {
+-		t.Fatalf("expected duplicate team name error, got: %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "duplicate team name") {
++		t.Fatalf("expected duplicate team name error, got: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -72,9 +75,9 @@ func TestValidate_SelfReference(t *testing.T) {
+ 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"a"}},
+ 		},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "cannot depend on itself") {
+-		t.Fatalf("expected self-reference error, got: %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "cannot depend on itself") {
++		t.Fatalf("expected self-reference error, got: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -85,9 +88,9 @@ func TestValidate_UnknownDependency(t *testing.T) {
+ 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"b"}},
+ 		},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "unknown team") {
+-		t.Fatalf("expected unknown team error, got: %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "unknown team") {
++		t.Fatalf("expected unknown team error, got: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -99,9 +102,9 @@ func TestValidate_Cycle(t *testing.T) {
+ 			{Name: "b", Tasks: []Task{{Summary: "y"}}, DependsOn: []string{"a"}},
+ 		},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "cycle") {
+-		t.Fatalf("expected cycle error, got: %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "cycle") {
++		t.Fatalf("expected cycle error, got: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -110,9 +113,9 @@ func TestValidate_EmptyTaskSummary(t *testing.T) {
+ 		Name:  "p",
+ 		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: ""}}}},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "empty summary") {
+-		t.Fatalf("expected empty summary error, got: %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "empty summary") {
++		t.Fatalf("expected empty summary error, got: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -121,9 +124,9 @@ func TestValidate_NoTasks(t *testing.T) {
+ 		Name:  "p",
+ 		Teams: []Team{{Name: "a"}},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "at least one task") {
+-		t.Fatalf("expected no tasks error, got: %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "at least one task") {
++		t.Fatalf("expected no tasks error, got: %v", res.Errors)
+ 	}
+ }
+ 
+@@ -153,12 +156,12 @@ func TestValidate_TeamSizeWarning(t *testing.T) {
+ 			},
+ 		}},
+ 	}
+-	warnings, err := cfg.Validate()
+-	if err != nil {
+-		t.Fatalf("unexpected error: %v", err)
++	res := cfg.Validate()
++	if !res.Valid() {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+ 	found := false
+-	for _, w := range warnings {
++	for _, w := range res.Warnings {
+ 		if strings.Contains(w.Message, "members") {
+ 			found = true
+ 		}
+@@ -176,11 +179,11 @@ func TestValidate_TaskQualityWarning(t *testing.T) {
+ 			Tasks: []Task{{Summary: "do stuff"}},
+ 		}},
+ 	}
+-	warnings, err := cfg.Validate()
+-	if err != nil {
+-		t.Fatalf("unexpected error: %v", err)
++	res := cfg.Validate()
++	if !res.Valid() {
++		t.Fatalf("unexpected errors: %v", res.Errors)
+ 	}
+-	if len(warnings) == 0 {
++	if len(res.Warnings) == 0 {
+ 		t.Fatal("expected task quality warnings for empty details/verify")
+ 	}
+ }
+@@ -215,9 +218,9 @@ func TestValidate_BackendKind(t *testing.T) {
+ 		Backend: Backend{Kind: "bogus"},
+ 		Teams:   []Team{{Name: "a", Tasks: []Task{{Summary: "x"}}}},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "backend.kind") {
+-		t.Fatalf("expected backend.kind validation error, got %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "backend.kind") {
++		t.Fatalf("expected backend.kind validation error, got %v", res.Errors)
+ 	}
+ }
+ 
+@@ -232,17 +235,17 @@ func TestValidate_ManagedAgentsWarnings(t *testing.T) {
+ 			Tasks:   []Task{{Summary: "x", Details: "d", Verify: "v"}},
+ 		}},
+ 	}
+-	warnings, err := cfg.Validate()
+-	if err != nil {
+-		t.Fatalf("Validate: %v", err)
++	res := cfg.Validate()
++	if !res.Valid() {
++		t.Fatalf("Validate: %v", res.Errors)
+ 	}
+ 	var coordinator, members bool
+-	for _, w := range warnings {
++	for _, w := range res.Warnings {
+ 		coordinator = coordinator || strings.Contains(w.Message, "coordinator is not supported under backend.kind=managed_agents")
+ 		members = members || strings.Contains(w.Message, "members are not supported under backend.kind=managed_agents")
+ 	}
+ 	if !coordinator || !members {
+-		t.Fatalf("warnings=%v, want coordinator and members warnings", warnings)
++		t.Fatalf("warnings=%v, want coordinator and members warnings", res.Warnings)
+ 	}
+ }
+ 
+@@ -285,9 +288,9 @@ func TestValidate_NegativeMAConcurrentSessions(t *testing.T) {
+ 		Defaults: Defaults{MAConcurrentSessions: -1},
+ 		Teams:    []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+ 	}
+-	_, err := cfg.Validate()
+-	if err == nil || !strings.Contains(err.Error(), "ma_concurrent_sessions") {
+-		t.Fatalf("expected ma_concurrent_sessions validation error, got %v", err)
++	res := cfg.Validate()
++	if res.Valid() || !errorsContain(res.Errors, "ma_concurrent_sessions") {
++		t.Fatalf("expected ma_concurrent_sessions validation error, got %v", res.Errors)
+ 	}
+ }
+ 
+@@ -324,3 +327,15 @@ func TestHasMembers(t *testing.T) {
+ 		t.Fatal("expected members")
+ 	}
+ }
++
++// errorsContain reports whether any ConfigError in errs has a Message
++// containing substr. Used by tests that previously asserted on the
++// joined err.Error() string.
++func errorsContain(errs []ConfigError, substr string) bool {
++	for _, e := range errs {
++		if strings.Contains(e.Message, substr) {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/pkg/orchestra/doc.go b/pkg/orchestra/doc.go
+index a8857f9..07b224c 100644
+--- a/pkg/orchestra/doc.go
++++ b/pkg/orchestra/doc.go
+@@ -5,18 +5,21 @@
+ //
+ // One-shot blocking use:
+ //
+-//	cfg, warnings, err := orchestra.LoadConfig("orchestra.yaml")
+-//	for _, w := range warnings {
++//	res, err := orchestra.LoadConfig("orchestra.yaml")
++//	if err != nil {
++//	    return err // I/O or parse failure
++//	}
++//	for _, w := range res.Warnings {
+ //	    fmt.Fprintln(os.Stderr, w)
+ //	}
+-//	if err != nil {
+-//	    return err
++//	if !res.Valid() {
++//	    return res.Err()
+ //	}
+-//	res, err := orchestra.Run(ctx, cfg)
++//	out, err := orchestra.Run(ctx, res.Config)
+ //	if err != nil {
+ //	    return err
+ //	}
+-//	for name, team := range res.Teams {
++//	for name, team := range out.Teams {
+ //	    fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
+ //	        name, team.Status, team.NumTurns, team.CostUSD)
+ //	}
+diff --git a/pkg/orchestra/events_test.go b/pkg/orchestra/events_test.go
+index 7c56de1..8c1a57f 100644
+--- a/pkg/orchestra/events_test.go
++++ b/pkg/orchestra/events_test.go
+@@ -23,10 +23,11 @@ func TestStart_HandleEvents_DeliversInOrder(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -67,10 +68,11 @@ func TestEventChannel_DropsOldestUnderBackpressure(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -112,10 +114,11 @@ func TestWithEventHandler_FiresInline(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	loaded, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := loaded.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -168,10 +171,11 @@ func TestWithEventBuffer_ZeroIsClampedToOne(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+diff --git a/pkg/orchestra/handle.go b/pkg/orchestra/handle.go
+index 8bf0aaa..e9e5146 100644
+--- a/pkg/orchestra/handle.go
++++ b/pkg/orchestra/handle.go
+@@ -110,9 +110,9 @@ func Start(ctx context.Context, cfg *Config, opts ...Option) (*Handle, error) {
+ 	}
+ 
+ 	cfg.ResolveDefaults()
+-	if _, err := cfg.Validate(); err != nil {
++	if vr := cfg.Validate(); !vr.Valid() {
+ 		release()
+-		return nil, fmt.Errorf("orchestra: validate config: %w", err)
++		return nil, fmt.Errorf("orchestra: validate config: %w", vr.Err())
+ 	}
+ 
+ 	engineCtx, cancel := context.WithCancel(ctx)
+diff --git a/pkg/orchestra/handle_test.go b/pkg/orchestra/handle_test.go
+index 842985e..72ba812 100644
+--- a/pkg/orchestra/handle_test.go
++++ b/pkg/orchestra/handle_test.go
+@@ -24,10 +24,11 @@ func TestStart_Cancel_ReturnsPartialResult(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	loaded, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := loaded.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -79,10 +80,11 @@ func TestHandle_Status_ReflectsLiveTier(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeTwoTierConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	loaded, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := loaded.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+diff --git a/pkg/orchestra/inspect_test.go b/pkg/orchestra/inspect_test.go
+index 67f89d1..a342ddd 100644
+--- a/pkg/orchestra/inspect_test.go
++++ b/pkg/orchestra/inspect_test.go
+@@ -23,19 +23,19 @@ func TestListRuns_RoundTripsArchive(t *testing.T) {
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 	chdir(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
++	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
+ 		t.Fatalf("first Run: %v", err)
+ 	}
+ 	// Second run forces the first one into the archive directory.
+-	cfg2, _, err := orchestra.LoadConfig(configPath)
++	res2, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if _, err := orchestra.Run(context.Background(), cfg2); err != nil {
++	if _, err := orchestra.Run(context.Background(), res2.Config); err != nil {
+ 		t.Fatalf("second Run: %v", err)
+ 	}
+ 
+@@ -89,11 +89,11 @@ func TestLoadRun_UnknownRunReturnsNotExist(t *testing.T) {
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 	chdir(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
++	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
+ 		t.Fatalf("Run: %v", err)
+ 	}
+ 
+@@ -115,11 +115,11 @@ func TestLoadRun_ActiveAlias_ResolvesCurrentRun(t *testing.T) {
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 	chdir(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
++	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
+ 		t.Fatalf("Run: %v", err)
+ 	}
+ 
+@@ -149,11 +149,11 @@ func TestListSessions_LocalBackendReturnsEmpty(t *testing.T) {
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 	chdir(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if _, err := orchestra.Run(context.Background(), cfg); err != nil {
++	if _, err := orchestra.Run(context.Background(), res.Config); err != nil {
+ 		t.Fatalf("Run: %v", err)
+ 	}
+ 
+diff --git a/pkg/orchestra/orchestra_test.go b/pkg/orchestra/orchestra_test.go
+index b462b48..2d3ddca 100644
+--- a/pkg/orchestra/orchestra_test.go
++++ b/pkg/orchestra/orchestra_test.go
+@@ -41,10 +41,11 @@ teams:
+ 		t.Fatal(err)
+ 	}
+ 
+-	cfg, _, err := orchestra.LoadConfig(path)
++	res, err := orchestra.LoadConfig(path)
+ 	if err != nil {
+ 		t.Fatalf("LoadConfig: %v", err)
+ 	}
++	cfg := res.Config
+ 	if cfg.Backend.Kind != orchestra.BackendLocal {
+ 		t.Fatalf("Backend.Kind=%q, want %q", cfg.Backend.Kind, orchestra.BackendLocal)
+ 	}
+@@ -66,10 +67,11 @@ func TestRun_LocalBackend_PopulatesResult(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	loaded, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatalf("LoadConfig: %v", err)
+ 	}
++	cfg := loaded.Config
+ 
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+@@ -116,10 +118,11 @@ func TestRun_ConcurrentSameWorkspaceReturnsErrRunInProgress(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatalf("LoadConfig: %v", err)
+ 	}
++	cfg := res.Config
+ 
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+@@ -165,14 +168,16 @@ func TestRun_ConcurrentDifferentWorkspacesIndependent(t *testing.T) {
+ 	configPathA := writeOneTeamConfig(t, rootA)
+ 	configPathB := writeOneTeamConfig(t, rootB)
+ 
+-	cfgA, _, err := orchestra.LoadConfig(configPathA)
++	resA, err := orchestra.LoadConfig(configPathA)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	cfgB, _, err := orchestra.LoadConfig(configPathB)
++	cfgA := resA.Config
++	resB, err := orchestra.LoadConfig(configPathB)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfgB := resB.Config
+ 
+ 	withPath(t, binDir)
+ 	chdir(t, rootA)
+@@ -210,10 +215,11 @@ func TestRun_TierZeroFailureReturnsResultAndError(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	loaded, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := loaded.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -245,10 +251,11 @@ func TestRun_ContextCancellationReturnsPartialResult(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+ 
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	loaded, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := loaded.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -319,10 +326,11 @@ func TestRun_EquivalentToStartPlusWait(t *testing.T) {
+ 	// Run path.
+ 	runDir := t.TempDir()
+ 	runConfig := writeOneTeamConfig(t, runDir)
+-	runCfg, _, err := orchestra.LoadConfig(runConfig)
++	runLoaded, err := orchestra.LoadConfig(runConfig)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	runCfg := runLoaded.Config
+ 	chdir(t, runDir)
+ 	runRes, runErr := orchestra.Run(context.Background(), runCfg)
+ 	if runErr != nil {
+@@ -335,10 +343,11 @@ func TestRun_EquivalentToStartPlusWait(t *testing.T) {
+ 	// Start + Wait path against an independent workspace.
+ 	startDir := t.TempDir()
+ 	startConfig := writeOneTeamConfig(t, startDir)
+-	startCfg, _, err := orchestra.LoadConfig(startConfig)
++	startLoaded, err := orchestra.LoadConfig(startConfig)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	startCfg := startLoaded.Config
+ 	chdir(t, startDir)
+ 	h, err := orchestra.Start(context.Background(), startCfg)
+ 	if err != nil {
+@@ -392,8 +401,8 @@ func TestValidate_StandaloneCallerBuiltConfig(t *testing.T) {
+ 			},
+ 		},
+ 	}
+-	if _, err := orchestra.Validate(cfg); err != nil {
+-		t.Fatalf("Validate: %v", err)
++	if vr := orchestra.Validate(cfg); !vr.Valid() {
++		t.Fatalf("Validate: %v", vr.Err())
+ 	}
+ 	if cfg.Defaults.Model != "sonnet" {
+ 		t.Errorf("Defaults.Model=%q, want sonnet", cfg.Defaults.Model)
+diff --git a/pkg/orchestra/run.go b/pkg/orchestra/run.go
+index 7407b2a..8015f2d 100644
+--- a/pkg/orchestra/run.go
++++ b/pkg/orchestra/run.go
+@@ -25,24 +25,42 @@ import (
+ )
+ 
+ // LoadConfig parses a YAML config from path, applies defaults, and runs
+-// validation. Warnings are returned even when err is non-nil so that
+-// callers can surface validation context.
++// validation. Returns a [ValidationResult] aggregating the parsed
++// config, any warnings, and any errors. The error return is reserved
++// for I/O or parse failures (file not found, malformed YAML);
++// structural validation issues live in result.Errors.
+ //
+-// Experimental.
++// Typical use:
++//
++//	res, err := orchestra.LoadConfig("orchestra.yaml")
++//	if err != nil {
++//	    return err // I/O or parse failure
++//	}
++//	for _, w := range res.Warnings {
++//	    fmt.Fprintln(os.Stderr, w)
++//	}
++//	if !res.Valid() {
++//	    return res.Err()
++//	}
++//	_, err = orchestra.Run(ctx, res.Config)
+ //
+-//nolint:gocritic // (cfg, warnings, err) tuple mirrors internal config.Load and is part of the documented SDK signature.
+-func LoadConfig(path string) (*Config, []Warning, error) {
++// Experimental.
++func LoadConfig(path string) (*ValidationResult, error) {
+ 	return config.Load(path)
+ }
+ 
+-// Validate runs the config validator standalone. Useful for callers that
+-// build configs programmatically. Mirrors what Run does internally:
+-// applies ResolveDefaults to cfg, then validates.
++// Validate runs the config validator standalone. Useful for callers
++// that build configs programmatically. Mirrors what Run does
++// internally: applies ResolveDefaults to cfg, then validates. A nil
++// cfg is treated as a hard validation failure (one ConfigError entry,
++// empty Field) rather than a panic — Validate never returns nil.
+ //
+ // Experimental.
+-func Validate(cfg *Config) ([]Warning, error) {
++func Validate(cfg *Config) *ValidationResult {
+ 	if cfg == nil {
+-		return nil, errors.New("orchestra: nil config")
++		return &ValidationResult{
++			Errors: []ConfigError{{Message: "nil config"}},
++		}
+ 	}
+ 	cfg.ResolveDefaults()
+ 	return cfg.Validate()
+diff --git a/pkg/orchestra/steering_test.go b/pkg/orchestra/steering_test.go
+index 699c990..4b8f62a 100644
+--- a/pkg/orchestra/steering_test.go
++++ b/pkg/orchestra/steering_test.go
+@@ -28,10 +28,11 @@ func TestHandle_Send_LocalBackend_DeliversToInbox(t *testing.T) {
+ 
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -129,10 +130,11 @@ func TestHandle_Send_TeamNotRunning_ReturnsErrTeamNotRunning(t *testing.T) {
+ 
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -162,10 +164,11 @@ func TestHandle_Send_AfterWait_ReturnsErrClosed(t *testing.T) {
+ 
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+@@ -191,10 +194,11 @@ func TestHandle_Interrupt_LocalBackend_ReturnsNotSupported(t *testing.T) {
+ 
+ 	workDir := t.TempDir()
+ 	configPath := writeOneTeamConfig(t, workDir)
+-	cfg, _, err := orchestra.LoadConfig(configPath)
++	res, err := orchestra.LoadConfig(configPath)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
++	cfg := res.Config
+ 	withPath(t, binDir)
+ 	chdir(t, workDir)
+ 
+diff --git a/pkg/orchestra/types.go b/pkg/orchestra/types.go
+index 441c2ae..aa2283d 100644
+--- a/pkg/orchestra/types.go
++++ b/pkg/orchestra/types.go
+@@ -69,11 +69,47 @@ type Member = config.Member
+ type Task = config.Task
+ 
+ // Warning represents a non-fatal validation issue surfaced by LoadConfig
+-// or Validate.
++// or Validate. It does not block execution. Field is the structured YAML
++// path to the offending node (empty for project-level issues); Team is
++// the denormalized team name when Field points into a team subtree.
+ //
+ // Experimental: aliased from internal/config.
+ type Warning = config.Warning
+ 
++// ConfigError is a hard validation failure surfaced by [LoadConfig] or
++// [Validate]. Same shape and semantics as [Warning]; only the severity
++// differs. A non-empty Errors slice on a [ValidationResult] makes
++// [ValidationResult.Valid] return false and [ValidationResult.Err]
++// return non-nil.
++//
++// Experimental: aliased from internal/config.
++type ConfigError = config.ConfigError
++
++// ValidationResult is the aggregate output of [LoadConfig] and
++// [Validate]: the parsed config (when valid), the structured warnings
++// (soft issues), and the structured errors (hard validation failures).
++// Use [ValidationResult.Valid] to gate further use of Config; use
++// [ValidationResult.Err] for an error-shaped view of the validation
++// failures suitable for `if err != nil` patterns.
++//
++// Experimental: aliased from internal/config; field set may grow.
++type ValidationResult = config.Result
++
++// ErrInvalidConfig is wrapped by [ValidationResult.Err] whenever the
++// result has at least one entry in Errors. Callers can use errors.Is to
++// recognize validation failures regardless of how the formatted message
++// changes:
++//
++//	res, err := orchestra.LoadConfig("orchestra.yaml")
++//	if err != nil {
++//	    return err // I/O or parse failure
++//	}
++//	if errors.Is(res.Err(), orchestra.ErrInvalidConfig) { ... }
++//
++// Experimental: this sentinel is kept stable across breaking surface
++// changes so callers can rely on errors.Is checks.
++var ErrInvalidConfig = config.ErrInvalidConfig
++
+ // RunState is the persistent run document. Run-time observers can read it
+ // from the workspace via tools that already understand the schema.
+ //
