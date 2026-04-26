@@ -181,12 +181,26 @@ func (c *Config) ResolveDefaults() {
 	c.resolveRepositoryDefaults()
 }
 
-// Warning represents a non-fatal validation issue.
+// Warning represents a non-fatal validation issue surfaced by [Load]
+// or [Config.Validate]. It does not block execution.
+//
+// pkg/orchestra re-exports this type as orchestra.Warning.
 type Warning struct {
-	Team    string
+	// Field is the structured YAML path to the offending node, e.g.
+	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
+	// team 0's third task. Empty for project-level issues.
+	Field []string
+	// Team is the denormalized team name when Field points into a team
+	// subtree; empty otherwise. Exists for ergonomic display so
+	// String() can render `team "foo": message` without walking Field
+	// back into Config. Programmatic consumers should prefer Field.
+	Team string
+	// Message is the human-readable description of the issue.
 	Message string
 }
 
+// String returns the human-readable form: `team "foo": message` when
+// Team is non-empty, else just Message.
 func (w Warning) String() string {
 	if w.Team != "" {
 		return fmt.Sprintf("team %q: %s", w.Team, w.Message)
