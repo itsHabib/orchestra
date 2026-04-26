@@ -22,50 +22,6 @@ import (
 	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
-// Run executes the workflow described by cfg and returns its result. ctx
-// is honored throughout; on cancellation, in-flight teams are canceled
-// and all spawned subprocesses (team agents, coordinator) are stopped
-// before Run returns. The returned *Result reflects whatever state was
-// reached, even on error.
-//
-// Run takes ownership of cfg for the call duration. It may call
-// ResolveDefaults / Validate on the pointer; concurrent caller mutation
-// is undefined behavior. Callers sharing a Config across goroutines must
-// clone — see [CloneConfig].
-//
-// Concurrent Run invocations from the same process targeting the same
-// resolved [WithWorkspaceDir] return [ErrRunInProgress]. Different
-// workspaces are independent.
-//
-// Experimental: signature and Result shape may change.
-func Run(ctx context.Context, cfg *Config, opts ...Option) (*Result, error) {
-	if cfg == nil {
-		return nil, errors.New("orchestra: nil config")
-	}
-
-	options := defaultRunOptions()
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	absWorkspace, err := absWorkspaceDir(options.workspaceDir)
-	if err != nil {
-		return nil, fmt.Errorf("orchestra: resolve workspace dir: %w", err)
-	}
-	release, err := acquireWorkspace(absWorkspace)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	cfg.ResolveDefaults()
-	if _, err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("orchestra: validate config: %w", err)
-	}
-
-	return runWithLockedWorkspace(ctx, cfg, &options, absWorkspace)
-}
-
 // LoadConfig parses a YAML config from path, applies defaults, and runs
 // validation. Warnings are returned even when err is non-nil so that
 // callers can surface validation context.
@@ -183,6 +139,7 @@ type orchestrationRun struct {
 	maSpawner          *spawner.ManagedAgentsSpawner
 	ghClient           *ghhost.Client // nil for non-MA runs or when no repository is configured
 	ghPAT              string         // in-memory only; never persisted or logged
+	handle             *Handle        // nil when called by tests that don't construct a Handle
 	startTeamMAForTest startTeamMAFunc
 }
 
@@ -192,7 +149,7 @@ type tierResult struct {
 	err  error
 }
 
-func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOptions, workspaceDir string) (*Result, error) {
+func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOptions, workspaceDir string, handle *Handle) (*Result, error) {
 	wallStart := time.Now()
 	logger := options.logger
 
@@ -203,7 +160,11 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, options *runOption
 	}
 	defer func() { _ = runService.End(active) }()
 
-	run, tiers, err := newOrchestrationRun(cfg, logger, runService, active)
+	if handle != nil {
+		handle.setRunService(runService)
+	}
+
+	run, tiers, err := newOrchestrationRun(cfg, logger, runService, active, handle)
 	if err != nil {
 		return nil, err
 	}
@@ -246,8 +207,14 @@ func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error 
 		<-coordHandle.Done()
 	}()
 
+	if r.handle != nil {
+		r.handle.setPhase(PhaseRunning)
+	}
 	if err := r.runTiers(ctx, tiers); err != nil {
 		return err
+	}
+	if r.handle != nil {
+		r.handle.setPhase(PhaseCompleting)
 	}
 	if err := r.stopCoordinator(coordHandle); err != nil {
 		return err
@@ -291,7 +258,7 @@ func newRunService(path string, logger Logger) *runsvc.Service {
 	)
 }
 
-func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service, active *runsvc.Active) (*orchestrationRun, [][]string, error) {
+func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service, active *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
 	ws := runService.Workspace()
 	if ws == nil {
 		return nil, nil, errors.New("run service has no workspace attached")
@@ -322,6 +289,7 @@ func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service,
 			maSpawner:  ma,
 			ghClient:   ghClient,
 			ghPAT:      ghPAT,
+			handle:     handle,
 		}, tiers, nil
 	}
 
@@ -337,6 +305,7 @@ func newOrchestrationRun(cfg *Config, logger Logger, runService *runsvc.Service,
 		bus:          active.Bus,
 		participants: participants,
 		inboxLookup:  lookup,
+		handle:       handle,
 	}, tiers, nil
 }
 
@@ -407,6 +376,9 @@ func (r *orchestrationRun) runTiers(ctx context.Context, tiers [][]string) error
 }
 
 func (r *orchestrationRun) runTier(ctx context.Context, tierIdx int, tierNames []string) error {
+	if r.handle != nil {
+		r.handle.setCurrentTier(tierIdx)
+	}
 	r.logger.TierStart(tierIdx, tierNames)
 
 	state, err := r.runService.Snapshot(ctx)
