@@ -22,11 +22,16 @@ var spawnCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
-		cfg, _, err := config.Load(args[0])
+		res, err := config.Load(args[0])
 		if err != nil {
 			logger.Error("Validation failed: %s", err)
 			os.Exit(1)
 		}
+		if !res.Valid() {
+			logger.Error("Validation failed: %s", res.Err())
+			os.Exit(1)
+		}
+		cfg := res.Config
 
 		team := cfg.TeamByName(teamFlag)
 		if team == nil {

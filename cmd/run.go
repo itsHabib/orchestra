@@ -16,7 +16,7 @@ var runCmd = &cobra.Command{
 	Short: "Full orchestration: init, DAG, spawn tiers, collect, summary",
 	Args:  cobra.ExactArgs(1),
 	Run: func(_ *cobra.Command, args []string) {
-		cfg, warnings, err := orchestra.LoadConfig(args[0])
+		res, err := orchestra.LoadConfig(args[0])
 		if err != nil {
 			orchestra.PrintEvent(os.Stdout, orchestra.Event{
 				Kind:    orchestra.EventError,
@@ -26,7 +26,7 @@ var runCmd = &cobra.Command{
 			})
 			os.Exit(1)
 		}
-		for _, w := range warnings {
+		for _, w := range res.Warnings {
 			orchestra.PrintEvent(os.Stdout, orchestra.Event{
 				Kind:    orchestra.EventWarn,
 				Tier:    -1,
@@ -34,9 +34,18 @@ var runCmd = &cobra.Command{
 				At:      time.Now(),
 			})
 		}
+		if !res.Valid() {
+			orchestra.PrintEvent(os.Stdout, orchestra.Event{
+				Kind:    orchestra.EventError,
+				Tier:    -1,
+				Message: fmt.Sprintf("Config error: %s", res.Err()),
+				At:      time.Now(),
+			})
+			os.Exit(1)
+		}
 
 		wallStart := time.Now()
-		result, err := orchestra.Run(context.Background(), cfg,
+		result, err := orchestra.Run(context.Background(), res.Config,
 			orchestra.WithWorkspaceDir(workspaceDir),
 			orchestra.WithEventHandler(func(ev orchestra.Event) {
 				orchestra.PrintEvent(os.Stdout, ev)

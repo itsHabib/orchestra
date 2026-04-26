@@ -16,16 +16,22 @@ var validateCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
 
-		cfg, warnings, err := config.Load(args[0])
+		res, err := config.Load(args[0])
 		if err != nil {
 			logger.Error("Validation failed: %s", err)
 			os.Exit(1)
 		}
 
-		for _, w := range warnings {
+		for _, w := range res.Warnings {
 			logger.Warn("%s", w)
 		}
 
+		if !res.Valid() {
+			logger.Error("Validation failed: %s", res.Err())
+			os.Exit(1)
+		}
+
+		cfg := res.Config
 		logger.Success("Config is valid: %d teams, project %q", len(cfg.Teams), cfg.Name)
 
 		// Print team summary
