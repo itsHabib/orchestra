@@ -94,9 +94,9 @@ func writeMarkdownTeams(b *strings.Builder, result *orchestra.Result) {
 	}
 	for _, name := range orderedTeamNames(result) {
 		// Index into the map rather than `for _, t := range Teams` to
-		// avoid a 296-byte copy per iteration. TeamResult embeds
-		// TeamState which is itself wide; the gocritic linter flags
-		// the copy.
+		// satisfy gocritic's rangeValCopy lint rule — TeamResult embeds
+		// the wide TeamState. Both forms make one copy per iteration;
+		// only the lint disposition differs.
 		teams := result.Teams
 		t := teams[name]
 		fmt.Fprintf(b, "## %s\n\n", name)
@@ -168,14 +168,19 @@ type runSummary struct {
 }
 
 // summarize reduces a *Result to a runSummary. A team in any state
-// other than "done" forces overall Status to "failed". A nil result
-// is treated as a degenerate failure with zero counts — keeps the
-// renderers safe to call before the engine has produced anything.
+// other than "done" forces overall Status to "failed". A nil result —
+// or a result with zero teams — is treated as a degenerate failure:
+// nothing ran, so we cannot claim success. decideExit relies on this
+// status to gate exitSuccess vs exitAuditFailure, so the renderers
+// and the exit-code path stay in sync.
 func summarize(result *orchestra.Result) runSummary {
 	if result == nil {
 		return runSummary{Status: "failed"}
 	}
 	out := runSummary{Status: "success", DurationMs: result.DurationMs}
+	if len(result.Teams) == 0 {
+		out.Status = "failed"
+	}
 	for name := range result.Teams {
 		t := result.Teams[name]
 		out.TotalCost += t.CostUSD
@@ -197,9 +202,8 @@ func teamsJSON(result *orchestra.Result) []reportTeam {
 	}
 	out := make([]reportTeam, 0, len(result.Teams))
 	for _, name := range orderedTeamNames(result) {
-		// Index into the map rather than `for _, t := range Teams`
-		// to avoid a 296-byte copy per iteration; TeamResult embeds
-		// the wide TeamState.
+		// Index into the map rather than `for _, t := range Teams` to
+		// satisfy gocritic's rangeValCopy lint rule (see writeMarkdownTeams).
 		t := result.Teams[name]
 		out = append(out, reportTeam{
 			Name:    name,

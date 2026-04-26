@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/itsHabib/orchestra/pkg/orchestra"
 )
@@ -55,13 +56,16 @@ func maxTurnsFromEnv(fallback int) int {
 }
 
 // truncateDiff caps diff at diffTruncationLimit, appending a marker
-// footer when truncation occurred. Returned string is safe to inline
-// into a model prompt.
+// footer when truncation occurred. Slicing happens at a byte boundary,
+// then strings.ToValidUTF8 trims any partial multi-byte rune so the
+// returned string is always valid UTF-8 and safe to inline into a
+// model prompt. Almost all diffs are ASCII; the guard exists for the
+// rare patch carrying multi-byte filenames or comment text.
 func truncateDiff(diff string) string {
 	if len(diff) <= diffTruncationLimit {
 		return diff
 	}
-	return diff[:diffTruncationLimit] + "\n\n[diff truncated]\n"
+	return strings.ToValidUTF8(diff[:diffTruncationLimit], "") + "\n\n[diff truncated]\n"
 }
 
 // buildConfig assembles the orchestra.Config used by the audit run.
@@ -71,7 +75,7 @@ func truncateDiff(diff string) string {
 // taken by pointer purely to avoid a 144-byte stack copy; the function
 // does not mutate it.
 func buildConfig(pr *PRData) *orchestra.Config {
-	context := buildAuditorContext(pr)
+	auditContext := buildAuditorContext(pr)
 
 	return &orchestra.Config{
 		Name: "pr-audit-" + strconv.Itoa(pr.Number),
@@ -87,7 +91,7 @@ func buildConfig(pr *PRData) *orchestra.Config {
 			{
 				Name:    auditorTeamName,
 				Lead:    orchestra.Lead{Role: "Senior PR auditor — reads the PR and writes a structured findings report"},
-				Context: context,
+				Context: auditContext,
 				Tasks: []orchestra.Task{
 					{
 						Summary: "Design-doc alignment: identify which design doc this PR claims to implement and check whether the diff matches the spec",
@@ -121,12 +125,18 @@ func buildConfig(pr *PRData) *orchestra.Config {
 // auditor team. PR meta + truncated diff. Kept ASCII-fenced so the
 // model sees a clear separator between meta and diff. pr is taken by
 // pointer purely to avoid a 144-byte stack copy.
+//
+// NOTE: pr.Body and pr.Diff are embedded verbatim — no sanitization.
+// Anyone with permission to comment on a PR can shape the prompt the
+// auditor sees. Treat the auditor's output as untrusted; do not
+// escalate this prompt path into a higher-trust context (e.g. an
+// auto-merge gate) without adding sanitization first.
 func buildAuditorContext(pr *PRData) string {
 	diff := truncateDiff(pr.Diff)
 
-	files := ""
+	var files strings.Builder
 	for _, f := range pr.Files {
-		files += fmt.Sprintf("- %s (+%d / -%d)\n", f.Path, f.Additions, f.Deletions)
+		fmt.Fprintf(&files, "- %s (+%d / -%d)\n", f.Path, f.Additions, f.Deletions)
 	}
 
 	return fmt.Sprintf(`You are auditing a GitHub pull request. Your job is read-only: produce a structured findings report. Do not modify any files. Do not run any tests.
@@ -151,5 +161,5 @@ func buildAuditorContext(pr *PRData) string {
 %s
 `,
 		pr.Number, pr.Title, pr.URL, pr.BaseRefName, pr.HeadRefName,
-		pr.Additions, pr.Deletions, files, pr.Body, diff)
+		pr.Additions, pr.Deletions, files.String(), pr.Body, diff)
 }

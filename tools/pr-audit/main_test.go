@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,6 +21,20 @@ func withRunOrchestraStub(t *testing.T, fn func(context.Context, *orchestra.Conf
 	t.Cleanup(func() { runOrchestra = orig })
 }
 
+// captureRunOrchestraOptions wraps fn in a stub that records the
+// orchestra.Option slice passed to runOrchestra so tests can assert
+// the SDK options (e.g. WithWorkspaceDir) propagate from realMain.
+// The returned *[]orchestra.Option is updated in place on each call.
+func captureRunOrchestraOptions(t *testing.T, fn func(context.Context, *orchestra.Config, ...orchestra.Option) (*orchestra.Result, error)) *[]orchestra.Option {
+	t.Helper()
+	captured := &[]orchestra.Option{}
+	withRunOrchestraStub(t, func(ctx context.Context, cfg *orchestra.Config, opts ...orchestra.Option) (*orchestra.Result, error) {
+		*captured = opts
+		return fn(ctx, cfg, opts...)
+	})
+	return captured
+}
+
 func TestRealMain_SuccessReturnsZero(t *testing.T) {
 	stub := withExecStub(t,
 		execStubCall{
@@ -31,7 +46,7 @@ func TestRealMain_SuccessReturnsZero(t *testing.T) {
 			stdoutFile: "testdata/pr-21.diff",
 		},
 	)
-	withRunOrchestraStub(t, func(_ context.Context, _ *orchestra.Config, _ ...orchestra.Option) (*orchestra.Result, error) {
+	capturedOpts := captureRunOrchestraOptions(t, func(_ context.Context, _ *orchestra.Config, _ ...orchestra.Option) (*orchestra.Result, error) {
 		return &orchestra.Result{
 			Project: "pr-audit-21",
 			Teams: map[string]orchestra.TeamResult{
@@ -57,6 +72,29 @@ func TestRealMain_SuccessReturnsZero(t *testing.T) {
 	if !strings.Contains(stdout.String(), "looks good") {
 		t.Error("stdout missing result summary")
 	}
+	// realMain must propagate WithWorkspaceDir to orchestra.Run with
+	// the per-PR workspace path so concurrent audits don't collide
+	// and the report's workspace footer matches reality.
+	wantWorkspace := filepath.Join(".orchestra", "pr-audit-21")
+	if !optsContainWorkspaceDir(*capturedOpts, wantWorkspace) {
+		t.Errorf("orchestra.Run options missing WithWorkspaceDir(%q); got %d option(s)", wantWorkspace, len(*capturedOpts))
+	}
+	if !strings.Contains(stdout.String(), wantWorkspace) {
+		t.Errorf("stdout missing workspace path %q in report footer", wantWorkspace)
+	}
+}
+
+// optsContainWorkspaceDir verifies an orchestra.Option was passed.
+// orchestra.Option is `type Option func(*runOptions)` where runOptions
+// is unexported, so we cannot introspect which option was passed
+// without an SDK helper — we can only assert the slice is non-empty.
+// Combined with the call site (`orchestra.WithWorkspaceDir(workspace)`
+// is the only option built in realMain), a non-empty slice is a
+// meaningful regression signal: removing the option entirely would
+// drop the slice to zero. A path-identity assertion would need a
+// public SDK introspection method; flagged as a future SDK finding.
+func optsContainWorkspaceDir(opts []orchestra.Option, _ string) bool {
+	return len(opts) > 0
 }
 
 func TestRealMain_FailedTeamReturnsOne(t *testing.T) {
@@ -195,6 +233,12 @@ func TestRealMain_RunErrorWithNilResultReturnsTwo(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "orchestra.Run failed before producing a result") {
 		t.Error("stderr missing nil-result note")
+	}
+	// stdout must stay empty on the nil-result path — emitting a
+	// degenerate report would surprise callers piping stdout into
+	// other tooling. realMain skips writeReport when result is nil.
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty on nil-result exit, got %d bytes: %q", stdout.Len(), stdout.String())
 	}
 }
 

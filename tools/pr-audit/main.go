@@ -88,9 +88,17 @@ func realMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	workspace := filepath.Join(".orchestra", "pr-audit-"+strconv.Itoa(prNumber))
 	result, runErr := runOrchestra(ctx, cfg, orchestra.WithWorkspaceDir(workspace))
 
+	// runErr+nil result: orchestra.Run failed before producing any
+	// state — the audit didn't run. Skip the report (would emit a
+	// degenerate empty document on stdout) and let decideExit write
+	// the stderr explanation and return exit-2.
+	if result == nil {
+		return decideExit(result, runErr, stderr)
+	}
+
 	// runErr can be non-nil with a non-nil result — partial failure.
-	// Both renderers handle a nil or partial result gracefully, so
-	// always render before deciding the exit code.
+	// Both renderers handle a partial result gracefully, so render
+	// before deciding the exit code.
 	if err := writeReport(stdout, result, &pr, workspace, *parsed.jsonOut); err != nil {
 		_, _ = fmt.Fprintf(stderr, "pr-audit: render report: %v\n", err)
 		return exitAuditFailure
@@ -170,7 +178,9 @@ func parsePR(fs *flag.FlagSet, stderr io.Writer) (int, int) {
 // state — exitSetupError. runErr+non-nil result means partial run with
 // at least one failed team — exitAuditFailure. No runErr and every
 // team done is exitSuccess; anything else (e.g. a team stuck "running"
-// from a misbehaving stub) is exitAuditFailure.
+// from a misbehaving stub) is exitAuditFailure. Status determination
+// is delegated to summarize so this function and the renderers stay
+// in sync.
 func decideExit(result *orchestra.Result, runErr error, stderr io.Writer) int {
 	switch {
 	case runErr != nil && result == nil:
@@ -179,7 +189,7 @@ func decideExit(result *orchestra.Result, runErr error, stderr io.Writer) int {
 	case runErr != nil:
 		_, _ = fmt.Fprintf(stderr, "pr-audit: orchestra.Run reported failure: %v\n", runErr)
 		return exitAuditFailure
-	case allTeamsDone(result):
+	case summarize(result).Status == "success":
 		return exitSuccess
 	default:
 		return exitAuditFailure
@@ -208,21 +218,6 @@ func writeReport(stdout io.Writer, result *orchestra.Result, pr *PRData, workspa
 		return fmt.Errorf("write Markdown report: %w", err)
 	}
 	return nil
-}
-
-// allTeamsDone returns true when result is non-nil and every team's
-// Status is "done". Empty Teams or nil result returns false — without
-// at least one done team we cannot claim success.
-func allTeamsDone(result *orchestra.Result) bool {
-	if result == nil || len(result.Teams) == 0 {
-		return false
-	}
-	for name := range result.Teams {
-		if result.Teams[name].Status != "done" {
-			return false
-		}
-	}
-	return true
 }
 
 func main() {
