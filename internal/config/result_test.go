@@ -14,14 +14,29 @@ import (
 // validator that emits issues; covers project-level, team-scoped,
 // nested, backend, and warning paths.
 func TestValidate_PopulatesFieldPath(t *testing.T) {
-	tests := []struct {
-		name      string
-		cfg       *Config
-		wantErr   []string         // substring expected in the matching ConfigError
-		wantField []string         // expected Field path on the matching ConfigError
-		wantWarn  []string         // substring expected in the matching Warning
-		wantWarnField []string     // expected Field path on the matching Warning
-	}{
+	cases := []fieldPathCase{}
+	cases = append(cases, fieldPathProjectAndBackendCases()...)
+	cases = append(cases, fieldPathTeamCases()...)
+	cases = append(cases, fieldPathRepositoryCases()...)
+	cases = append(cases, fieldPathWarningCases()...)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertFieldPath(t, tc.cfg.Validate(), tc.wantErr, tc.wantField, tc.wantWarn, tc.wantWarnField)
+		})
+	}
+}
+
+type fieldPathCase struct {
+	name          string
+	cfg           *Config
+	wantErr       []string // substring expected in the matching ConfigError
+	wantField     []string // expected Field path on the matching ConfigError
+	wantWarn      []string // substring expected in the matching Warning
+	wantWarnField []string // expected Field path on the matching Warning
+}
+
+func fieldPathProjectAndBackendCases() []fieldPathCase {
+	return []fieldPathCase{
 		{
 			name: "missing project name",
 			cfg: &Config{
@@ -46,6 +61,11 @@ func TestValidate_PopulatesFieldPath(t *testing.T) {
 			wantErr:   []string{"backend.kind must be"},
 			wantField: []string{"backend", "kind"},
 		},
+	}
+}
+
+func fieldPathTeamCases() []fieldPathCase {
+	return []fieldPathCase{
 		{
 			name: "missing task summary",
 			cfg: &Config{
@@ -100,6 +120,11 @@ func TestValidate_PopulatesFieldPath(t *testing.T) {
 			wantErr:   []string{"cycle"},
 			wantField: []string{"teams"},
 		},
+	}
+}
+
+func fieldPathRepositoryCases() []fieldPathCase {
+	return []fieldPathCase{
 		{
 			name: "missing repository url under managed_agents",
 			cfg: &Config{
@@ -118,6 +143,11 @@ func TestValidate_PopulatesFieldPath(t *testing.T) {
 			wantErr:   []string{"backend.managed_agents.repository.url"},
 			wantField: []string{"backend", "managed_agents", "repository", "url"},
 		},
+	}
+}
+
+func fieldPathWarningCases() []fieldPathCase {
+	return []fieldPathCase{
 		{
 			name: "team-size warning",
 			cfg: &Config{
@@ -125,13 +155,7 @@ func TestValidate_PopulatesFieldPath(t *testing.T) {
 				Teams: []Team{{
 					Name:    "a",
 					Members: []Member{{Role: "1"}, {Role: "2"}, {Role: "3"}, {Role: "4"}, {Role: "5"}, {Role: "6"}},
-					Tasks: func() []Task {
-						out := make([]Task, 12)
-						for i := range out {
-							out[i] = Task{Summary: "t", Details: "d", Verify: "v"}
-						}
-						return out
-					}(),
+					Tasks:   manyTasks(12),
 				}},
 			},
 			wantWarn:      []string{"members"},
@@ -162,28 +186,39 @@ func TestValidate_PopulatesFieldPath(t *testing.T) {
 			wantWarnField: []string{"teams", "0", "tasks", "0", "verify"},
 		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			res := tc.cfg.Validate()
-			if len(tc.wantErr) > 0 {
-				match := findError(res.Errors, tc.wantErr[0])
-				if match == nil {
-					t.Fatalf("no ConfigError matched %q; got: %v", tc.wantErr[0], res.Errors)
-				}
-				if !reflect.DeepEqual(match.Field, tc.wantField) {
-					t.Errorf("Field = %v, want %v (message: %q)", match.Field, tc.wantField, match.Message)
-				}
-			}
-			if len(tc.wantWarn) > 0 {
-				match := findWarning(res.Warnings, tc.wantWarn[0])
-				if match == nil {
-					t.Fatalf("no Warning matched %q; got: %v", tc.wantWarn[0], res.Warnings)
-				}
-				if !reflect.DeepEqual(match.Field, tc.wantWarnField) {
-					t.Errorf("Field = %v, want %v (message: %q)", match.Field, tc.wantWarnField, match.Message)
-				}
-			}
-		})
+}
+
+// manyTasks returns n tasks with non-empty details/verify so they
+// don't trip the task-quality warnings during fixture construction.
+func manyTasks(n int) []Task {
+	out := make([]Task, n)
+	for i := range out {
+		out[i] = Task{Summary: "t", Details: "d", Verify: "v"}
+	}
+	return out
+}
+
+// assertFieldPath verifies that a [Result] contains a matching
+// ConfigError or Warning with the expected Field path.
+func assertFieldPath(t *testing.T, res *Result, wantErr, wantField, wantWarn, wantWarnField []string) {
+	t.Helper()
+	if len(wantErr) > 0 {
+		match := findError(res.Errors, wantErr[0])
+		if match == nil {
+			t.Fatalf("no ConfigError matched %q; got: %v", wantErr[0], res.Errors)
+		}
+		if !reflect.DeepEqual(match.Field, wantField) {
+			t.Errorf("Field = %v, want %v (message: %q)", match.Field, wantField, match.Message)
+		}
+	}
+	if len(wantWarn) > 0 {
+		match := findWarning(res.Warnings, wantWarn[0])
+		if match == nil {
+			t.Fatalf("no Warning matched %q; got: %v", wantWarn[0], res.Warnings)
+		}
+		if !reflect.DeepEqual(match.Field, wantWarnField) {
+			t.Errorf("Field = %v, want %v (message: %q)", match.Field, wantWarnField, match.Message)
+		}
 	}
 }
 

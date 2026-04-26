@@ -60,7 +60,7 @@ func (r *Result) Err() error {
 		msgs[i] = e.String()
 	}
 	return &invalidConfigError{
-		msg: fmt.Sprintf("validation errors:\n  - %s", strings.Join(msgs, "\n  - ")),
+		msg: "validation errors:\n  - " + strings.Join(msgs, "\n  - "),
 	}
 }
 
@@ -79,7 +79,11 @@ func (e *invalidConfigError) Unwrap() error { return ErrInvalidConfig }
 // Severity — because the warning vs. error distinction is
 // domain-meaningful and consumers iterate the slice they care about.
 //
-// pkg/orchestra re-exports this type as orchestra.ConfigError.
+// pkg/orchestra re-exports this type as orchestra.ConfigError; the
+// "config.ConfigError" stutter inside this package is intentional and
+// matches the SDK-facing alias.
+//
+//revive:disable-next-line:exported
 type ConfigError struct {
 	// Field is the structured YAML path to the offending node, e.g.
 	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
