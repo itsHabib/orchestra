@@ -24,10 +24,11 @@ func TestStart_Cancel_ReturnsPartialResult(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeOneTeamConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	loaded, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := loaded.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 
@@ -79,10 +80,11 @@ func TestHandle_Status_ReflectsLiveTier(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := writeTwoTierConfig(t, workDir)
 
-	cfg, _, err := orchestra.LoadConfig(configPath)
+	loaded, err := orchestra.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := loaded.Config
 	withPath(t, binDir)
 	chdir(t, workDir)
 

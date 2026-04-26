@@ -25,24 +25,42 @@ import (
 )
 
 // LoadConfig parses a YAML config from path, applies defaults, and runs
-// validation. Warnings are returned even when err is non-nil so that
-// callers can surface validation context.
+// validation. Returns a [ValidationResult] aggregating the parsed
+// config, any warnings, and any errors. The error return is reserved
+// for I/O or parse failures (file not found, malformed YAML);
+// structural validation issues live in result.Errors.
+//
+// Typical use:
+//
+//	res, err := orchestra.LoadConfig("orchestra.yaml")
+//	if err != nil {
+//	    return err // I/O or parse failure
+//	}
+//	for _, w := range res.Warnings {
+//	    fmt.Fprintln(os.Stderr, w)
+//	}
+//	if !res.Valid() {
+//	    return res.Err()
+//	}
+//	_, err = orchestra.Run(ctx, res.Config)
 //
 // Experimental.
-//
-//nolint:gocritic // (cfg, warnings, err) tuple mirrors internal config.Load and is part of the documented SDK signature.
-func LoadConfig(path string) (*Config, []Warning, error) {
+func LoadConfig(path string) (*ValidationResult, error) {
 	return config.Load(path)
 }
 
-// Validate runs the config validator standalone. Useful for callers that
-// build configs programmatically. Mirrors what Run does internally:
-// applies ResolveDefaults to cfg, then validates.
+// Validate runs the config validator standalone. Useful for callers
+// that build configs programmatically. Mirrors what Run does
+// internally: applies ResolveDefaults to cfg, then validates. A nil
+// cfg is treated as a hard validation failure (one ConfigError entry,
+// empty Field) rather than a panic — Validate never returns nil.
 //
 // Experimental.
-func Validate(cfg *Config) ([]Warning, error) {
+func Validate(cfg *Config) *ValidationResult {
 	if cfg == nil {
-		return nil, errors.New("orchestra: nil config")
+		return &ValidationResult{
+			Errors: []ConfigError{{Message: "nil config"}},
+		}
 	}
 	cfg.ResolveDefaults()
 	return cfg.Validate()
