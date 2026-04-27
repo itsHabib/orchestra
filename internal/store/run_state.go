@@ -39,6 +39,18 @@ type TeamState struct {
 	CacheReadInputTokens     int64   `json:"cache_read_input_tokens,omitempty"`
 	NumTurns                 int     `json:"num_turns,omitempty"`
 
+	// Signal* are the host-recorded outcome of the team's signal_completion
+	// custom tool call. SignalStatus is "" until the agent calls the tool;
+	// "done" or "blocked" thereafter. The remaining fields carry whatever
+	// metadata the agent attached. Idempotent: a second call with the same
+	// team is a no-op (the first signal wins) so a confused agent calling
+	// twice does not erase the original outcome.
+	SignalStatus  string    `json:"signal_status,omitempty"`
+	SignalSummary string    `json:"signal_summary,omitempty"`
+	SignalPRURL   string    `json:"signal_pr_url,omitempty"`
+	SignalReason  string    `json:"signal_reason,omitempty"`
+	SignalAt      time.Time `json:"signal_at,omitempty"`
+
 	Artifacts []string `json:"artifacts,omitempty"`
 }
 

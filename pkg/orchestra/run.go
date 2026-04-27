@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,11 +13,13 @@ import (
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/customtools"
 	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/event"
 	"github.com/itsHabib/orchestra/internal/ghhost"
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/messaging"
+	"github.com/itsHabib/orchestra/internal/notify"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/store"
@@ -157,9 +160,10 @@ type orchestrationRun struct {
 	participants       []messaging.Participant
 	inboxLookup        map[string]string
 	maSpawner          *spawner.ManagedAgentsSpawner
-	ghClient           *ghhost.Client // nil for non-MA runs or when no repository is configured
-	ghPAT              string         // in-memory only; never persisted or logged
-	handle             *Handle        // nil when called by tests that don't construct a Handle
+	ghClient           *ghhost.Client  // nil for non-MA runs or when no repository is configured
+	ghPAT              string          // in-memory only; never persisted or logged
+	handle             *Handle         // nil when called by tests that don't construct a Handle
+	notifier           notify.Notifier // notifies on signal_completion; nil disables
 	startTeamMAForTest startTeamMAFunc
 
 	// toolNamesMu guards toolNamesByUseID, the MA-only tool-name lookup
@@ -398,6 +402,7 @@ func newOrchestrationRun(cfg *Config, emitter event.Emitter, runService *runsvc.
 		if err != nil {
 			return nil, nil, err
 		}
+		registerBuiltinCustomTools()
 		return &orchestrationRun{
 			cfg:        cfg,
 			emitter:    emitter,
@@ -408,6 +413,7 @@ func newOrchestrationRun(cfg *Config, emitter event.Emitter, runService *runsvc.
 			ghClient:   ghClient,
 			ghPAT:      ghPAT,
 			handle:     handle,
+			notifier:   defaultNotifier(ws),
 		}, tiers, nil
 	}
 
@@ -425,6 +431,39 @@ func newOrchestrationRun(cfg *Config, emitter event.Emitter, runService *runsvc.
 		inboxLookup:  lookup,
 		handle:       handle,
 	}, tiers, nil
+}
+
+// registerBuiltinCustomTools registers signal_completion (and any other
+// host-side custom tools) into the package-level registry. customtools.Register
+// is idempotent on a same-name re-register so calling this on every Run is
+// safe; tests that need to swap a fake call customtools.Reset first.
+func registerBuiltinCustomTools() {
+	// MustRegister panics on a malformed handler — built-ins are static so a
+	// failure here is a programming error worth crashing the process for.
+	customtools.MustRegister(customtools.NewSignalCompletion())
+}
+
+// defaultNotifier composes the v0 notification fan-out: an append-only NDJSON
+// log under the workspace, a TTY bell + line on stderr, and a best-effort
+// system notifier (osascript / notify-send / no-op). Failures in any single
+// sink are logged and ignored — the design (§9.1) treats notification as
+// best-effort.
+//
+// Stderr (not stdout) is the terminal target because the engine emits result
+// JSON and event lines on stdout; mixing the bell into stdout would clutter
+// machine-readable output.
+func defaultNotifier(ws *workspace.Workspace) notify.Notifier {
+	logPath := ""
+	if ws != nil {
+		logPath = filepath.Join(ws.Path, "notifications.ndjson")
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sinks := []notify.Notifier{
+		notify.NewLog(logPath),
+		notify.NewTerminal(os.Stderr),
+		notify.NewSystem(),
+	}
+	return notify.Compose(logger, sinks...)
 }
 
 func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, emitter event.Emitter) (*spawner.ManagedAgentsSpawner, error) {

@@ -318,6 +318,113 @@ func TestManagedAgentsTranslator_StateWriteFailureExits(t *testing.T) {
 	}
 }
 
+type customToolResultProbe struct {
+	Type            string `json:"type"`
+	CustomToolUseID string `json:"custom_tool_use_id"`
+	IsError         bool   `json:"is_error"`
+	Content         []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+func marshalCustomToolResultProbe(t *testing.T, event *UserEvent) customToolResultProbe {
+	t.Helper()
+	params, err := toSessionEventSendParams(event)
+	if err != nil {
+		t.Fatalf("toSessionEventSendParams: %v", err)
+	}
+	if len(params.Events) != 1 {
+		t.Fatalf("Events len=%d, want 1", len(params.Events))
+	}
+	raw, err := json.Marshal(params.Events[0])
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	var probe customToolResultProbe
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("unmarshal probe: %v", err)
+	}
+	if probe.Type != "user.custom_tool_result" {
+		t.Fatalf("event type=%q, want user.custom_tool_result; raw=%s", probe.Type, raw)
+	}
+	return probe
+}
+
+func TestToSessionEventSendParams_CustomToolResultShape(t *testing.T) {
+	cases := []struct {
+		name      string
+		event     *UserEvent
+		wantText  string
+		wantError bool
+	}{
+		{
+			name: "result is json bytes",
+			event: &UserEvent{
+				Type: UserEventTypeCustomToolResult,
+				CustomToolResult: &CustomToolResult{
+					ToolUseID: "evt_x",
+					Result:    json.RawMessage(`{"ok":true}`),
+				},
+			},
+			wantText: `{"ok":true}`,
+		},
+		{
+			name: "result is structured value",
+			event: &UserEvent{
+				Type: UserEventTypeCustomToolResult,
+				CustomToolResult: &CustomToolResult{
+					ToolUseID: "evt_x",
+					Result:    map[string]any{"ok": true},
+				},
+			},
+			wantText: `{"ok":true}`,
+		},
+		{
+			name: "error overrides result",
+			event: &UserEvent{
+				Type: UserEventTypeCustomToolResult,
+				CustomToolResult: &CustomToolResult{
+					ToolUseID: "evt_x",
+					Result:    "ignored",
+					Error:     "oops",
+				},
+			},
+			wantText:  "oops",
+			wantError: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := marshalCustomToolResultProbe(t, tc.event)
+			if probe.CustomToolUseID != "evt_x" {
+				t.Fatalf("tool_use_id=%q, want evt_x", probe.CustomToolUseID)
+			}
+			if probe.IsError != tc.wantError {
+				t.Fatalf("is_error=%v, want %v", probe.IsError, tc.wantError)
+			}
+			if len(probe.Content) != 1 || probe.Content[0].Type != "text" {
+				t.Fatalf("unexpected content: %+v", probe.Content)
+			}
+			if probe.Content[0].Text != tc.wantText {
+				t.Fatalf("content text=%q, want %q", probe.Content[0].Text, tc.wantText)
+			}
+		})
+	}
+}
+
+func TestToSessionEventSendParams_CustomToolResultRequiresFields(t *testing.T) {
+	if _, err := toSessionEventSendParams(&UserEvent{Type: UserEventTypeCustomToolResult}); err == nil {
+		t.Fatalf("expected error on nil CustomToolResult")
+	}
+	if _, err := toSessionEventSendParams(&UserEvent{
+		Type:             UserEventTypeCustomToolResult,
+		CustomToolResult: &CustomToolResult{},
+	}); err == nil {
+		t.Fatalf("expected error on empty tool use id")
+	}
+}
+
 func TestToSessionEventSendParams_UserMessageIncludesType(t *testing.T) {
 	// Regression guard for an SDK helper bug: anthropic-sdk-go v1.37.0's
 	// BetaManagedAgentsEventParamsOfUserMessage does not set the required

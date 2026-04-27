@@ -2,6 +2,7 @@ package orchestra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/customtools"
 	"github.com/itsHabib/orchestra/internal/ghhost"
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/spawner"
@@ -20,6 +22,11 @@ type managedSession interface {
 	ID() string
 	Err() error
 	Cancel(context.Context) error
+	// Send delivers a user event into the session. The dispatcher uses this
+	// to relay user.custom_tool_result events back after a host-side custom
+	// tool handler runs. Adding it here (rather than a separate interface)
+	// keeps the engine's MA codepath using one consistent value.
+	Send(context.Context, *spawner.UserEvent) error
 }
 
 type startTeamMAFunc func(context.Context, *Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
@@ -41,9 +48,145 @@ func (r *orchestrationRun) runTeamMA(ctx context.Context, tierIdx int, team *Tea
 
 	for ev := range events {
 		r.reportMAEvent(tierIdx, team.Name, ev)
+		r.dispatchCustomToolEvent(teamCtx, tierIdx, team.Name, session, ev)
 	}
 
 	return r.finalizeMATeam(ctx, teamCtx, team, session)
+}
+
+// dispatchCustomToolEvent routes an agent.custom_tool_use event to a host-side
+// handler from the customtools registry, then ships the handler's result back
+// as a user.custom_tool_result so the agent's loop can advance. Non-custom
+// events are no-ops here — reportMAEvent already logged them. An unknown
+// tool, a parse failure, or a handler error all collapse to is_error=true on
+// the result event so the agent gets actionable feedback rather than hanging
+// on a never-arriving response.
+func (r *orchestrationRun) dispatchCustomToolEvent(ctx context.Context, tierIdx int, teamName string, session managedSession, event spawner.Event) {
+	cev, ok := event.(spawner.AgentCustomToolUseEvent)
+	if !ok {
+		return
+	}
+	r.handleCustomToolUse(ctx, tierIdx, teamName, session, &cev)
+}
+
+func (r *orchestrationRun) handleCustomToolUse(ctx context.Context, tierIdx int, teamName string, session managedSession, ev *spawner.AgentCustomToolUseEvent) {
+	toolUseID := spawner.EventID(ev.ToolUse.ID)
+	handler, found := customtools.Lookup(ev.ToolUse.Name)
+	if !found {
+		errMsg := fmt.Sprintf("no handler registered for custom tool %q", ev.ToolUse.Name)
+		r.emitTeamMessage(tierIdx, teamName, "custom_tool_use(%s) → %s", ev.ToolUse.Name, errMsg)
+		r.sendCustomToolResult(ctx, tierIdx, teamName, session, toolUseID, nil, errMsg)
+		return
+	}
+
+	input, err := marshalToolInput(ev.ToolUse.Input)
+	if err != nil {
+		errMsg := fmt.Sprintf("marshal input: %s", err)
+		r.emitTeamMessage(tierIdx, teamName, "custom_tool_use(%s) → %s", ev.ToolUse.Name, errMsg)
+		r.sendCustomToolResult(ctx, tierIdx, teamName, session, toolUseID, nil, errMsg)
+		return
+	}
+
+	runCtx := r.customToolRunContext(ctx)
+	result, handleErr := handler.Handle(ctx, runCtx, teamName, input)
+	if handleErr != nil {
+		errMsg := handleErr.Error()
+		r.emitTeamMessage(tierIdx, teamName, "custom_tool_use(%s) failed: %s", ev.ToolUse.Name, errMsg)
+		r.sendCustomToolResult(ctx, tierIdx, teamName, session, toolUseID, nil, errMsg)
+		return
+	}
+	r.emitTeamMessage(tierIdx, teamName, "custom_tool_use(%s) ok", ev.ToolUse.Name)
+	r.sendCustomToolResult(ctx, tierIdx, teamName, session, toolUseID, result, "")
+}
+
+// sendCustomToolResult pushes the user.custom_tool_result event back into the
+// session. The send error path emits a warn-level event (not an EventError —
+// the team's own error path handles a fatally broken session) so a transient
+// network blip during a tool result write is visible in the run log without
+// terminating the team. The agent will eventually re-stream a stop_reason
+// idle-with-error if MA notices the missing result.
+func (r *orchestrationRun) sendCustomToolResult(ctx context.Context, tierIdx int, teamName string, session managedSession, toolUseID spawner.EventID, result json.RawMessage, errMsg string) {
+	if session == nil {
+		return
+	}
+	sendErr := session.Send(ctx, &spawner.UserEvent{
+		Type: spawner.UserEventTypeCustomToolResult,
+		CustomToolResult: &spawner.CustomToolResult{
+			ToolUseID: toolUseID,
+			Result:    result,
+			Error:     errMsg,
+		},
+	})
+	if sendErr != nil {
+		r.emit(Event{
+			Kind:    EventWarn,
+			Tier:    tierIdx,
+			Team:    teamName,
+			Message: fmt.Sprintf("custom_tool_result send: %s", sendErr),
+			At:      time.Now(),
+		})
+	}
+}
+
+// customToolRunContext bundles the engine state custom-tool handlers need.
+// Constructed per dispatch so handlers see the live store and notifier even
+// if either is swapped mid-run (none are today, but this keeps the contract
+// honest).
+func (r *orchestrationRun) customToolRunContext(ctx context.Context) *customtools.RunContext {
+	runID := ""
+	if r.runService != nil {
+		if snapshot, err := r.runService.Snapshot(ctx); err == nil && snapshot != nil {
+			runID = snapshot.RunID
+		}
+	}
+	var st store.Store
+	if r.runService != nil {
+		st = r.runService.Store()
+	}
+	return &customtools.RunContext{
+		Store:    st,
+		Notifier: r.notifier,
+		RunID:    runID,
+		Now:      r.runServiceNow,
+	}
+}
+
+// runServiceNow returns the engine's clock when wired through the run
+// service, falling back to time.Now().UTC(). Keeps signal_at and
+// notification timestamps consistent with the rest of the run state.
+func (r *orchestrationRun) runServiceNow() time.Time {
+	if r.runService != nil {
+		return r.runService.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// marshalToolInput rebuilds the json.RawMessage handlers expect from the
+// engine-translated `any` value the spawner already decoded. Round-tripping
+// through json.Marshal is cheap (input payloads are small) and keeps the
+// Handler API narrow — handlers don't need to know that the engine eagerly
+// decodes Input on the way in.
+func marshalToolInput(in any) (json.RawMessage, error) {
+	if in == nil {
+		return json.RawMessage(`{}`), nil
+	}
+	if raw, ok := in.(json.RawMessage); ok {
+		if len(raw) == 0 {
+			return json.RawMessage(`{}`), nil
+		}
+		return raw, nil
+	}
+	if s, ok := in.(string); ok {
+		// rawInput in the spawner falls back to string when the source bytes
+		// are not valid JSON. Pass through; the handler's Unmarshal will
+		// surface a parse error.
+		return json.RawMessage(s), nil
+	}
+	out, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	return out, nil
 }
 
 func (r *orchestrationRun) startTeamMASession(ctx context.Context, team *Team, state *store.RunState, logWriter io.Writer) (managedSession, <-chan spawner.Event, error) {

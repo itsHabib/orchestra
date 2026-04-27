@@ -1109,8 +1109,73 @@ func toSessionEventSendParams(event *UserEvent) (anthropic.BetaSessionEventSendP
 				anthropic.BetaManagedAgentsEventParamsOfUserInterrupt(anthropic.BetaManagedAgentsUserInterruptEventParamsTypeUserInterrupt),
 			},
 		}, nil
+	case UserEventTypeCustomToolResult:
+		return toCustomToolResultParams(event.CustomToolResult)
 	default:
 		return anthropic.BetaSessionEventSendParams{}, fmt.Errorf("%w: managed-agents send does not support %q", ErrUnsupported, event.Type)
+	}
+}
+
+// toCustomToolResultParams converts a host-side CustomToolResult into the SDK
+// params for a user.custom_tool_result event. The Result field accepts any
+// JSON-marshalable value plus the common shortcuts (string, []byte,
+// json.RawMessage); other values are marshaled to JSON so handlers can return
+// structured data without first stringifying it.
+//
+// Type is set explicitly: the SDK helper
+// BetaManagedAgentsEventParamsOfUserCustomToolResult (v1.37.0,
+// betasessionevent.go:1143) doesn't, mirroring the same gap toSessionEvent
+// SendParams already works around for user.message.
+func toCustomToolResultParams(cr *CustomToolResult) (anthropic.BetaSessionEventSendParams, error) {
+	if cr == nil {
+		return anthropic.BetaSessionEventSendParams{}, fmt.Errorf("%w: nil custom_tool_result", store.ErrInvalidArgument)
+	}
+	if cr.ToolUseID == "" {
+		return anthropic.BetaSessionEventSendParams{}, fmt.Errorf("%w: empty tool_use_id", store.ErrInvalidArgument)
+	}
+	text, err := customToolResultText(cr)
+	if err != nil {
+		return anthropic.BetaSessionEventSendParams{}, err
+	}
+	params := &anthropic.BetaManagedAgentsUserCustomToolResultEventParams{
+		CustomToolUseID: string(cr.ToolUseID),
+		Type:            anthropic.BetaManagedAgentsUserCustomToolResultEventParamsTypeUserCustomToolResult,
+		IsError:         anthropic.Bool(cr.Error != ""),
+	}
+	if text != "" {
+		params.Content = []anthropic.BetaManagedAgentsUserCustomToolResultEventParamsContentUnion{{
+			OfText: &anthropic.BetaManagedAgentsTextBlockParam{
+				Text: text,
+				Type: anthropic.BetaManagedAgentsTextBlockTypeText,
+			},
+		}}
+	}
+	return anthropic.BetaSessionEventSendParams{
+		Events: []anthropic.BetaManagedAgentsEventParamsUnion{{
+			OfUserCustomToolResult: params,
+		}},
+	}, nil
+}
+
+func customToolResultText(cr *CustomToolResult) (string, error) {
+	if cr.Error != "" {
+		return cr.Error, nil
+	}
+	switch r := cr.Result.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return r, nil
+	case []byte:
+		return string(r), nil
+	case json.RawMessage:
+		return string(r), nil
+	default:
+		out, err := json.Marshal(r)
+		if err != nil {
+			return "", fmt.Errorf("%w: marshal custom_tool_result: %w", store.ErrInvalidArgument, err)
+		}
+		return string(out), nil
 	}
 }
 

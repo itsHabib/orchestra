@@ -319,6 +319,11 @@ type fakeManagedSession struct {
 	id       string
 	err      error
 	canceled bool
+
+	sentMu    sync.Mutex
+	sent      []*spawner.UserEvent
+	sendErr   error
+	onSendOne func(*spawner.UserEvent)
 }
 
 func (s *fakeManagedSession) ID() string { return s.id }
@@ -327,4 +332,24 @@ func (s *fakeManagedSession) Err() error { return s.err }
 func (s *fakeManagedSession) Cancel(context.Context) error {
 	s.canceled = true
 	return nil
+}
+
+func (s *fakeManagedSession) Send(_ context.Context, ev *spawner.UserEvent) error {
+	s.sentMu.Lock()
+	s.sent = append(s.sent, ev)
+	cb := s.onSendOne
+	err := s.sendErr
+	s.sentMu.Unlock()
+	if cb != nil {
+		cb(ev)
+	}
+	return err
+}
+
+func (s *fakeManagedSession) sentEvents() []*spawner.UserEvent {
+	s.sentMu.Lock()
+	defer s.sentMu.Unlock()
+	out := make([]*spawner.UserEvent, len(s.sent))
+	copy(out, s.sent)
+	return out
 }
