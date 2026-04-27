@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -44,13 +43,6 @@ var mcpCmd = &cobra.Command{
 }
 
 func runMCP(parentCtx context.Context) error {
-	switch mcpTransportFlag {
-	case mcpTransportStdio, mcpTransportHTTP:
-	default:
-		return fmt.Errorf("--transport must be %q or %q, got %q",
-			mcpTransportStdio, mcpTransportHTTP, mcpTransportFlag)
-	}
-
 	opts := &mcp.Options{}
 	if mcpRegistryPathFlag != "" {
 		opts.Registry = mcp.NewRegistry(mcpRegistryPathFlag)
@@ -75,9 +67,9 @@ func runMCP(parentCtx context.Context) error {
 		}
 		return nil
 	case mcpTransportHTTP:
-		if mcpHTTPAddressFlag == "" {
-			return errors.New("--addr is required when --transport http")
-		}
+		// Empty-addr defense lives in mcp.ServeHTTP; the flag default
+		// already supplies 127.0.0.1:7332 so a vanilla --transport http
+		// invocation succeeds without further args.
 		fmt.Fprintf(os.Stderr,
 			"WARNING: --transport http exposes the MCP server with NO "+
 				"authentication on %s. Run only on trusted hosts; HTTP "+
@@ -87,8 +79,10 @@ func runMCP(parentCtx context.Context) error {
 			return fmt.Errorf("mcp http: %w", err)
 		}
 		return nil
+	default:
+		return fmt.Errorf("--transport must be %q or %q, got %q",
+			mcpTransportStdio, mcpTransportHTTP, mcpTransportFlag)
 	}
-	return nil
 }
 
 func init() {

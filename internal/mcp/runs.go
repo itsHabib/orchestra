@@ -312,6 +312,12 @@ func (s *ExecSpawner) Start(ctx context.Context, e *Entry) (*os.Process, error) 
 	cmd.Dir = e.WorkspaceDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	// Process-group isolation: ctx-detachment alone does not isolate from
+	// OS signals (SIGTERM, Ctrl-C, Ctrl-Break) delivered to the parent's
+	// group. detachProcessGroup is the per-platform Setpgid /
+	// CREATE_NEW_PROCESS_GROUP shim that completes the §8.4 "runs survive
+	// MCP server restarts" guarantee.
+	detachProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return nil, fmt.Errorf("mcp: spawn orchestra run: %w", err)

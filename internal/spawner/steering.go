@@ -55,6 +55,32 @@ type TeamSession struct {
 	LastEventAt time.Time
 }
 
+// SteerableSessionID returns the MA session id for `team` after the same
+// gating chain cmd/steering.go and internal/mcp/tools.go both need: backend
+// must be managed_agents, the team must exist, it must be in status
+// "running", and a SessionID must be recorded. Each gate maps to a distinct
+// sentinel error for callers to errors.Is against. Pure function so the
+// disk read is the caller's choice.
+func SteerableSessionID(state *store.RunState, team string) (string, error) {
+	if state == nil {
+		return "", ErrNoActiveRun
+	}
+	if state.Backend != "" && state.Backend != "managed_agents" {
+		return "", ErrLocalBackend
+	}
+	ts, ok := state.Teams[team]
+	if !ok {
+		return "", fmt.Errorf("%w: %q", ErrTeamNotFound, team)
+	}
+	if ts.Status != "running" {
+		return "", fmt.Errorf("%w: %q is %q", ErrTeamNotRunning, team, ts.Status)
+	}
+	if ts.SessionID == "" {
+		return "", fmt.Errorf("%w: %q", ErrNoSessionRecorded, team)
+	}
+	return ts.SessionID, nil
+}
+
 // ListTeamSessions builds the per-team steerability view from a loaded
 // RunState. Pure function so callers (CLI, tests) can construct state
 // in-memory and exercise the formatting / filter without touching the disk.

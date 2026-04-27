@@ -201,7 +201,13 @@ func pollUntilDone(parentCtx context.Context, t *testing.T, c *mcpclient.Client,
 		case strings.Contains(text, mcp.RunStatusBlocked):
 			t.Fatalf("run %s blocked (manual unblock not exercised by smoke): %s", runID, text)
 		}
-		time.Sleep(livePollEvery)
+		// Sleep ctx-aware so a t.Cleanup-driven cancel does not have to
+		// wait out the full poll interval after a failure elsewhere.
+		select {
+		case <-time.After(livePollEvery):
+		case <-parentCtx.Done():
+			t.Fatalf("driver context canceled while waiting to poll: %v", parentCtx.Err())
+		}
 	}
 	t.Fatalf("run %s did not reach status=done within %s", runID, liveRunTimeout)
 }

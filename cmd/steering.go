@@ -30,9 +30,12 @@ func loadActiveRunState(ctx context.Context, workspace string) (*store.RunState,
 	return state, nil
 }
 
-// resolveSteerableTeam runs the lookup chain: load run state, gate on
-// backend, locate the team, verify it is in the steerable status, return
-// the team's MA session ID.
+// resolveSteerableTeam runs the lookup chain: load run state, then defer to
+// spawner.SteerableSessionID for the backend / team / status / session-id
+// gates. internal/mcp/tools.go calls SteerableSessionID directly off a state
+// it loaded itself; this CLI helper exists because the CLI's loadActive-
+// RunState wraps the not-found sentinel into a user-facing message before
+// the gate runs.
 //
 // The status check is best-effort under TOCTOU: the team may transition
 // between this read and the MA send. Send-time errors surface MA's actual
@@ -45,18 +48,5 @@ func resolveSteerableTeam(ctx context.Context, workspace, team string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if state.Backend != "" && state.Backend != "managed_agents" {
-		return "", spawner.ErrLocalBackend
-	}
-	ts, ok := state.Teams[team]
-	if !ok {
-		return "", fmt.Errorf("%w: %q", spawner.ErrTeamNotFound, team)
-	}
-	if ts.Status != "running" {
-		return "", fmt.Errorf("%w: %q is %q", spawner.ErrTeamNotRunning, team, ts.Status)
-	}
-	if ts.SessionID == "" {
-		return "", fmt.Errorf("%w: %q", spawner.ErrNoSessionRecorded, team)
-	}
-	return ts.SessionID, nil
+	return spawner.SteerableSessionID(state, team)
 }

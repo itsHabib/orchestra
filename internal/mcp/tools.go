@@ -2,9 +2,9 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -248,16 +248,26 @@ func (s *Server) handleShipDesignDocs(ctx context.Context, req *mcptypes.CallToo
 	}
 	proc, err := s.spawner.Start(ctx, entry)
 	if err != nil {
+		// Spawn failed: the workspace dir + yaml are on disk with no
+		// running process attached and no registry entry. Reclaim the
+		// directory so repeated failures do not pile up under the user
+		// data dir.
+		_ = os.RemoveAll(entry.WorkspaceDir)
 		return mcptypes.NewToolResultErrorf("spawn run: %v", err), nil
 	}
 	if proc != nil {
 		entry.PID = proc.Pid
 	}
 	if err := s.registry.Put(ctx, entry); err != nil {
-		// Subprocess is already running; surfacing the registry write
-		// error is more useful than tearing the run down — the user can
-		// retry registration via the binary's own state machine if
-		// they need to recover. For v0 we just report the error.
+		// Subprocess is already running but unregistered — list_jobs /
+		// get_status / unblock cannot reach it. Best-effort: kill the
+		// process and reclaim the workspace so the run stops doing work
+		// no caller can observe. The original registry-write error is
+		// returned to the caller so they know what happened.
+		if proc != nil {
+			_ = proc.Kill()
+		}
+		_ = os.RemoveAll(entry.WorkspaceDir)
 		return mcptypes.NewToolResultErrorf("register run: %v", err), nil
 	}
 
@@ -320,7 +330,7 @@ func (s *Server) handleUnblock(ctx context.Context, req *mcptypes.CallToolReques
 	if err != nil {
 		return mcptypes.NewToolResultErrorf("read run state: %v", err), nil
 	}
-	sessionID, err := steerableSessionID(state, args.Team)
+	sessionID, err := spawner.SteerableSessionID(state, args.Team)
 	if err != nil {
 		return mcptypes.NewToolResultErrorf("%v", err), nil
 	}
@@ -403,6 +413,14 @@ func teamViews(state *store.RunState) []TeamView {
 // deriveStatus implements the §11.2 derivation: failed > blocked > done >
 // running. Empty team list (state.json missing or unwritten) defaults to
 // running so freshly-spawned jobs show up correctly.
+//
+// "all done" gates strictly on SignalStatus == "done", not on the engine's
+// Status field. This is by design (§7.2): signal_completion is the canonical
+// end-of-team signal — the host treats Status="done" without a matching
+// signal as "the engine archived the session for an unrelated reason"
+// (timeout, MA-side error, etc.) which is closer to incomplete than to done.
+// Such runs stay at "running" until the engine flips a team to Status=
+// "failed", which the case above promotes to RunStatusFailed.
 func deriveStatus(teams []TeamView) string {
 	if len(teams) == 0 {
 		return RunStatusRunning
@@ -424,41 +442,12 @@ func deriveStatus(teams []TeamView) string {
 	return RunStatusRunning
 }
 
-// steerableSessionID looks up the team's MA session id from a loaded run
-// state, applying the same gating cmd/steering.go does. Reusing that file's
-// logic by call would create a cmd → internal/mcp dependency we don't want;
-// the stripped-down version below covers the same cases.
-func steerableSessionID(state *store.RunState, team string) (string, error) {
-	if state == nil {
-		return "", spawner.ErrNoActiveRun
-	}
-	if state.Backend != "" && state.Backend != "managed_agents" {
-		return "", spawner.ErrLocalBackend
-	}
-	ts, ok := state.Teams[team]
-	if !ok {
-		return "", fmt.Errorf("%w: %q", spawner.ErrTeamNotFound, team)
-	}
-	if ts.Status != "running" {
-		return "", fmt.Errorf("%w: %q is %q", spawner.ErrTeamNotRunning, team, ts.Status)
-	}
-	if ts.SessionID == "" {
-		return "", fmt.Errorf("%w: %q", spawner.ErrNoSessionRecorded, team)
-	}
-	return ts.SessionID, nil
-}
-
 // jsonResult builds a CallToolResult that carries the structured payload
-// for clients that read structuredContent and a JSON-encoded text fallback
-// for clients that only render plain text. mcp-go's NewToolResultStructured
-// already does this fan-out; the helper just keeps the call sites short.
+// for clients that read structuredContent and a plain-text fallback for
+// clients that only render TextContent. mcp-go's NewToolResultStructured
+// does the fan-out; the helper exists so the call sites stay short and so
+// the (result, nil) error-discipline at every handler site is uniform.
 func jsonResult(payload any, fallback string) (*mcptypes.CallToolResult, error) {
-	// Validate the payload is JSON-encodable — surfacing a marshal error
-	// here is friendlier than letting the framework emit an opaque
-	// internal error to the client.
-	if _, err := json.Marshal(payload); err != nil {
-		return mcptypes.NewToolResultErrorf("encode result: %v", err), nil
-	}
 	return mcptypes.NewToolResultStructured(payload, fallback), nil
 }
 

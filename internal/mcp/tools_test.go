@@ -10,7 +10,6 @@ import (
 
 	mcptypes "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/itsHabib/orchestra/internal/spawner"
 	"github.com/itsHabib/orchestra/internal/store"
 )
 
@@ -453,58 +452,6 @@ func TestHandleUnblock_RejectsLocalBackend(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatalf("expected IsError on local backend")
-	}
-}
-
-func TestSteerableSessionID_Sentinels(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name string
-		st   *store.RunState
-		team string
-		want error
-	}{
-		{
-			name: "no state",
-			st:   nil,
-			team: "x",
-			want: spawner.ErrNoActiveRun,
-		},
-		{
-			name: "local backend",
-			st:   &store.RunState{Backend: "local", Teams: map[string]store.TeamState{}},
-			team: "x",
-			want: spawner.ErrLocalBackend,
-		},
-		{
-			name: "team missing",
-			st:   &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{}},
-			team: "x",
-			want: spawner.ErrTeamNotFound,
-		},
-		{
-			name: "team not running",
-			st: &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{
-				"x": {Status: "done"},
-			}},
-			team: "x",
-			want: spawner.ErrTeamNotRunning,
-		},
-		{
-			name: "no session",
-			st: &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{
-				"x": {Status: "running"},
-			}},
-			team: "x",
-			want: spawner.ErrNoSessionRecorded,
-		},
-	}
-	for _, tc := range cases {
-		_, err := steerableSessionID(tc.st, tc.team)
-		if !errors.Is(err, tc.want) {
-			t.Fatalf("%s: err=%v, want sentinel=%v", tc.name, err, tc.want)
-		}
 	}
 }
 
