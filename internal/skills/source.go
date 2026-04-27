@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 )
 
-// DefaultSourceDir is where SKILL.md files live by Claude Code convention.
+// DefaultSourceDir is the per-user skills directory by Claude Code convention.
+// ResolveSource joins this with $HOME and the skill name; callers reading from
+// a project-local skills tree (e.g. ./.claude/skills) should pass --from
+// instead.
 const DefaultSourceDir = ".claude/skills"
 
 // ResolveSource returns the path to a skill's SKILL.md.

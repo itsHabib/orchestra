@@ -54,14 +54,17 @@ func runSkillsProbeMount(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("skills probe-mount: %w", err)
 	}
-	defer cleanupEnv(ctx, &client, env.ID)
+	// context.WithoutCancel detaches the cleanup from any cancellation on
+	// ctx (Ctrl+C from the operator). Without it, an interrupt would leave
+	// the env+agent allocated on the Anthropic side.
+	defer cleanupEnv(context.WithoutCancel(ctx), &client, env.ID)
 	fmt.Printf("created environment %s\n", env.ID)
 
 	agent, err := createProbeAgent(ctx, &client)
 	if err != nil {
 		return fmt.Errorf("skills probe-mount: %w", err)
 	}
-	defer cleanupAgent(ctx, &client, agent.ID)
+	defer cleanupAgent(context.WithoutCancel(ctx), &client, agent.ID)
 	fmt.Printf("created agent %s\n", agent.ID)
 
 	sess, err := createProbeSession(ctx, &client, env.ID, agent.ID, upload.Entry.FileID)

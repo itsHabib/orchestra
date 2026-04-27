@@ -69,7 +69,7 @@ func init() {
 	skillsProbeMountCmd.Flags().StringVar(&skillsProbeFrom, "from", "", "Path to SKILL.md (default: $HOME/.claude/skills/<name>/SKILL.md)")
 	skillsProbeMountCmd.Flags().StringVar(&skillsProbeMount, "mount-path", "", "Override mount path (default: SDK default /mnt/session/uploads/<file_id>)")
 	skillsProbeMountCmd.Flags().StringVar(&skillsProbeModel, "model", "claude-sonnet-4-6", "Model id for the probe agent")
-	skillsProbeMountCmd.Flags().BoolVar(&skillsProbeKeep, "keep", false, "Leave the env+agent+session in place instead of archiving on exit")
+	skillsProbeMountCmd.Flags().BoolVar(&skillsProbeKeep, "keep", false, "Leave the env+agent in place instead of archiving on exit (the session is left as-is either way)")
 
 	skillsCmd.AddCommand(skillsUploadCmd)
 	skillsCmd.AddCommand(skillsLsCmd)

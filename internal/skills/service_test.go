@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,8 +16,11 @@ import (
 )
 
 // fakeUploadClient records uploads/deletes and returns synthetic file_ids so
-// the service can be exercised without a real Anthropic API.
+// the service can be exercised without a real Anthropic API. The mutex guards
+// the recording slices so concurrent service calls (future tests) don't race;
+// today's tests are sequential, but the cost of the lock is negligible.
 type fakeUploadClient struct {
+	mu          sync.Mutex
 	seq         atomic.Int64
 	uploads     []recordedUpload
 	deletes     []string
@@ -47,7 +51,9 @@ func (f *fakeUploadClient) Upload(_ context.Context, params anthropic.BetaFileUp
 		filename = f.clobberName
 	}
 	id := "file_" + nextID(&f.seq)
+	f.mu.Lock()
 	f.uploads = append(f.uploads, recordedUpload{FileID: id, Filename: filename, Body: body})
+	f.mu.Unlock()
 	return &anthropic.FileMetadata{ID: id, Filename: filename, SizeBytes: int64(len(body))}, nil
 }
 
@@ -55,7 +61,9 @@ func (f *fakeUploadClient) Delete(_ context.Context, fileID string, _ anthropic.
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
+	f.mu.Lock()
 	f.deletes = append(f.deletes, fileID)
+	f.mu.Unlock()
 	return &anthropic.DeletedFile{ID: fileID}, nil
 }
 
@@ -322,6 +330,36 @@ func TestServiceSync(t *testing.T) {
 	}
 }
 
+func TestServiceSyncUploadFailureSurfacesError(t *testing.T) {
+	t.Parallel()
+	svc, client, _, dir := newServiceFixture(t)
+	src := writeSkill(t, dir, "x/SKILL.md", "v1\n")
+	if _, err := svc.Upload(context.Background(), "x", src); err != nil {
+		t.Fatalf("seed upload: %v", err)
+	}
+	// Drift the source so Sync attempts a re-upload, then make the API fail.
+	if err := os.WriteFile(src, []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	client.uploadErr = errors.New("transient API failure")
+
+	results, err := svc.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Action != SyncSkipped {
+		t.Fatalf("action: want %s got %q (zero value would silently swallow the error)",
+			SyncSkipped, r.Action)
+	}
+	if r.Err == nil {
+		t.Fatalf("Err should be set on upload failure")
+	}
+}
+
 func TestServiceSyncEmpty(t *testing.T) {
 	t.Parallel()
 	svc, _, _, _ := newServiceFixture(t)
@@ -360,13 +398,13 @@ func TestServiceSortedLookups(t *testing.T) {
 
 func TestResolveSourceDefault(t *testing.T) {
 	t.Parallel()
-	got, err := ResolveSource("ship-feature", "")
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("home dir unavailable: %v", err)
+	}
+	got, err := ResolveSource("ship-feature", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
 	}
 	want := filepath.Join(home, DefaultSourceDir, "ship-feature", "SKILL.md")
 	if got != want {

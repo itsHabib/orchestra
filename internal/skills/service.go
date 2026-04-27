@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -63,6 +62,11 @@ func New(cache Cache, client UploadClient, opts ...Option) *Service {
 
 // NewHostService wires a Service against the host's Anthropic credentials and
 // the default cache path.
+//
+// machost.NewClient returns the SDK client by value, but we capture the
+// address of its embedded BetaFileService — Go's escape analysis heap-promotes
+// the underlying client so the &Beta.Files reference stays valid for the
+// Service's lifetime even after this function returns.
 func NewHostService(opts ...Option) (*Service, error) {
 	client, err := machost.NewClient()
 	if err != nil {
@@ -199,7 +203,11 @@ func (s *Service) syncOne(ctx context.Context, name string, entry *Entry) SyncRe
 	}
 	updated, err := s.uploadAndCache(ctx, name, entry.SourcePath, data, hash)
 	if err != nil {
-		return SyncResult{Name: name, Entry: *entry, Err: err}
+		// Tag the result as Skipped so the CLI's switch surfaces r.Err under
+		// the "skipped" branch rather than falling through to the empty
+		// default case (which would print just the skill name and lose the
+		// upload error entirely).
+		return SyncResult{Name: name, Entry: *entry, Action: SyncSkipped, Err: err}
 	}
 	return SyncResult{
 		Name:         name,
@@ -242,11 +250,7 @@ func (s *Service) SortedLookups(ctx context.Context) ([]Lookup, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(reg))
-	for name := range reg {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := SortedNames(reg)
 	out := make([]Lookup, 0, len(names))
 	for _, name := range names {
 		look, err := s.Lookup(ctx, name)
