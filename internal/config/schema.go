@@ -590,10 +590,13 @@ func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
 				Message: fmt.Sprintf("skill %q: type=anthropic is not yet supported (use type: custom with `orchestra skills upload`)", sk.Name),
 			})
 		default:
+			// "anthropic" has its own case above (rejected with a more
+			// specific message). Listing it here would mislead users
+			// who typo the type into thinking the typo is the problem.
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, fieldPrefix...), "type"),
 				Team:    t.Name,
-				Message: fmt.Sprintf("skill %q: type must be one of: custom, anthropic (got %q)", sk.Name, sk.Type),
+				Message: fmt.Sprintf("skill %q: type must be \"custom\" (got %q)", sk.Name, sk.Type),
 			})
 		}
 	}

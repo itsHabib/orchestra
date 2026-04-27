@@ -423,7 +423,7 @@ func TestValidate_SkillShape_InvalidType(t *testing.T) {
 		Skills: []SkillRef{{Name: "ship-feature", Type: "bogus"}},
 	})
 	res := cfg.Validate()
-	if res.Valid() || !errorsContain(res.Errors, "type must be one of") {
+	if res.Valid() || !errorsContain(res.Errors, `type must be "custom"`) {
 		t.Fatalf("expected invalid-type error: %v", res.Errors)
 	}
 }
