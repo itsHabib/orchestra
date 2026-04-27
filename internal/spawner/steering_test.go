@@ -175,6 +175,72 @@ func TestListTeamSessions_HandlesNilState(t *testing.T) {
 	}
 }
 
+func TestSteerableSessionID_Sentinels(t *testing.T) {
+	cases := []struct {
+		name string
+		st   *store.RunState
+		team string
+		want error
+	}{
+		{
+			name: "no state",
+			st:   nil,
+			team: "x",
+			want: ErrNoActiveRun,
+		},
+		{
+			name: "local backend",
+			st:   &store.RunState{Backend: "local", Teams: map[string]store.TeamState{}},
+			team: "x",
+			want: ErrLocalBackend,
+		},
+		{
+			name: "team missing",
+			st:   &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{}},
+			team: "x",
+			want: ErrTeamNotFound,
+		},
+		{
+			name: "team not running",
+			st: &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{
+				"x": {Status: "done"},
+			}},
+			team: "x",
+			want: ErrTeamNotRunning,
+		},
+		{
+			name: "no session",
+			st: &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{
+				"x": {Status: "running"},
+			}},
+			team: "x",
+			want: ErrNoSessionRecorded,
+		},
+	}
+	for _, tc := range cases {
+		_, err := SteerableSessionID(tc.st, tc.team)
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("%s: err=%v, want sentinel=%v", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestSteerableSessionID_HappyPath(t *testing.T) {
+	state := &store.RunState{
+		Backend: "managed_agents",
+		Teams: map[string]store.TeamState{
+			"alpha": {Status: "running", SessionID: "sess_xyz"},
+		},
+	}
+	got, err := SteerableSessionID(state, "alpha")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "sess_xyz" {
+		t.Fatalf("session id: got %q, want sess_xyz", got)
+	}
+}
+
 func TestIsSteeringSentinel_RecognizesBareAndWrappedSentinels(t *testing.T) {
 	for _, sentinel := range []error{ErrNoActiveRun, ErrTeamNotFound, ErrTeamNotRunning, ErrNoSessionRecorded, ErrLocalBackend} {
 		if !IsSteeringSentinel(sentinel) {
