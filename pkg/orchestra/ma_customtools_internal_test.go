@@ -459,6 +459,51 @@ type intentionalError string
 
 func (e intentionalError) Error() string { return string(e) }
 
+func TestMarshalToolInputRoundtripsValues(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"nil falls back to empty object", nil, `{}`},
+		{"empty raw falls back to empty object", json.RawMessage(``), `{}`},
+		{"raw bytes pass through", json.RawMessage(`{"k":1}`), `{"k":1}`},
+		{
+			name: "decoded map is re-marshaled",
+			in:   map[string]any{"hello": "world"},
+			want: `{"hello":"world"}`,
+		},
+		{
+			// Regression: a JSON string scalar like `"hello"` is decoded by
+			// the spawner into a Go string `hello`. A previous shortcut
+			// returned that as raw bytes — no quotes — so handlers tried to
+			// unmarshal `hello` and erroneously failed. The fix forces a
+			// re-marshal so the bytes round-trip through the JSON quoting.
+			name: "string scalar is JSON-quoted",
+			in:   "hello",
+			want: `"hello"`,
+		},
+		{
+			name: "number scalar is rendered as JSON number",
+			in:   float64(42),
+			want: `42`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := marshalToolInput(tc.in)
+			if err != nil {
+				t.Fatalf("marshalToolInput: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
 func equalJSON(t *testing.T, a, b json.RawMessage) bool {
 	t.Helper()
 	var av, bv any

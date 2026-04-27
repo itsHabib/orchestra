@@ -2,11 +2,21 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// systemNotifyTimeout caps how long a single platform notifier shellout may
+// run. osascript on a locked screen and a stuck D-Bus on Linux can both hang
+// indefinitely; the dispatch loop is the same goroutine that reads MA events,
+// so a hung notifier would stall the entire team. Three seconds is generous
+// enough for healthy invocations and tight enough that a hang turns into a
+// logged failure rather than a wedged session.
+const systemNotifyTimeout = 3 * time.Second
 
 // SystemNotifier shells out to the platform's notification surface:
 //
@@ -65,21 +75,32 @@ func (osascriptNotifier) notify(ctx context.Context, n *Notification) error {
 	body := osascriptEscape(systemBody(n))
 	title := osascriptEscape("Orchestra")
 	script := fmt.Sprintf(`display notification %q with title %q`, body, title)
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("notify: osascript: %w", err)
-	}
-	return nil
+	return runBoundedCommand(ctx, "osascript", "osascript", "-e", script)
 }
 
 type notifySendNotifier struct{}
 
 func (notifySendNotifier) notify(ctx context.Context, n *Notification) error {
-	cmd := exec.CommandContext(ctx, "notify-send", "Orchestra", systemBody(n))
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("notify: notify-send: %w", err)
+	return runBoundedCommand(ctx, "notify-send", "notify-send", "Orchestra", systemBody(n))
+}
+
+// runBoundedCommand caps a notifier shellout at systemNotifyTimeout. A
+// timeout deadline derived from ctx (without cancellation) means the
+// notification is treated as best-effort even if the engine's parent context
+// has been canceled mid-team — we still want a fast, time-boxed attempt to
+// display the notification rather than skipping it outright.
+func runBoundedCommand(ctx context.Context, label, name string, args ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, systemNotifyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	err := cmd.Run()
+	if err == nil {
+		return nil
 	}
-	return nil
+	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("notify: %s: timed out after %s", label, systemNotifyTimeout)
+	}
+	return fmt.Errorf("notify: %s: %w", label, err)
 }
 
 type windowsNoopNotifier struct{}

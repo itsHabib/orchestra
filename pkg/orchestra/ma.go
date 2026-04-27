@@ -166,6 +166,12 @@ func (r *orchestrationRun) runServiceNow() time.Time {
 // through json.Marshal is cheap (input payloads are small) and keeps the
 // Handler API narrow — handlers don't need to know that the engine eagerly
 // decodes Input on the way in.
+//
+// Any non-nil, non-RawMessage value goes through json.Marshal. That includes
+// Go strings: a JSON string scalar like `"hello"` is decoded by the spawner
+// into a Go string `hello`, and a previous shortcut that returned that as
+// raw bytes would strip the JSON quoting and produce invalid JSON for the
+// handler. Always re-marshal.
 func marshalToolInput(in any) (json.RawMessage, error) {
 	if in == nil {
 		return json.RawMessage(`{}`), nil
@@ -175,12 +181,6 @@ func marshalToolInput(in any) (json.RawMessage, error) {
 			return json.RawMessage(`{}`), nil
 		}
 		return raw, nil
-	}
-	if s, ok := in.(string); ok {
-		// rawInput in the spawner falls back to string when the source bytes
-		// are not valid JSON. Pass through; the handler's Unmarshal will
-		// surface a parse error.
-		return json.RawMessage(s), nil
 	}
 	out, err := json.Marshal(in)
 	if err != nil {

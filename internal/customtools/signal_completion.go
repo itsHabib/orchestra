@@ -109,12 +109,12 @@ func (SignalCompletionHandler) Handle(ctx context.Context, run *RunContext, team
 		return nil, errors.New("signal_completion: nil store")
 	}
 	now := run.Time()
-	duplicate, err := writeSignalState(ctx, run.Store, team, &in, now)
+	write, err := writeSignalState(ctx, run.Store, team, &in, now)
 	if err != nil {
 		return nil, err
 	}
 
-	if !duplicate && run.Notifier != nil {
+	if !write.duplicate && run.Notifier != nil {
 		if notifyErr := run.Notifier.Notify(ctx, &notify.Notification{
 			Timestamp: now,
 			RunID:     run.RunID,
@@ -134,10 +134,13 @@ func (SignalCompletionHandler) Handle(ctx context.Context, run *RunContext, team
 		}
 	}
 
+	// Echo the *recorded* status, not the input's. On a duplicate call the
+	// first signal has already won; reflecting the input's status would
+	// mislead a confused agent into thinking its second call took effect.
 	out, err := json.Marshal(&signalCompletionResult{
 		OK:        true,
-		Duplicate: duplicate,
-		Status:    in.Status,
+		Duplicate: write.duplicate,
+		Status:    write.recordedStatus,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("signal_completion: marshal result: %w", err)
@@ -162,24 +165,39 @@ func parseSignalCompletionInput(raw json.RawMessage) (signalCompletionInput, err
 	if in.Summary == "" {
 		return in, errors.New("signal_completion: summary is required")
 	}
+	if in.Status == signalDone && in.PRURL == "" {
+		return in, errors.New("signal_completion: pr_url is required when status=done")
+	}
 	if in.Status == signalBlocked && in.Reason == "" {
 		return in, errors.New("signal_completion: reason is required when status=blocked")
 	}
 	return in, nil
 }
 
+// signalWrite is the result of applying a signal_completion input to the
+// team state.
+type signalWrite struct {
+	// recordedStatus is what the team state ended up holding — the original
+	// status on a duplicate, the new status otherwise. Echoed back to the
+	// agent so a confused second call can't claim its status overrode the
+	// first.
+	recordedStatus string
+	// duplicate is true when the team had already signaled before this call.
+	// Callers use it to skip notification.
+	duplicate bool
+}
+
 // writeSignalState applies the input to the team state under the existing
-// UpdateTeamState funnel. Returns duplicate=true when the team had already
-// signaled; in that case no fields are mutated and the caller skips
-// notification.
-func writeSignalState(ctx context.Context, st store.Store, team string, in *signalCompletionInput, now time.Time) (bool, error) {
+// UpdateTeamState funnel.
+func writeSignalState(ctx context.Context, st store.Store, team string, in *signalCompletionInput, now time.Time) (signalWrite, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	var duplicate bool
+	var out signalWrite
 	err := st.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
 		if ts.SignalStatus != "" {
-			duplicate = true
+			out.duplicate = true
+			out.recordedStatus = ts.SignalStatus
 			return
 		}
 		ts.SignalStatus = in.Status
@@ -187,9 +205,10 @@ func writeSignalState(ctx context.Context, st store.Store, team string, in *sign
 		ts.SignalPRURL = in.PRURL
 		ts.SignalReason = in.Reason
 		ts.SignalAt = now
+		out.recordedStatus = in.Status
 	})
 	if err != nil {
-		return false, fmt.Errorf("signal_completion: update state: %w", err)
+		return signalWrite{}, fmt.Errorf("signal_completion: update state: %w", err)
 	}
-	return duplicate, nil
+	return out, nil
 }

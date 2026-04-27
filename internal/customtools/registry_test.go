@@ -3,7 +3,7 @@ package customtools
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"strings"
 	"testing"
 )
 
@@ -115,8 +115,11 @@ func TestMustRegisterPanicCarriesError(t *testing.T) {
 		if !ok {
 			t.Fatalf("panic value is not an error: %T", r)
 		}
-		if err == nil || !errors.Is(err, err) {
-			t.Fatalf("panic carried an unexpected error: %v", err)
+		if err == nil {
+			t.Fatalf("panic carried a nil error")
+		}
+		if !strings.Contains(err.Error(), "tool name is empty") {
+			t.Fatalf("panic error %q does not mention the malformed-handler reason", err.Error())
 		}
 	}()
 	MustRegister(fakeHandler{def: Definition{Name: ""}})

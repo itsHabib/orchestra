@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -184,5 +185,68 @@ func TestFormatTerminalLineFallsBackForBlankRunID(t *testing.T) {
 	got := FormatTerminalLine(&Notification{Team: "alpha", Status: "done", Summary: "ok"})
 	if !strings.Contains(got, "-/alpha") {
 		t.Fatalf("expected `-` placeholder for empty run id, got %q", got)
+	}
+}
+
+func TestFormatTerminalLineStripsControlChars(t *testing.T) {
+	t.Parallel()
+	got := FormatTerminalLine(&Notification{
+		RunID:   "run\x07_1",
+		Team:    "alpha\nbeta",
+		Status:  "done\r",
+		Summary: "ship\x1b[31m red \x1b[0m it",
+	})
+	// The format scaffold contributes one trailing '\n' and the leading bell
+	// (0x07). Strip those before checking for control-byte leaks from the
+	// agent-provided fields, then assert no new control bytes survived.
+	if got[0] != '\a' {
+		t.Fatalf("bell prefix missing")
+	}
+	body := strings.TrimSuffix(got[1:], "\n")
+	for _, c := range []byte{'\n', '\r', 0x07, 0x1b} {
+		if strings.ContainsRune(body, rune(c)) {
+			t.Fatalf("control byte 0x%02x leaked through to body: %q", c, body)
+		}
+	}
+	if !strings.Contains(got, "alpha beta") {
+		t.Fatalf("newline in team should have been replaced with space: %q", got)
+	}
+}
+
+func TestFormatTerminalLineTruncatesLongSummary(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 500)
+	got := FormatTerminalLine(&Notification{Team: "alpha", Status: "done", Summary: long})
+	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "...") {
+		t.Fatalf("expected ellipsis suffix on truncated summary, got %q", got)
+	}
+	if len(got) > 256 {
+		t.Fatalf("rendered line too long: %d bytes", len(got))
+	}
+}
+
+func TestRunBoundedCommandTimesOut(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("sleep is not on PATH by default on Windows; this test asserts unix shell shape")
+	}
+	// runBoundedCommand uses systemNotifyTimeout (3s) internally; we want a
+	// shorter horizon so the test is fast. Override via the unexported
+	// helper: pass a short ctx and let the inner timeout still fire — sleep
+	// 10s will exceed both. The deadline-exceeded branch sets a clear error
+	// message so we can assert without timing the test on millisecond bounds.
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := runBoundedCommand(ctx, "sleep", "sleep", "10")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if elapsed > systemNotifyTimeout+500*time.Millisecond {
+		t.Fatalf("runBoundedCommand should cap at %s, elapsed=%s", systemNotifyTimeout, elapsed)
 	}
 }

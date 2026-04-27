@@ -219,6 +219,13 @@ func TestSignalCompletionIdempotentOnDuplicate(t *testing.T) {
 	if !decoded.Duplicate {
 		t.Fatalf("second call should report duplicate=true, got %+v", decoded)
 	}
+	// The echo must reflect what was recorded, not the rejected duplicate's
+	// status — otherwise a confused agent calling signal_completion(blocked)
+	// after a successful signal_completion(done) would believe its block was
+	// accepted when in fact "done" is still on file.
+	if decoded.Status != "done" {
+		t.Fatalf("duplicate echo should carry the recorded status %q, got %q", "done", decoded.Status)
+	}
 
 	ts := loadTeamState(t, st)
 	if ts.SignalStatus != "done" || ts.SignalSummary != "first" || ts.SignalPRURL != "url1" {
@@ -246,6 +253,11 @@ func TestSignalCompletionRejectsBadInput(t *testing.T) {
 			name:    "missing summary",
 			payload: map[string]string{"status": "done"},
 			want:    "summary is required",
+		},
+		{
+			name:    "done without pr_url",
+			payload: map[string]string{"status": "done", "summary": "shipped"},
+			want:    "pr_url is required when status=done",
 		},
 		{
 			name:    "empty input",
@@ -309,7 +321,7 @@ func TestSignalCompletionRequiresStore(t *testing.T) {
 	rc := &RunContext{Now: time.Now}
 	h := NewSignalCompletion()
 	_, err := h.Handle(ctx, rc, testTeam, mustJSON(t, map[string]string{
-		"status": "done", "summary": "x",
+		"status": "done", "summary": "x", "pr_url": "https://example.com/pr/1",
 	}))
 	if err == nil || !strings.Contains(err.Error(), "nil store") {
 		t.Fatalf("want nil-store error, got %v", err)

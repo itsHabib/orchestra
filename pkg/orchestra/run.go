@@ -451,13 +451,16 @@ func registerBuiltinCustomTools() {
 //
 // Stderr (not stdout) is the terminal target because the engine emits result
 // JSON and event lines on stdout; mixing the bell into stdout would clutter
-// machine-readable output.
+// machine-readable output. The Compose logger also writes to stderr at warn
+// level so a flaky sink (missing notify-send, timed-out osascript) leaves a
+// breadcrumb the operator can grep — an io.Discard logger here would silently
+// swallow exactly the failures the design wants surfaced.
 func defaultNotifier(ws *workspace.Workspace) notify.Notifier {
 	logPath := ""
 	if ws != nil {
 		logPath = filepath.Join(ws.Path, "notifications.ndjson")
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	sinks := []notify.Notifier{
 		notify.NewLog(logPath),
 		notify.NewTerminal(os.Stderr),
