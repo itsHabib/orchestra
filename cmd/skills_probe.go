@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -177,16 +178,27 @@ func sendProbePrompt(ctx context.Context, client *anthropic.Client, sessionID, f
 	return nil
 }
 
+// waitForIdle waits until the session has transitioned from running back to
+// idle. Treating an immediate-idle status as "done" would race with the
+// session's startup — `Send` returns before the agent picks up the message,
+// so the first Get can return "idle" before any work has happened.
 func waitForIdle(ctx context.Context, client *anthropic.Client, sessionID string) error {
 	deadline := time.Now().Add(probeMaxWait)
+	sawRunning := false
 	for time.Now().Before(deadline) {
 		cur, err := client.Beta.Sessions.Get(ctx, sessionID, anthropic.BetaSessionGetParams{})
 		if err != nil {
 			return fmt.Errorf("get session: %w", err)
 		}
 		status := string(cur.Status)
-		if status == "idle" || status == "terminated" {
-			fmt.Printf("session %s -> %s\n", sessionID, status)
+		switch {
+		case status == "running":
+			sawRunning = true
+		case status == "terminated":
+			fmt.Printf("session %s -> terminated\n", sessionID)
+			return nil
+		case status == "idle" && sawRunning:
+			fmt.Printf("session %s -> idle\n", sessionID)
 			return nil
 		}
 		select {
@@ -195,42 +207,62 @@ func waitForIdle(ctx context.Context, client *anthropic.Client, sessionID string
 		case <-time.After(probePollEvery):
 		}
 	}
-	return fmt.Errorf("session %s did not reach idle within %s", sessionID, probeMaxWait)
+	return fmt.Errorf("session %s did not reach running→idle within %s", sessionID, probeMaxWait)
 }
 
 func dumpEvents(ctx context.Context, client *anthropic.Client, sessionID string) error {
-	page, err := client.Beta.Sessions.Events.List(ctx, sessionID, anthropic.BetaSessionEventListParams{})
-	if err != nil {
-		return err
-	}
+	pager := client.Beta.Sessions.Events.ListAutoPaging(ctx, sessionID, anthropic.BetaSessionEventListParams{
+		Order: anthropic.BetaSessionEventListParamsOrderAsc,
+	})
 	fmt.Println("\n=== session events ===")
-	for i := range page.Data {
-		evt := &page.Data[i]
-		text := extractEventText(evt)
-		if text == "" {
+	for pager.Next() {
+		evt := pager.Current()
+		body := strings.TrimSpace(eventBody(&evt))
+		if body == "" {
 			continue
 		}
-		fmt.Printf("--- %s ---\n%s\n", evt.Type, strings.TrimSpace(text))
+		fmt.Printf("--- %s ---\n%s\n", evt.Type, body)
 	}
-	return nil
+	return pager.Err()
 }
 
-// extractEventText pulls human-readable text out of agent.message and
-// agent.tool_result events. Other event types are skipped — the probe only
-// cares about what the agent saw and reported.
-func extractEventText(evt *anthropic.BetaManagedAgentsSessionEventUnion) string {
-	var b strings.Builder
-	for _, block := range evt.Content.OfBetaManagedAgentsTextBlockArray {
-		if block.Text != "" {
-			b.WriteString(block.Text)
-			b.WriteByte('\n')
-		}
+// eventBody returns the body to print per event type. It dispatches on the
+// event's type so the JSON union's overlapping content arrays don't duplicate
+// the same text block multiple times. Unknown types fall through to raw JSON
+// so the probe never silently drops anything.
+func eventBody(evt *anthropic.BetaManagedAgentsSessionEventUnion) string {
+	switch evt.Type {
+	case "user.message":
+		return readTextBlocks(evt.Content.OfBetaManagedAgentsUserMessageEventContentArray, func(b *anthropic.BetaManagedAgentsUserMessageEventContentUnion) (string, string) {
+			return b.Type, b.Text
+		})
+	case "agent.message":
+		return readTextBlocks(evt.Content.OfBetaManagedAgentsTextBlockArray, func(b *anthropic.BetaManagedAgentsTextBlock) (string, string) {
+			return string(b.Type), b.Text
+		})
+	case "agent.tool_use":
+		input, _ := json.Marshal(evt.Input)
+		return fmt.Sprintf("[tool_use name=%s] %s", evt.Name, input)
+	case "agent.tool_result":
+		return readTextBlocks(evt.Content.OfBetaManagedAgentsAgentToolResultEventContentArray, func(b *anthropic.BetaManagedAgentsAgentToolResultEventContentUnion) (string, string) {
+			return b.Type, b.Text
+		})
+	case "agent.thinking":
+		return ""
+	default:
+		return evt.RawJSON()
 	}
-	tools := evt.Content.OfBetaManagedAgentsAgentToolResultEventContentArray
-	for i := range tools {
-		block := &tools[i]
-		if block.Type == "text" && block.Text != "" {
-			b.WriteString(block.Text)
+}
+
+// readTextBlocks collects text-typed entries from one of the SDK's content
+// arrays into a single string. The selector returns each block's type and
+// text so this works across the SDK's overlapping content variants.
+func readTextBlocks[T any](blocks []T, sel func(*T) (typ, text string)) string {
+	var b strings.Builder
+	for i := range blocks {
+		typ, text := sel(&blocks[i])
+		if typ == "text" && text != "" {
+			b.WriteString(text)
 			b.WriteByte('\n')
 		}
 	}
