@@ -107,6 +107,36 @@ type Team struct {
 	DependsOn           []string            `yaml:"depends_on"`
 	Context             string              `yaml:"context"`
 	EnvironmentOverride EnvironmentOverride `yaml:"environment_override,omitempty"`
+
+	// Skills are attached to the team's MA agent at agent-creation time.
+	// Each entry is resolved against the orchestra skills cache
+	// (~/.config/orchestra/skills.json) to find a registered skill_id.
+	// Local backend ignores this field with a warning.
+	Skills []SkillRef `yaml:"skills,omitempty" json:"skills,omitempty"`
+
+	// CustomTools are host-side tools the team's MA agent can invoke. Each
+	// entry is resolved against the customtools registry; the engine wires
+	// the agent's `agent.custom_tool_use` events through to the registered
+	// handler. Local backend ignores this field with a warning.
+	CustomTools []CustomToolRef `yaml:"custom_tools,omitempty" json:"custom_tools,omitempty"`
+}
+
+// SkillRef references a skill registered with Anthropic via the orchestra
+// skills cache. Type defaults to "custom" (skills the user uploaded via
+// `orchestra skills upload`); "anthropic" is reserved for first-party skills
+// once the cache learns to track them. Version pins a specific version of the
+// skill; empty means "latest cached".
+type SkillRef struct {
+	Name    string `yaml:"name" json:"name"`
+	Type    string `yaml:"type,omitempty" json:"type,omitempty"`
+	Version string `yaml:"version,omitempty" json:"version,omitempty"`
+}
+
+// CustomToolRef references a host-side custom tool by the name registered in
+// the customtools package. The tool's input schema and description live with
+// the registered handler; the config only carries the lookup key.
+type CustomToolRef struct {
+	Name string `yaml:"name" json:"name"`
 }
 
 // Task represents a unit of work assigned to a team.
@@ -239,6 +269,10 @@ func (c *Config) Validate() *Result {
 	warnings = append(warnings, c.validateBackendWarnings()...)
 	warnings = append(warnings, c.validateRepositoryWarnings()...)
 	errs = append(errs, c.validateRepositoryHard()...)
+
+	resourceShape := c.validateResourceShape()
+	warnings = append(warnings, resourceShape.warnings...)
+	errs = append(errs, resourceShape.errs...)
 
 	// Check for cycles using DFS
 	if cycleErr := detectCycles(c.Teams); cycleErr != nil {
@@ -503,4 +537,145 @@ func detectCycles(teams []Team) *ConfigError {
 		}
 	}
 	return nil
+}
+
+// validateResourceShape covers the per-team Skills and CustomTools fields
+// without consulting any external registry. Resolution-against-registries
+// happens in [ValidateResourceReferences] because that needs the live skills
+// cache and customtools registry passed in by the engine.
+func (c *Config) validateResourceShape() validationResult {
+	var out validationResult
+	localBackend := c.Backend.Kind == "local" || c.Backend.Kind == ""
+	for i := range c.Teams {
+		t := &c.Teams[i]
+		teamPrefix := []string{"teams", strconv.Itoa(i)}
+		out.errs = append(out.errs, validateSkillRefs(t, teamPrefix)...)
+		out.errs = append(out.errs, validateCustomToolRefs(t, teamPrefix)...)
+		if localBackend {
+			out.warnings = append(out.warnings, localBackendResourceWarnings(t, teamPrefix)...)
+		}
+	}
+	return out
+}
+
+func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
+	var errs []ConfigError
+	for j, sk := range t.Skills {
+		fieldPrefix := append(append([]string{}, teamPrefix...), "skills", strconv.Itoa(j))
+		if sk.Name == "" {
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, fieldPrefix...), "name"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("skill %d has empty name", j+1),
+			})
+		}
+		switch sk.Type {
+		case "", "custom", "anthropic":
+		default:
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, fieldPrefix...), "type"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("skill %q: type must be one of: custom, anthropic (got %q)", sk.Name, sk.Type),
+			})
+		}
+	}
+	return errs
+}
+
+func validateCustomToolRefs(t *Team, teamPrefix []string) []ConfigError {
+	var errs []ConfigError
+	for j, ct := range t.CustomTools {
+		fieldPrefix := append(append([]string{}, teamPrefix...), "custom_tools", strconv.Itoa(j))
+		if ct.Name == "" {
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, fieldPrefix...), "name"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("custom_tool %d has empty name", j+1),
+			})
+		}
+	}
+	return errs
+}
+
+// localBackendResourceWarnings surfaces a once-per-team warning when Skills
+// or CustomTools are set under backend.kind=local — parity with the
+// members/coordinator-under-MA pattern in validateBackendWarnings.
+func localBackendResourceWarnings(t *Team, teamPrefix []string) []Warning {
+	var warnings []Warning
+	if len(t.Skills) > 0 {
+		warnings = append(warnings, Warning{
+			Field:   append(append([]string{}, teamPrefix...), "skills"),
+			Team:    t.Name,
+			Message: "skills are not supported under backend.kind=local",
+		})
+	}
+	if len(t.CustomTools) > 0 {
+		warnings = append(warnings, Warning{
+			Field:   append(append([]string{}, teamPrefix...), "custom_tools"),
+			Team:    t.Name,
+			Message: "custom_tools are not supported under backend.kind=local",
+		})
+	}
+	return warnings
+}
+
+// ValidateResourceReferences runs the additional validation that depends on
+// external registries: that team.Skills entries resolve to skills the user
+// has registered (per the orchestra skills cache) and that team.CustomTools
+// entries resolve to handlers wired into the customtools registry.
+//
+// Under backend.kind=managed_agents an unknown reference is a hard error.
+// Under backend.kind=local it's a warning — the field is parsed but ignored
+// at runtime, parity with how members/coordinator behave under MA. Callers
+// merge the returned [Result] with the result of [Config.Validate] before
+// deciding whether the config is good to start a run.
+//
+// skillNames and customToolNames are passed in so unit tests can drive any
+// combination without touching the real cache or registry.
+func (c *Config) ValidateResourceReferences(skillNames, customToolNames map[string]bool) *Result {
+	if c == nil {
+		return &Result{Errors: []ConfigError{{Message: "nil config"}}}
+	}
+	res := &Result{}
+	maBackend := c.Backend.Kind == "managed_agents"
+	for i := range c.Teams {
+		t := &c.Teams[i]
+		teamPrefix := []string{"teams", strconv.Itoa(i)}
+		appendUnknownSkillFindings(res, t, teamPrefix, skillNames, maBackend)
+		appendUnknownToolFindings(res, t, teamPrefix, customToolNames, maBackend)
+	}
+	if res.Valid() {
+		res.Config = c
+	}
+	return res
+}
+
+func appendUnknownSkillFindings(res *Result, t *Team, teamPrefix []string, skillNames map[string]bool, hardError bool) {
+	for j, sk := range t.Skills {
+		if sk.Name == "" || skillNames[sk.Name] {
+			continue
+		}
+		field := append(append([]string{}, teamPrefix...), "skills", strconv.Itoa(j), "name")
+		msg := fmt.Sprintf("skill %q is not registered (run `orchestra skills upload %s`)", sk.Name, sk.Name)
+		if hardError {
+			res.Errors = append(res.Errors, ConfigError{Field: field, Team: t.Name, Message: msg})
+		} else {
+			res.Warnings = append(res.Warnings, Warning{Field: field, Team: t.Name, Message: msg})
+		}
+	}
+}
+
+func appendUnknownToolFindings(res *Result, t *Team, teamPrefix []string, toolNames map[string]bool, hardError bool) {
+	for j, ct := range t.CustomTools {
+		if ct.Name == "" || toolNames[ct.Name] {
+			continue
+		}
+		field := append(append([]string{}, teamPrefix...), "custom_tools", strconv.Itoa(j), "name")
+		msg := fmt.Sprintf("custom_tool %q has no registered handler", ct.Name)
+		if hardError {
+			res.Errors = append(res.Errors, ConfigError{Field: field, Team: t.Name, Message: msg})
+		} else {
+			res.Warnings = append(res.Warnings, Warning{Field: field, Team: t.Name, Message: msg})
+		}
+	}
 }

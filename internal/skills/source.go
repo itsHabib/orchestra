@@ -13,14 +13,16 @@ import (
 // instead.
 const DefaultSourceDir = ".claude/skills"
 
-// ResolveSource returns the path to a skill's SKILL.md.
+// ResolveSource returns the path to a skill's directory. The Anthropic Skills
+// API uploads every regular file in this directory and requires a SKILL.md at
+// its root.
 //
 // If override is non-empty, it is returned as-is (after resolving to absolute
 // for diagnostics). Otherwise the user-global Claude Code default is used:
-// `$HOME/.claude/skills/<name>/SKILL.md`.
+// `$HOME/.claude/skills/<name>/`.
 //
-// The returned path is not opened — callers handle missing-file errors when
-// they read it.
+// The returned path is not opened — callers handle missing-directory errors
+// when they walk it.
 func ResolveSource(name, override string) (string, error) {
 	if override != "" {
 		abs, err := filepath.Abs(override)
@@ -36,5 +38,5 @@ func ResolveSource(name, override string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("skills: resolve source: %w", err)
 	}
-	return filepath.Join(home, DefaultSourceDir, name, "SKILL.md"), nil
+	return filepath.Join(home, DefaultSourceDir, name), nil
 }

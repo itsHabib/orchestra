@@ -339,3 +339,229 @@ func errorsContain(errs []ConfigError, substr string) bool {
 	}
 	return false
 }
+
+// warningsContain reports whether any Warning in warnings has a Message
+// containing substr.
+func warningsContain(warnings []Warning, substr string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w.Message, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestValidate_TeamSkillsRoundTrip(t *testing.T) {
+	t.Parallel()
+	yamlSrc := `
+name: p
+backend:
+  kind: managed_agents
+  managed_agents:
+    repository:
+      url: https://github.com/x/y
+defaults:
+  model: opus
+  max_turns: 200
+  permission_mode: acceptEdits
+  timeout_minutes: 90
+  inbox_poll_interval: 5m
+teams:
+  - name: ship
+    lead:
+      role: Implementer
+    tasks:
+      - summary: ship the doc
+        details: do it
+        verify: 'true'
+    skills:
+      - name: ship-feature
+        type: custom
+      - name: built-in
+        type: anthropic
+        version: v1
+    custom_tools:
+      - name: signal_completion
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(yamlSrc), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(cfg.Teams) != 1 {
+		t.Fatalf("teams: %+v", cfg.Teams)
+	}
+	team := cfg.Teams[0]
+	if len(team.Skills) != 2 {
+		t.Fatalf("skills: %+v", team.Skills)
+	}
+	if team.Skills[0].Name != "ship-feature" || team.Skills[0].Type != "custom" {
+		t.Fatalf("skill 0: %+v", team.Skills[0])
+	}
+	if team.Skills[1].Type != "anthropic" || team.Skills[1].Version != "v1" {
+		t.Fatalf("skill 1: %+v", team.Skills[1])
+	}
+	if len(team.CustomTools) != 1 || team.CustomTools[0].Name != "signal_completion" {
+		t.Fatalf("custom_tools: %+v", team.CustomTools)
+	}
+}
+
+func TestValidate_SkillShape_EmptyName(t *testing.T) {
+	t.Parallel()
+	cfg := managedConfigWithTeam(&Team{
+		Name:   "ship",
+		Lead:   Lead{Role: "Lead"},
+		Tasks:  []Task{{Summary: "ship"}},
+		Skills: []SkillRef{{Name: "", Type: "custom"}},
+	})
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "empty name") {
+		t.Fatalf("expected empty-skill-name error: %v", res.Errors)
+	}
+}
+
+func TestValidate_SkillShape_InvalidType(t *testing.T) {
+	t.Parallel()
+	cfg := managedConfigWithTeam(&Team{
+		Name:   "ship",
+		Lead:   Lead{Role: "Lead"},
+		Tasks:  []Task{{Summary: "ship"}},
+		Skills: []SkillRef{{Name: "ship-feature", Type: "bogus"}},
+	})
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "type must be one of") {
+		t.Fatalf("expected invalid-type error: %v", res.Errors)
+	}
+}
+
+func TestValidate_CustomToolShape_EmptyName(t *testing.T) {
+	t.Parallel()
+	cfg := managedConfigWithTeam(&Team{
+		Name:        "ship",
+		Lead:        Lead{Role: "Lead"},
+		Tasks:       []Task{{Summary: "ship"}},
+		CustomTools: []CustomToolRef{{Name: ""}},
+	})
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "empty name") {
+		t.Fatalf("expected empty-tool-name error: %v", res.Errors)
+	}
+}
+
+func TestValidate_LocalBackendWarnsOnSkills(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Name:    "p",
+		Backend: Backend{Kind: "local"},
+		Teams: []Team{{
+			Name:        "team",
+			Lead:        Lead{Role: "Lead"},
+			Tasks:       []Task{{Summary: "task"}},
+			Skills:      []SkillRef{{Name: "ship-feature"}},
+			CustomTools: []CustomToolRef{{Name: "signal_completion"}},
+		}},
+	}
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("local backend with skills should be valid (warnings only): %v", res.Errors)
+	}
+	if !warningsContain(res.Warnings, "skills are not supported under backend.kind=local") {
+		t.Fatalf("expected skills-on-local warning: %v", res.Warnings)
+	}
+	if !warningsContain(res.Warnings, "custom_tools are not supported under backend.kind=local") {
+		t.Fatalf("expected custom_tools-on-local warning: %v", res.Warnings)
+	}
+}
+
+func TestValidateResourceReferences_MAUnknownSkillIsError(t *testing.T) {
+	t.Parallel()
+	cfg := managedConfigWithTeam(&Team{
+		Name:   "ship",
+		Lead:   Lead{Role: "Lead"},
+		Tasks:  []Task{{Summary: "ship"}},
+		Skills: []SkillRef{{Name: "ship-feature"}},
+	})
+	res := cfg.ValidateResourceReferences(map[string]bool{}, map[string]bool{})
+	if res.Valid() {
+		t.Fatal("expected error for unknown skill under MA")
+	}
+	if !errorsContain(res.Errors, "ship-feature") {
+		t.Fatalf("error should name the skill: %v", res.Errors)
+	}
+}
+
+func TestValidateResourceReferences_MAUnknownToolIsError(t *testing.T) {
+	t.Parallel()
+	cfg := managedConfigWithTeam(&Team{
+		Name:        "ship",
+		Lead:        Lead{Role: "Lead"},
+		Tasks:       []Task{{Summary: "ship"}},
+		CustomTools: []CustomToolRef{{Name: "signal_completion"}},
+	})
+	res := cfg.ValidateResourceReferences(map[string]bool{}, map[string]bool{})
+	if res.Valid() {
+		t.Fatal("expected error for unknown custom_tool under MA")
+	}
+	if !errorsContain(res.Errors, "signal_completion") {
+		t.Fatalf("error should name the tool: %v", res.Errors)
+	}
+}
+
+func TestValidateResourceReferences_LocalUnknownDowngradesToWarning(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Name:    "p",
+		Backend: Backend{Kind: "local"},
+		Teams: []Team{{
+			Name:        "ship",
+			Lead:        Lead{Role: "Lead"},
+			Tasks:       []Task{{Summary: "ship"}},
+			Skills:      []SkillRef{{Name: "ship-feature"}},
+			CustomTools: []CustomToolRef{{Name: "signal_completion"}},
+		}},
+	}
+	res := cfg.ValidateResourceReferences(map[string]bool{}, map[string]bool{})
+	if !res.Valid() {
+		t.Fatalf("local backend should downgrade unknown-name to warning: %v", res.Errors)
+	}
+	if !warningsContain(res.Warnings, "ship-feature") {
+		t.Fatalf("expected warning for unknown skill: %v", res.Warnings)
+	}
+	if !warningsContain(res.Warnings, "signal_completion") {
+		t.Fatalf("expected warning for unknown tool: %v", res.Warnings)
+	}
+}
+
+func TestValidateResourceReferences_AllKnownIsClean(t *testing.T) {
+	t.Parallel()
+	cfg := managedConfigWithTeam(&Team{
+		Name:        "ship",
+		Lead:        Lead{Role: "Lead"},
+		Tasks:       []Task{{Summary: "ship"}},
+		Skills:      []SkillRef{{Name: "ship-feature"}},
+		CustomTools: []CustomToolRef{{Name: "signal_completion"}},
+	})
+	res := cfg.ValidateResourceReferences(
+		map[string]bool{"ship-feature": true},
+		map[string]bool{"signal_completion": true},
+	)
+	if !res.Valid() {
+		t.Fatalf("clean refs should pass: %v", res.Errors)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("clean refs should not warn: %v", res.Warnings)
+	}
+}
+
+func managedConfigWithTeam(team *Team) *Config {
+	return &Config{
+		Name: "p",
+		Backend: Backend{
+			Kind: "managed_agents",
+			ManagedAgents: &ManagedAgentsBackend{
+				Repository: &RepositorySpec{URL: "https://github.com/x/y"},
+			},
+		},
+		Defaults: Defaults{Model: "opus"},
+		Teams:    []Team{*team},
+	}
+}

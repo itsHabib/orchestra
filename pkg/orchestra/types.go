@@ -68,6 +68,20 @@ type Member = config.Member
 // Experimental: aliased from internal/config.
 type Task = config.Task
 
+// SkillRef references a skill registered in the orchestra skills cache that
+// should be attached to the team's MA agent. Type defaults to "custom"
+// (skills the user uploaded via `orchestra skills upload`); "anthropic" is
+// reserved for first-party skills.
+//
+// Experimental: aliased from internal/config.
+type SkillRef = config.SkillRef
+
+// CustomToolRef references a host-side custom tool by the name registered
+// in the customtools package.
+//
+// Experimental: aliased from internal/config.
+type CustomToolRef = config.CustomToolRef
+
 // Warning represents a non-fatal validation issue surfaced by LoadConfig
 // or Validate. It does not block execution. Field is the structured YAML
 // path to the offending node (empty for project-level issues); Team is
