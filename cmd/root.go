@@ -29,4 +29,5 @@ func init() {
 	rootCmd.AddCommand(msgCmd)
 	rootCmd.AddCommand(interruptCmd)
 	rootCmd.AddCommand(sessionsCmd)
+	rootCmd.AddCommand(mcpCmd)
 }
