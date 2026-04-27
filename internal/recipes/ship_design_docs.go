@@ -8,6 +8,7 @@ package recipes
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,9 @@ func ShipDesignDocs(p *ShipDesignDocsParams) (*config.Config, error) {
 	if p.RepoURL == "" {
 		return nil, errors.New("recipes: ship-design-docs: repo url is required")
 	}
+	if err := validateRepoURL(p.RepoURL); err != nil {
+		return nil, err
+	}
 
 	branch := orDefault(p.DefaultBranch, defaultBranch)
 	model := orDefault(p.Model, defaultModel)
@@ -121,7 +125,11 @@ func ShipDesignDocs(p *ShipDesignDocsParams) (*config.Config, error) {
 			// Two docs with the same basename collide on team name.
 			// The doc paths are still distinct, so disambiguate by
 			// appending a counter — config.Validate would otherwise
-			// reject the duplicate names.
+			// reject the duplicate names. The counter starts at 2
+			// because the first occurrence keeps the un-suffixed
+			// name (seen[name] == 1 ⇒ skip this branch); the
+			// second collision lands here as seen[name]++ → 2,
+			// hence "ship-foo-2" is the second one.
 			seen[name]++
 			name = fmt.Sprintf("%s-%d", name, seen[name])
 		} else {
@@ -181,6 +189,12 @@ func buildShipTeam(name, docPath string) config.Team {
 // team.Context. It quotes §6.1 verbatim where the design doc was
 // prescriptive — the agent reads this as Technical Context inside the
 // engine-generated prompt.
+//
+// The narrative hardcodes defaultRepoMountPath because the recipe also
+// always writes that constant into config.Backend.ManagedAgents.Repository.
+// MountPath; the two are deliberately coupled. If the recipe ever exposes a
+// per-call MountPath knob, this function must take it as a parameter to
+// keep the prompt and the mount in sync.
 func shipFeatureContext(docPath string) string {
 	full := defaultRepoMountPath + "/" + docPath
 	var b strings.Builder
@@ -208,6 +222,25 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// validateRepoURL rejects the most common shapes that survive the empty
+// check but fail later in the engine: bare strings ("not-a-url"), non-https
+// schemes (the MA backend only mounts https GitHub repositories), and URLs
+// without a host. Surface formatting errors here so callers see a clear
+// message instead of an opaque MA API failure 30 seconds into the run.
+func validateRepoURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("recipes: ship-design-docs: invalid repo url %q: %w", raw, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("recipes: ship-design-docs: repo url must be https, got scheme %q in %q", u.Scheme, raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("recipes: ship-design-docs: repo url has no host: %q", raw)
+	}
+	return nil
 }
 
 // teamNameForDoc derives a stable team name from a doc path. The team name

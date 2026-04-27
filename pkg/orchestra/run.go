@@ -122,6 +122,13 @@ func cloneTeams(in []Team) []Team {
 		out[i].Members = cloneSlice(in[i].Members)
 		out[i].Tasks = cloneTasks(in[i].Tasks)
 		out[i].DependsOn = cloneSlice(in[i].DependsOn)
+		// SkillRef and CustomToolRef are pure value types today (only
+		// string fields), so cloneSlice's shallow copy is enough — but
+		// the explicit clones decouple us from a future field addition
+		// that introduces pointer or slice fields and would otherwise
+		// silently alias.
+		out[i].Skills = cloneSlice(in[i].Skills)
+		out[i].CustomTools = cloneSlice(in[i].CustomTools)
 		out[i].EnvironmentOverride = cloneEnvironmentOverride(in[i].EnvironmentOverride)
 	}
 	return out

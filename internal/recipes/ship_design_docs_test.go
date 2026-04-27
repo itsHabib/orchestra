@@ -141,6 +141,27 @@ func TestShipDesignDocsRequiresDocsAndRepo(t *testing.T) {
 	}
 }
 
+func TestShipDesignDocsValidatesRepoURLFormat(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, raw string }{
+		{"bare-string", "not-a-url"},
+		{"http-not-https", "http://github.com/x/y"},
+		{"missing-host", "https://"},
+		{"missing-scheme", "github.com/x/y"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := ShipDesignDocs(&ShipDesignDocsParams{
+				DocPaths: []string{"docs/x.md"},
+				RepoURL:  c.raw,
+			})
+			if err == nil {
+				t.Fatalf("expected error for repo url %q", c.raw)
+			}
+		})
+	}
+}
+
 func TestShipDesignDocsDisambiguatesDuplicateBasenames(t *testing.T) {
 	t.Parallel()
 	cfg, err := ShipDesignDocs(&ShipDesignDocsParams{

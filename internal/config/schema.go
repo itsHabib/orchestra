@@ -625,10 +625,18 @@ func localBackendResourceWarnings(t *Team, teamPrefix []string) []Warning {
 // entries resolve to handlers wired into the customtools registry.
 //
 // Under backend.kind=managed_agents an unknown reference is a hard error.
-// Under backend.kind=local it's a warning — the field is parsed but ignored
-// at runtime, parity with how members/coordinator behave under MA. Callers
-// merge the returned [Result] with the result of [Config.Validate] before
-// deciding whether the config is good to start a run.
+// Under backend.kind=local — including the empty-string default before
+// [Config.ResolveDefaults] runs — it's a warning, parity with how
+// members/coordinator behave under MA. Callers merge the returned [Result]
+// with the result of [Config.Validate] before deciding whether the config
+// is good to start a run.
+//
+// Ordering: callers that want the local-default behavior to apply (i.e. an
+// empty Backend.Kind treated as local) should call [Config.ResolveDefaults]
+// before this method or simply rely on the empty-as-local fallback below.
+// The engine's [pkg/orchestra.Run] applies defaults before constructing the
+// run, so the in-engine call is unaffected; pure callers of this method
+// should be aware.
 //
 // skillNames and customToolNames are passed in so unit tests can drive any
 // combination without touching the real cache or registry.

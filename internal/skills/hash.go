@@ -34,18 +34,38 @@ func ContentHash(b []byte) string {
 // Returns an error if root is missing, unreadable, or empty (no files at all
 // would produce an opaque empty-hash that's hard to debug). The caller is
 // expected to ensure root contains a SKILL.md at its top before calling.
+//
+// Callers that already have a walked []SkillFile (e.g. Upload after calling
+// WalkSkillFiles) should use DirHashFromFiles to avoid a second filesystem
+// pass.
 func DirHash(root string) (string, error) {
 	files, err := walkSkillFiles(root)
 	if err != nil {
 		return "", err
 	}
+	return DirHashFromFiles(files)
+}
+
+// DirHashFromFiles returns the same hash as DirHash but operates on a
+// pre-walked file list. Files must already be sorted by RelPath — that's how
+// WalkSkillFiles returns them, so the precondition holds for any caller that
+// went through the public walker.
+func DirHashFromFiles(files []SkillFile) (string, error) {
 	if len(files) == 0 {
-		return "", fmt.Errorf("skills: hash %s: directory contains no files", root)
+		return "", errors.New("skills: hash: directory contains no files")
 	}
 	h := sha256.New()
 	for i := range files {
 		h.Write([]byte(files[i].RelPath))
 		h.Write([]byte{0})
+		// normalizeBytes is line-ending + NFC normalization on the raw
+		// bytes. Binary helper files (scripts, templates) are
+		// hash-only inputs — the upload itself uses files[i].Content
+		// untouched — so NFC differences from binary content can't
+		// corrupt the bundle on the wire, only perturb drift detection
+		// in the unlikely case a binary file's bytes happen to decode
+		// as a multi-byte sequence whose canonicalization changes
+		// across unicode library versions.
 		h.Write(normalizeBytes(files[i].Content))
 		h.Write([]byte{0})
 	}

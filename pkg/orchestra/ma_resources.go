@@ -138,6 +138,11 @@ func resolveSkillsForTeam(t *Team, entries map[string]skills.Entry) ([]spawner.S
 		if kind == "" {
 			kind = "custom"
 		}
+		// spawner.Skill.Name is the MA-API skill_id (the value returned
+		// by Beta.Skills.New), not the orchestra-side skill name the
+		// user typed in their config. The MA SDK's skillParams reads
+		// this field as SkillID — calling it Name here is the SDK's
+		// inversion, not ours.
 		out = append(out, spawner.Skill{
 			Name:     entry.SkillID,
 			Version:  version,
@@ -188,12 +193,33 @@ func agentsSkillCopy(in []spawner.Skill) []spawner.Skill {
 	return out
 }
 
-// agentsToolCopy clones a slice of spawner.Tool similarly.
+// agentsToolCopy clones a slice of spawner.Tool, including a deep copy of
+// each tool's InputSchema map and Metadata map so the AgentSpec the team
+// hands to EnsureAgent doesn't share map headers with the resolved-once
+// store on orchestrationRun. The SDK doesn't currently mutate either map,
+// but treating the resolved store as immutable across teams keeps a future
+// MA-side mutation from cross-contaminating sibling teams.
 func agentsToolCopy(in []spawner.Tool) []spawner.Tool {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]spawner.Tool, len(in))
-	copy(out, in)
+	for i := range in {
+		out[i] = in[i]
+		if schema, ok := in[i].InputSchema.(map[string]any); ok && len(schema) > 0 {
+			cloned := make(map[string]any, len(schema))
+			for k, v := range schema {
+				cloned[k] = v
+			}
+			out[i].InputSchema = cloned
+		}
+		if len(in[i].Metadata) > 0 {
+			md := make(map[string]string, len(in[i].Metadata))
+			for k, v := range in[i].Metadata {
+				md[k] = v
+			}
+			out[i].Metadata = md
+		}
+	}
 	return out
 }

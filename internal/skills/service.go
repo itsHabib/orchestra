@@ -132,7 +132,9 @@ func (s *Service) Upload(ctx context.Context, name, sourcePath string) (SyncResu
 		return SyncResult{Name: name, SourceMissing: errors.Is(err, os.ErrNotExist)},
 			fmt.Errorf("skills: upload: %w", err)
 	}
-	hash, err := DirHash(abs)
+	// Reuse the already-walked file list rather than calling DirHash(abs),
+	// which would walk the directory a second time.
+	hash, err := DirHashFromFiles(files)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("skills: upload: hash %s: %w", abs, err)
 	}
@@ -200,7 +202,9 @@ func (s *Service) syncOne(ctx context.Context, name string, entry *Entry) SyncRe
 		return SyncResult{Name: name, Entry: *entry, Action: SyncSkipped,
 			Err: fmt.Errorf("walk source: %w", err)}
 	}
-	hash, err := DirHash(entry.SourcePath)
+	// Same one-walk-only optimization as Upload: hash from the already-
+	// walked list rather than re-reading the tree.
+	hash, err := DirHashFromFiles(files)
 	if err != nil {
 		return SyncResult{Name: name, Entry: *entry, Action: SyncSkipped,
 			Err: fmt.Errorf("hash source: %w", err)}
