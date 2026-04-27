@@ -320,27 +320,24 @@ func (r *orchestrationRun) ensureManagedResources(ctx context.Context, team *Tea
 }
 
 func (r *orchestrationRun) managedAgentSpec(team *Team) spawner.AgentSpec {
-	// TODO(P2): resolve team.CustomTools against the customtools registry
-	// here and append a {Name, Type:"custom", InputSchema} Tool for each
-	// entry, so the MA agent is created with signal_completion (and any
-	// future host-side tools) attached. The dispatch path in runTeamMA is
-	// already in place; only the registration on agent creation is gated
-	// on the Team.CustomTools config field landing in P2.
+	tools := []spawner.Tool{
+		{Name: "bash"},
+		{Name: "read"},
+		{Name: "write"},
+		{Name: "edit"},
+		{Name: "grep"},
+		{Name: "glob"},
+	}
+	tools = append(tools, agentsToolCopy(r.teamCustomTools[team.Name])...)
 	return spawner.AgentSpec{
 		Project:      r.cfg.Name,
 		Role:         team.Name,
 		Name:         team.Lead.Role,
 		Model:        managedAgentsModel(r.teamModel(team)),
 		SystemPrompt: "You are an Orchestra managed-agents team lead. Work only on the user's assigned task and return a concise final markdown summary.",
-		Tools: []spawner.Tool{
-			{Name: "bash"},
-			{Name: "read"},
-			{Name: "write"},
-			{Name: "edit"},
-			{Name: "grep"},
-			{Name: "glob"},
-		},
-		Metadata: map[string]string{"team": team.Name},
+		Tools:        tools,
+		Skills:       agentsSkillCopy(r.teamSkills[team.Name]),
+		Metadata:     map[string]string{"team": team.Name},
 	}
 }
 

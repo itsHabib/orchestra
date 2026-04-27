@@ -11,28 +11,26 @@ import (
 	"github.com/itsHabib/orchestra/internal/skills"
 )
 
-var (
-	skillsUploadFrom string
-	skillsProbeFrom  string
-	skillsProbeMount string
-	skillsProbeModel string
-	skillsProbeKeep  bool
-)
+var skillsUploadFrom string
 
 var skillsCmd = &cobra.Command{
 	Use:   "skills",
-	Short: "Manage orchestra skills uploaded to the Anthropic Files API",
-	Long: "Upload SKILL.md files to the Anthropic Files API and cache the\n" +
-		"resulting file IDs in <user-config-dir>/orchestra/skills.json.\n\n" +
-		"The cache is read by the engine on session creation; cached file IDs\n" +
-		"are attached to MA sessions as file resources so the agent can read\n" +
-		"its role from the SKILL.md mounted in the container.",
+	Short: "Manage orchestra skills registered with the Anthropic Skills API",
+	Long: "Register skill directories with the Anthropic Skills API and cache\n" +
+		"the resulting skill_ids in <user-config-dir>/orchestra/skills.json.\n\n" +
+		"The cache is read by the engine on session creation; cached skill_ids\n" +
+		"are attached to the MA agent so the role definition (SKILL.md) is\n" +
+		"surfaced to the model via Anthropic's native skill primitive.",
 }
 
 var skillsUploadCmd = &cobra.Command{
 	Use:   "upload <name>",
-	Short: "Upload one skill's SKILL.md and cache the resulting file_id",
-	Args:  cobra.ExactArgs(1),
+	Short: "Register a skill directory and cache the resulting skill_id",
+	Long: "Walks the skill directory (default: $HOME/.claude/skills/<name>/),\n" +
+		"requires a SKILL.md at its root, and uploads every regular non-hidden\n" +
+		"file as part of the skill bundle. On a content change re-runs publish\n" +
+		"a new version under the same skill_id.",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSkillsUpload(cmd.Context(), args[0])
 	},
@@ -48,33 +46,18 @@ var skillsLsCmd = &cobra.Command{
 
 var skillsSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Re-upload any cached skills whose source file has drifted",
+	Short: "Re-publish any cached skills whose source directory has drifted",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runSkillsSync(cmd.Context())
 	},
 }
 
-var skillsProbeMountCmd = &cobra.Command{
-	Use:    "probe-mount <name>",
-	Short:  "One-off probe: upload SKILL.md, attach to a fresh MA session, dump container filesystem",
-	Hidden: true,
-	Args:   cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsProbeMount(cmd.Context(), args[0])
-	},
-}
-
 func init() {
-	skillsUploadCmd.Flags().StringVar(&skillsUploadFrom, "from", "", "Path to SKILL.md (default: $HOME/.claude/skills/<name>/SKILL.md)")
-	skillsProbeMountCmd.Flags().StringVar(&skillsProbeFrom, "from", "", "Path to SKILL.md (default: $HOME/.claude/skills/<name>/SKILL.md)")
-	skillsProbeMountCmd.Flags().StringVar(&skillsProbeMount, "mount-path", "", "Override mount path (default: SDK default /mnt/session/uploads/<file_id>)")
-	skillsProbeMountCmd.Flags().StringVar(&skillsProbeModel, "model", "claude-sonnet-4-6", "Model id for the probe agent")
-	skillsProbeMountCmd.Flags().BoolVar(&skillsProbeKeep, "keep", false, "Leave the env+agent in place instead of archiving on exit (the session is left as-is either way)")
+	skillsUploadCmd.Flags().StringVar(&skillsUploadFrom, "from", "", "Path to skill directory (default: $HOME/.claude/skills/<name>/)")
 
 	skillsCmd.AddCommand(skillsUploadCmd)
 	skillsCmd.AddCommand(skillsLsCmd)
 	skillsCmd.AddCommand(skillsSyncCmd)
-	skillsCmd.AddCommand(skillsProbeMountCmd)
 	rootCmd.AddCommand(skillsCmd)
 }
 
@@ -83,8 +66,12 @@ func runSkillsUpload(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(source); err != nil {
+	info, err := os.Stat(source)
+	if err != nil {
 		return fmt.Errorf("skills upload: source %s: %w", source, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("skills upload: source %s must be a directory containing SKILL.md", source)
 	}
 
 	svc, err := skills.NewHostService()
@@ -98,16 +85,18 @@ func runSkillsUpload(ctx context.Context, name string) error {
 
 	switch res.Action {
 	case skills.SyncUpToDate:
-		fmt.Printf("up-to-date  %s  file_id=%s  hash=%s\n", res.Name, res.Entry.FileID, shortHash(res.Entry.ContentHash))
+		fmt.Printf("up-to-date  %s  skill_id=%s  version=%s  hash=%s\n",
+			res.Name, res.Entry.SkillID, res.Entry.LatestVersion, shortHash(res.Entry.ContentHash))
 	case skills.SyncReuploaded:
-		if res.PreviousFile != "" {
-			fmt.Printf("reuploaded  %s  file_id=%s  prev=%s  hash=%s\n",
-				res.Name, res.Entry.FileID, res.PreviousFile, shortHash(res.Entry.ContentHash))
+		if res.PreviousVersion != "" {
+			fmt.Printf("reuploaded  %s  skill_id=%s  version=%s  prev=%s  hash=%s\n",
+				res.Name, res.Entry.SkillID, res.Entry.LatestVersion, res.PreviousVersion, shortHash(res.Entry.ContentHash))
 		} else {
-			fmt.Printf("uploaded    %s  file_id=%s  hash=%s\n", res.Name, res.Entry.FileID, shortHash(res.Entry.ContentHash))
+			fmt.Printf("registered  %s  skill_id=%s  version=%s  hash=%s\n",
+				res.Name, res.Entry.SkillID, res.Entry.LatestVersion, shortHash(res.Entry.ContentHash))
 		}
 	default:
-		fmt.Printf("%s  %s  file_id=%s\n", res.Action, res.Name, res.Entry.FileID)
+		fmt.Printf("%s  %s  skill_id=%s\n", res.Action, res.Name, res.Entry.SkillID)
 	}
 	return nil
 }
@@ -126,14 +115,15 @@ func runSkillsLs(ctx context.Context) error {
 		fmt.Printf("Cache: %s\n", skills.DefaultCachePath())
 		return nil
 	}
-	fmt.Printf("%-24s  %-32s  %-9s  %-16s  %s\n", "NAME", "FILE ID", "HASH", "UPLOADED AT", "STATUS")
+	fmt.Printf("%-24s  %-32s  %-20s  %-9s  %-16s  %s\n", "NAME", "SKILL ID", "VERSION", "HASH", "REGISTERED AT", "STATUS")
 	for i := range looks {
 		look := &looks[i]
-		fmt.Printf("%-24s  %-32s  %-9s  %-16s  %s\n",
+		fmt.Printf("%-24s  %-32s  %-20s  %-9s  %-16s  %s\n",
 			look.Name,
-			look.Entry.FileID,
+			displayOrDash(look.Entry.SkillID),
+			displayOrDash(look.Entry.LatestVersion),
 			shortHash(look.Entry.ContentHash),
-			formatCacheTime(look.Entry.UploadedAt),
+			formatCacheTime(look.Entry.RegisteredAt),
 			driftStatus(look),
 		)
 	}
@@ -157,9 +147,10 @@ func runSkillsSync(ctx context.Context) error {
 		r := &results[i]
 		switch r.Action {
 		case skills.SyncUpToDate:
-			fmt.Printf("up-to-date  %s  file_id=%s\n", r.Name, r.Entry.FileID)
+			fmt.Printf("up-to-date  %s  skill_id=%s  version=%s\n", r.Name, r.Entry.SkillID, r.Entry.LatestVersion)
 		case skills.SyncReuploaded:
-			fmt.Printf("reuploaded  %s  file_id=%s  prev=%s\n", r.Name, r.Entry.FileID, r.PreviousFile)
+			fmt.Printf("reuploaded  %s  skill_id=%s  version=%s  prev=%s\n",
+				r.Name, r.Entry.SkillID, r.Entry.LatestVersion, r.PreviousVersion)
 		case skills.SyncSkipped:
 			reason := "skipped"
 			switch {
@@ -178,6 +169,8 @@ func runSkillsSync(ctx context.Context) error {
 
 func driftStatus(look *skills.Lookup) string {
 	switch {
+	case !look.Found:
+		return "not registered"
 	case look.SourceMissing:
 		return "source missing (" + look.Entry.SourcePath + ")"
 	case look.Drifted:

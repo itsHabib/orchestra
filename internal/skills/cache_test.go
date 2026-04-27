@@ -14,11 +14,11 @@ func TestFileCacheRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	entry := Entry{
-		FileID:      "file_01ABC",
-		ContentHash: "sha256:deadbeef",
-		SourcePath:  "/tmp/SKILL.md",
-		Filename:    "SKILL.md",
-		UploadedAt:  time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC),
+		SkillID:       "skill_01ABC",
+		LatestVersion: "1759178010641129",
+		ContentHash:   "sha256:deadbeef",
+		SourcePath:    "/tmp/ship-feature",
+		RegisteredAt:  time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC),
 	}
 	if err := cache.Put(ctx, "ship-feature", &entry); err != nil {
 		t.Fatalf("put: %v", err)
@@ -39,7 +39,7 @@ func TestFileCachePersistsAcrossInstances(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "skills.json")
 	ctx := context.Background()
-	entry := Entry{FileID: "f1", ContentHash: "h", SourcePath: "/x"}
+	entry := Entry{SkillID: "skill_1", ContentHash: "h", SourcePath: "/x"}
 
 	if err := NewFileCache(path).Put(ctx, "alpha", &entry); err != nil {
 		t.Fatalf("put: %v", err)
@@ -50,8 +50,8 @@ func TestFileCachePersistsAcrossInstances(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	case !ok:
 		t.Fatalf("not found in fresh instance")
-	case got.FileID != "f1":
-		t.Fatalf("file_id: want f1 got %s", got.FileID)
+	case got.SkillID != "skill_1":
+		t.Fatalf("skill_id: want skill_1 got %s", got.SkillID)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestFileCacheDelete(t *testing.T) {
 	t.Parallel()
 	cache := NewFileCache(filepath.Join(t.TempDir(), "skills.json"))
 	ctx := context.Background()
-	if err := cache.Put(ctx, "x", &Entry{FileID: "f"}); err != nil {
+	if err := cache.Put(ctx, "x", &Entry{SkillID: "s1"}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	if err := cache.Delete(ctx, "x"); err != nil {
@@ -84,7 +84,6 @@ func TestFileCacheDelete(t *testing.T) {
 	if ok {
 		t.Fatalf("entry should be gone after delete")
 	}
-	// Deleting a missing entry is a no-op.
 	if err := cache.Delete(ctx, "x"); err != nil {
 		t.Fatalf("idempotent delete: %v", err)
 	}
@@ -94,10 +93,10 @@ func TestFileCacheList(t *testing.T) {
 	t.Parallel()
 	cache := NewFileCache(filepath.Join(t.TempDir(), "skills.json"))
 	ctx := context.Background()
-	if err := cache.Put(ctx, "a", &Entry{FileID: "fa"}); err != nil {
+	if err := cache.Put(ctx, "a", &Entry{SkillID: "sa"}); err != nil {
 		t.Fatalf("put a: %v", err)
 	}
-	if err := cache.Put(ctx, "b", &Entry{FileID: "fb"}); err != nil {
+	if err := cache.Put(ctx, "b", &Entry{SkillID: "sb"}); err != nil {
 		t.Fatalf("put b: %v", err)
 	}
 
@@ -105,7 +104,7 @@ func TestFileCacheList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(got) != 2 || got["a"].FileID != "fa" || got["b"].FileID != "fb" {
+	if len(got) != 2 || got["a"].SkillID != "sa" || got["b"].SkillID != "sb" {
 		t.Fatalf("list: %+v", got)
 	}
 	names := SortedNames(got)
@@ -125,7 +124,7 @@ func TestFileCacheConcurrentPuts(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			err := cache.Put(ctx, name(i), &Entry{FileID: name(i) + "-id"})
+			err := cache.Put(ctx, name(i), &Entry{SkillID: name(i) + "-id"})
 			if err != nil {
 				t.Errorf("put %d: %v", i, err)
 			}

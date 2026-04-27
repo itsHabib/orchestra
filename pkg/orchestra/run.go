@@ -122,6 +122,13 @@ func cloneTeams(in []Team) []Team {
 		out[i].Members = cloneSlice(in[i].Members)
 		out[i].Tasks = cloneTasks(in[i].Tasks)
 		out[i].DependsOn = cloneSlice(in[i].DependsOn)
+		// SkillRef and CustomToolRef are pure value types today (only
+		// string fields), so cloneSlice's shallow copy is enough — but
+		// the explicit clones decouple us from a future field addition
+		// that introduces pointer or slice fields and would otherwise
+		// silently alias.
+		out[i].Skills = cloneSlice(in[i].Skills)
+		out[i].CustomTools = cloneSlice(in[i].CustomTools)
 		out[i].EnvironmentOverride = cloneEnvironmentOverride(in[i].EnvironmentOverride)
 	}
 	return out
@@ -165,6 +172,13 @@ type orchestrationRun struct {
 	handle             *Handle         // nil when called by tests that don't construct a Handle
 	notifier           notify.Notifier // notifies on signal_completion; nil disables
 	startTeamMAForTest startTeamMAFunc
+
+	// teamSkills and teamCustomTools are pre-resolved at run-construction
+	// time so the agent-creation hot path is a map read, not a cache lookup.
+	// Keyed by team name; nil entries mean "team has no skills/tools" rather
+	// than "not yet resolved". MA backend only.
+	teamSkills      map[string][]spawner.Skill
+	teamCustomTools map[string][]spawner.Tool
 
 	// toolNamesMu guards toolNamesByUseID, the MA-only tool-name lookup
 	// populated on AgentToolUseEvent and consumed on AgentToolResultEvent
@@ -238,7 +252,7 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 		handle.setRunService(runService)
 	}
 
-	run, tiers, err := newOrchestrationRun(cfg, emitter, runService, active, handle)
+	run, tiers, err := newOrchestrationRun(ctx, cfg, emitter, runService, active, handle)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +384,7 @@ func newRunService(path string, emitter event.Emitter) *runsvc.Service {
 	)
 }
 
-func newOrchestrationRun(cfg *Config, emitter event.Emitter, runService *runsvc.Service, active *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
+func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter, runService *runsvc.Service, active *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
 	ws := runService.Workspace()
 	if ws == nil {
 		return nil, nil, errors.New("run service has no workspace attached")
@@ -403,17 +417,23 @@ func newOrchestrationRun(cfg *Config, emitter event.Emitter, runService *runsvc.
 			return nil, nil, err
 		}
 		registerBuiltinCustomTools()
+		resources, err := resolveTeamResources(ctx, cfg, emitter)
+		if err != nil {
+			return nil, nil, err
+		}
 		return &orchestrationRun{
-			cfg:        cfg,
-			emitter:    emitter,
-			runService: runService,
-			ws:         ws,
-			bus:        active.Bus,
-			maSpawner:  ma,
-			ghClient:   ghClient,
-			ghPAT:      ghPAT,
-			handle:     handle,
-			notifier:   defaultNotifier(ws),
+			cfg:             cfg,
+			emitter:         emitter,
+			runService:      runService,
+			ws:              ws,
+			bus:             active.Bus,
+			maSpawner:       ma,
+			ghClient:        ghClient,
+			ghPAT:           ghPAT,
+			handle:          handle,
+			notifier:        defaultNotifier(ws),
+			teamSkills:      resources.Skills,
+			teamCustomTools: resources.CustomTools,
 		}, tiers, nil
 	}
 
