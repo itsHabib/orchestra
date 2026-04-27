@@ -225,6 +225,29 @@ func TestFormatTerminalLineTruncatesLongSummary(t *testing.T) {
 	}
 }
 
+func TestBuildOsascriptDoesNotDoubleEscape(t *testing.T) {
+	t.Parallel()
+	// Regression: an earlier osascriptEscape pass before %q caused
+	// `\"world\"` to be re-escaped into `\\\"world\\\"`. The fix is to use
+	// %q only. Confirm a body with quotes round-trips cleanly: %q renders
+	// `hello "world"` as `"hello \"world\""` — exactly what AppleScript
+	// expects, and nothing more.
+	got := buildOsascript(`hello "world"`, "Orchestra")
+	const want = `display notification "hello \"world\"" with title "Orchestra"`
+	if got != want {
+		t.Fatalf("osascript: got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildOsascriptHandlesBackslashes(t *testing.T) {
+	t.Parallel()
+	got := buildOsascript(`path\to\thing`, "Orchestra")
+	const want = `display notification "path\\to\\thing" with title "Orchestra"`
+	if got != want {
+		t.Fatalf("osascript: got=%q want=%q", got, want)
+	}
+}
+
 func TestRunBoundedCommandTimesOut(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

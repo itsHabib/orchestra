@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -68,14 +67,18 @@ func pickSystemNotifier() systemNotifierImpl {
 type osascriptNotifier struct{}
 
 func (osascriptNotifier) notify(ctx context.Context, n *Notification) error {
-	// AppleScript string literals support \" and \\ escapes; osascriptEscape
-	// produces a body that is safe to embed verbatim with %q. The %q here is
-	// used as a Go-style quoter for the AppleScript syntax — the rules
-	// happen to coincide for printable ASCII.
-	body := osascriptEscape(systemBody(n))
-	title := osascriptEscape("Orchestra")
-	script := fmt.Sprintf(`display notification %q with title %q`, body, title)
-	return runBoundedCommand(ctx, "osascript", "osascript", "-e", script)
+	return runBoundedCommand(ctx, "osascript", "osascript", "-e", buildOsascript(systemBody(n), "Orchestra"))
+}
+
+// buildOsascript renders the AppleScript fragment passed to `osascript -e`.
+// AppleScript string literals support `\"` and `\\` — the same escape shape
+// Go's %q produces for printable ASCII — so %q alone is the right escape
+// transform. An earlier intermediate quote/backslash doubler ran *before* %q
+// and mangled bodies containing quotes (`\"world\"` ended up as
+// `\\\"world\\\"`). Helper extracted so tests can pin the exact string
+// without spawning osascript.
+func buildOsascript(body, title string) string {
+	return fmt.Sprintf(`display notification %q with title %q`, body, title)
 }
 
 type notifySendNotifier struct{}
@@ -106,16 +109,6 @@ func runBoundedCommand(ctx context.Context, label, name string, args ...string) 
 type windowsNoopNotifier struct{}
 
 func (windowsNoopNotifier) notify(context.Context, *Notification) error { return nil }
-
-// osascriptEscape neutralizes characters the AppleScript display notification
-// command interprets — backslash and double-quote inside the string literal.
-// AppleScript here is invoked via `osascript -e` so backticks, dollar signs,
-// and the like never reach a shell parser.
-func osascriptEscape(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
-}
 
 // systemBody renders the notification body for OS notifiers. Kept short
 // because system notification panels typically truncate aggressively.

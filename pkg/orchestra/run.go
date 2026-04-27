@@ -456,16 +456,17 @@ func registerBuiltinCustomTools() {
 // breadcrumb the operator can grep — an io.Discard logger here would silently
 // swallow exactly the failures the design wants surfaced.
 func defaultNotifier(ws *workspace.Workspace) notify.Notifier {
-	logPath := ""
-	if ws != nil {
-		logPath = filepath.Join(ws.Path, "notifications.ndjson")
-	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	sinks := []notify.Notifier{
-		notify.NewLog(logPath),
-		notify.NewTerminal(os.Stderr),
-		notify.NewSystem(),
+	sinks := make([]notify.Notifier, 0, 3)
+	// Skip the NDJSON sink when there's no workspace — newOrchestrationRun
+	// always wires one in production, but tests construct orchestrationRun
+	// values directly without one. NewLog("") would otherwise fail every
+	// notification (open: no such file) and the fan-out would silently
+	// swallow it.
+	if ws != nil {
+		sinks = append(sinks, notify.NewLog(filepath.Join(ws.Path, "notifications.ndjson")))
 	}
+	sinks = append(sinks, notify.NewTerminal(os.Stderr), notify.NewSystem())
 	return notify.Compose(logger, sinks...)
 }
 

@@ -320,6 +320,12 @@ func (r *orchestrationRun) ensureManagedResources(ctx context.Context, team *Tea
 }
 
 func (r *orchestrationRun) managedAgentSpec(team *Team) spawner.AgentSpec {
+	// TODO(P2): resolve team.CustomTools against the customtools registry
+	// here and append a {Name, Type:"custom", InputSchema} Tool for each
+	// entry, so the MA agent is created with signal_completion (and any
+	// future host-side tools) attached. The dispatch path in runTeamMA is
+	// already in place; only the registration on agent creation is gated
+	// on the Team.CustomTools config field landing in P2.
 	return spawner.AgentSpec{
 		Project:      r.cfg.Name,
 		Role:         team.Name,
