@@ -570,7 +570,25 @@ func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
 			})
 		}
 		switch sk.Type {
-		case "", "custom", "anthropic":
+		case "", "custom":
+			// "" defaults to "custom" downstream; both supported.
+		case "anthropic":
+			// The schema retains the field for forward-compat — the SDK's
+			// skillParams already routes Metadata["type"] = "anthropic" to
+			// BetaManagedAgentsAnthropicSkillParams — but the orchestra
+			// skills cache only stores skill_ids returned by Beta.Skills.New
+			// (custom skills the user uploaded). There's no resolution path
+			// for an Anthropic first-party skill_id today, so accepting
+			// type=anthropic here would surface as either a "skill not
+			// registered" validator error or a 30-second-delayed MA API
+			// rejection. Either is worse than failing here with a clear
+			// message; remove this case once first-party skills are wired
+			// in.
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, fieldPrefix...), "type"),
+				Team:    t.Name,
+				Message: fmt.Sprintf("skill %q: type=anthropic is not yet supported (use type: custom with `orchestra skills upload`)", sk.Name),
+			})
 		default:
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, fieldPrefix...), "type"),

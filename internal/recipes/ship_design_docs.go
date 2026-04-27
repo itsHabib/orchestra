@@ -115,26 +115,13 @@ func ShipDesignDocs(p *ShipDesignDocsParams) (*config.Config, error) {
 	runName := orDefault(p.RunName, "ship-design-docs")
 
 	teams := make([]config.Team, 0, len(p.DocPaths))
-	seen := make(map[string]int, len(p.DocPaths))
+	used := make(map[string]bool, len(p.DocPaths))
 	for _, docPath := range p.DocPaths {
 		if strings.TrimSpace(docPath) == "" {
 			return nil, errors.New("recipes: ship-design-docs: empty doc path")
 		}
-		name := teamNameForDoc(docPath)
-		if seen[name] > 0 {
-			// Two docs with the same basename collide on team name.
-			// The doc paths are still distinct, so disambiguate by
-			// appending a counter — config.Validate would otherwise
-			// reject the duplicate names. The counter starts at 2
-			// because the first occurrence keeps the un-suffixed
-			// name (seen[name] == 1 ⇒ skip this branch); the
-			// second collision lands here as seen[name]++ → 2,
-			// hence "ship-foo-2" is the second one.
-			seen[name]++
-			name = fmt.Sprintf("%s-%d", name, seen[name])
-		} else {
-			seen[name] = 1
-		}
+		name := uniqueTeamName(teamNameForDoc(docPath), used)
+		used[name] = true
 		teams = append(teams, buildShipTeam(name, docPath))
 	}
 
@@ -222,6 +209,27 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// uniqueTeamName returns a team name that's not already in `used`. The first
+// time `base` appears it's returned unchanged; subsequent collisions get a
+// `-2`, `-3`, … suffix, skipping any suffixed candidate that's *also* taken
+// (e.g. when DocPaths contains both `foo.md` and `foo-2.md` and a third
+// `foo.md`, the third must become `foo-3` because `foo-2` is already a
+// distinct team's name).
+//
+// Counter starts at 2 because the un-suffixed name covers the first
+// occurrence; the first collision lands at counter==2.
+func uniqueTeamName(base string, used map[string]bool) string {
+	if !used[base] {
+		return base
+	}
+	for counter := 2; ; counter++ {
+		candidate := fmt.Sprintf("%s-%d", base, counter)
+		if !used[candidate] {
+			return candidate
+		}
+	}
 }
 
 // validateRepoURL rejects the most common shapes that survive the empty

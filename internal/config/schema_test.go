@@ -377,8 +377,6 @@ teams:
     skills:
       - name: ship-feature
         type: custom
-      - name: built-in
-        type: anthropic
         version: v1
     custom_tools:
       - name: signal_completion
@@ -391,14 +389,11 @@ teams:
 		t.Fatalf("teams: %+v", cfg.Teams)
 	}
 	team := cfg.Teams[0]
-	if len(team.Skills) != 2 {
+	if len(team.Skills) != 1 {
 		t.Fatalf("skills: %+v", team.Skills)
 	}
-	if team.Skills[0].Name != "ship-feature" || team.Skills[0].Type != "custom" {
+	if team.Skills[0].Name != "ship-feature" || team.Skills[0].Type != "custom" || team.Skills[0].Version != "v1" {
 		t.Fatalf("skill 0: %+v", team.Skills[0])
-	}
-	if team.Skills[1].Type != "anthropic" || team.Skills[1].Version != "v1" {
-		t.Fatalf("skill 1: %+v", team.Skills[1])
 	}
 	if len(team.CustomTools) != 1 || team.CustomTools[0].Name != "signal_completion" {
 		t.Fatalf("custom_tools: %+v", team.CustomTools)
@@ -430,6 +425,24 @@ func TestValidate_SkillShape_InvalidType(t *testing.T) {
 	res := cfg.Validate()
 	if res.Valid() || !errorsContain(res.Errors, "type must be one of") {
 		t.Fatalf("expected invalid-type error: %v", res.Errors)
+	}
+}
+
+func TestValidate_SkillShape_AnthropicTypeRejected(t *testing.T) {
+	t.Parallel()
+	// type=anthropic parses (forward-compat shape) but the validator
+	// rejects it until orchestra has a way to populate the cache with
+	// Anthropic first-party skill_ids. This guards against the false
+	// affordance documented in the round-2 review.
+	cfg := managedConfigWithTeam(&Team{
+		Name:   "ship",
+		Lead:   Lead{Role: "Lead"},
+		Tasks:  []Task{{Summary: "ship"}},
+		Skills: []SkillRef{{Name: "first-party-skill", Type: "anthropic"}},
+	})
+	res := cfg.Validate()
+	if res.Valid() || !errorsContain(res.Errors, "type=anthropic is not yet supported") {
+		t.Fatalf("expected anthropic-type rejection: %v", res.Errors)
 	}
 }
 

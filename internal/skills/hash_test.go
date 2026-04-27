@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,9 +33,16 @@ func TestContentHashCRLFNormalized(t *testing.T) {
 
 func TestContentHashNFCNormalized(t *testing.T) {
 	t.Parallel()
-	// "café" composed (single NFC code point) vs decomposed (e + combining acute).
+	// "café" precomposed (single NFC code point U+00E9) vs decomposed
+	// (ASCII 'e' + U+0301 combining acute). Spelling the NFD form via the
+	// explicit ́ escape avoids the source-file getting auto-NFC-normalized
+	// by editors and silently turning this into a tautology — which is what
+	// happened to the earlier version of the test.
 	composed := []byte("café")
-	decomposed := []byte("café")
+	decomposed := []byte("café")
+	if bytes.Equal(composed, decomposed) {
+		t.Fatalf("test fixture is broken: NFD form must differ in raw bytes from NFC form")
+	}
 	if ContentHash(composed) != ContentHash(decomposed) {
 		t.Fatalf("NFC not normalized: composed=%s decomposed=%s",
 			ContentHash(composed), ContentHash(decomposed))

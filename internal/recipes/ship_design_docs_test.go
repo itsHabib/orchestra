@@ -179,6 +179,34 @@ func TestShipDesignDocsDisambiguatesDuplicateBasenames(t *testing.T) {
 	}
 }
 
+// Regression test for the round-2 review finding: when a doc's basename is
+// itself a suffixed candidate ("foo-2.md"), the disambiguation loop must
+// skip past it instead of producing two teams that both want
+// "ship-foo-2".
+func TestShipDesignDocsDisambiguationSkipsClaimedSuffix(t *testing.T) {
+	t.Parallel()
+	cfg, err := ShipDesignDocs(&ShipDesignDocsParams{
+		DocPaths: []string{"docs/foo.md", "docs/foo-2.md", "other/foo.md"},
+		RepoURL:  "https://github.com/x/y",
+	})
+	if err != nil {
+		t.Fatalf("recipe: %v", err)
+	}
+	// First foo.md is plain ship-foo. foo-2.md claims ship-foo-2 as its
+	// basename slug. The third (foo.md) collides with both, so it must
+	// land at ship-foo-3, not produce a duplicate ship-foo-2.
+	want := []string{"ship-foo", "ship-foo-2", "ship-foo-3"}
+	for i, w := range want {
+		if cfg.Teams[i].Name != w {
+			t.Fatalf("team %d: want %s got %s", i, w, cfg.Teams[i].Name)
+		}
+	}
+	// And the resulting config must validate (no duplicate team names).
+	if res := cfg.Validate(); !res.Valid() {
+		t.Fatalf("config from collision-prone input failed Validate: %v", res.Errors)
+	}
+}
+
 func TestShipDesignDocsConfigPassesValidate(t *testing.T) {
 	t.Parallel()
 	cfg, err := ShipDesignDocs(&ShipDesignDocsParams{
