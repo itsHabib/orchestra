@@ -103,6 +103,142 @@ func TestManagedAgentsTranslator_EndTurnWritesSummaryAndDoneState(t *testing.T) 
 	}
 }
 
+// TestManagedAgentsTranslator_RequiresActionKeepsSessionAlive covers the
+// custom-tool flow: when the agent emits a tool_use, MA pauses the session
+// at status_idle/requires_action waiting for the host-side result. The
+// pkg/orchestra dispatcher delivers the result asynchronously, so the
+// spawner must not fail the team on requires_action — it just needs to
+// keep the session alive until the result lands and the agent resumes.
+//
+// Pre-fix this case was hard-failed with "tool confirmation requested;
+// not supported in v1", which was correct only for MCP tools whose
+// permission_policy is always_ask. Custom tools never need confirmation.
+func TestManagedAgentsTranslator_RequiresActionKeepsSessionAlive(t *testing.T) {
+	ctx := context.Background()
+	st := seededSessionStore(t)
+	events := &fakeSessionEventsAPI{
+		stream: &fakeStream{events: []managedEvent{
+			rawEvent(`{"id":"e1","type":"session.status_idle","processed_at":"2026-04-19T12:00:00Z","stop_reason":{"type":"requires_action"}}`),
+		}},
+	}
+	sp := newManagedAgentsSpawnerWithSessions(st, newFakeAgentAPI(), newFakeEnvAPI(), &fakeSessionAPI{}, events)
+	pending, err := sp.StartSession(ctx, StartSessionRequest{
+		Agent:    AgentHandle{ID: "agent_1", Version: 1},
+		Env:      EnvHandle{ID: "env_1"},
+		TeamName: "alpha",
+		Store:    st,
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	_, ch, err := pending.Stream(ctx)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	drain(ch)
+
+	state, err := st.LoadRunState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := state.Teams["alpha"]
+	if alpha.Status == "failed" {
+		t.Fatalf("requires_action must not fail the team (custom-tool result is on its way); got %+v", alpha)
+	}
+	if alpha.LastError != "" {
+		t.Fatalf("LastError should be empty on requires_action: got %q", alpha.LastError)
+	}
+	if alpha.LastEventID != "e1" {
+		t.Fatalf("LastEventID should advance: got %q want e1", alpha.LastEventID)
+	}
+}
+
+// TestManagedAgentsTranslator_EndTurnAfterBlockedSignalKeepsSessionAlive
+// covers DESIGN-ship-feature-workflow §12.3: a team that has signaled
+// blocked must NOT be transitioned to status=done when the agent stops
+// emitting on end_turn. The session has to stay reachable for the MCP
+// unblock tool / orchestra msg to land a user.message.
+//
+// The test seeds SignalStatus="blocked" before the session runs (the
+// customtools handler would write this in the real flow). The fakeStream
+// then emits the end_turn idle event the way MA would after the agent's
+// final tool_use. The expected outcome: the team's Status stays "running",
+// the summary writer is NOT called, and the session-end is logged via
+// LastEventID/LastEventAt only. The session terminates here only because
+// fakeStream has no further events; in production the stream would block
+// on the next read until a steering event arrives.
+func TestManagedAgentsTranslator_EndTurnAfterBlockedSignalKeepsSessionAlive(t *testing.T) {
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{
+		Project: "p",
+		Backend: "managed_agents",
+		Teams: map[string]store.TeamState{
+			// Pre-block state: customtools handler already wrote
+			// SignalStatus="blocked" + reason in response to the agent's
+			// signal_completion(blocked) call.
+			"alpha": {
+				Status:        "running",
+				SignalStatus:  "blocked",
+				SignalReason:  "the doc has no concrete spec",
+				SignalSummary: "ambiguous",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var summaryCalls int
+	events := &fakeSessionEventsAPI{
+		stream: &fakeStream{events: []managedEvent{
+			rawEvent(`{"id":"e1","type":"session.status_idle","processed_at":"2026-04-19T12:00:00Z","stop_reason":{"type":"end_turn"}}`),
+		}},
+	}
+	sp := newManagedAgentsSpawnerWithSessions(st, newFakeAgentAPI(), newFakeEnvAPI(), &fakeSessionAPI{}, events)
+	pending, err := sp.StartSession(ctx, StartSessionRequest{
+		Agent:    AgentHandle{ID: "agent_1", Version: 1},
+		Env:      EnvHandle{ID: "env_1"},
+		TeamName: "alpha",
+		Store:    st,
+		SummaryWriter: func(string, string) error {
+			summaryCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	_, ch, err := pending.Stream(ctx)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	drain(ch)
+
+	state, err := st.LoadRunState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := state.Teams["alpha"]
+	if alpha.Status != "running" {
+		t.Fatalf("Status: got %q, want %q (blocked teams must stay reachable)", alpha.Status, "running")
+	}
+	if alpha.SignalStatus != "blocked" {
+		t.Fatalf("SignalStatus must be preserved: got %q", alpha.SignalStatus)
+	}
+	if alpha.SignalReason == "" || alpha.SignalSummary == "" {
+		t.Fatalf("blocked-side fields lost: %+v", alpha)
+	}
+	if alpha.LastEventID != "e1" {
+		t.Fatalf("LastEventID: got %q, want e1", alpha.LastEventID)
+	}
+	if !alpha.EndedAt.IsZero() {
+		t.Fatalf("EndedAt must remain zero on blocked: got %v", alpha.EndedAt)
+	}
+	if summaryCalls != 0 {
+		t.Fatalf("summary writer must not run for blocked teams: calls=%d", summaryCalls)
+	}
+}
+
 func TestManagedAgentsTranslator_DedupesBeforeLogAndState(t *testing.T) {
 	ctx := context.Background()
 	st := seededSessionStore(t)
@@ -209,40 +345,6 @@ func TestManagedAgentsTranslator_ReconnectBackfillsWithoutDuplicates(t *testing.
 	}
 	if got := logEventIDs(t, log.String()); !reflect.DeepEqual(got, []string{"e1", "e2", "e3", "e4"}) {
 		t.Fatalf("logged ids=%v, want [e1 e2 e3 e4]\n%s", got, log.String())
-	}
-}
-
-func TestManagedAgentsTranslator_RequiresActionFails(t *testing.T) {
-	ctx := context.Background()
-	st := seededSessionStore(t)
-	events := &fakeSessionEventsAPI{
-		stream: &fakeStream{events: []managedEvent{
-			rawEvent(`{"id":"e1","type":"session.status_idle","processed_at":"2026-04-19T12:00:00Z","stop_reason":{"type":"requires_action","event_ids":["tool_1"]}}`),
-		}},
-	}
-	sp := newManagedAgentsSpawnerWithSessions(st, newFakeAgentAPI(), newFakeEnvAPI(), &fakeSessionAPI{}, events)
-	pending, err := sp.StartSession(ctx, StartSessionRequest{
-		Agent:    AgentHandle{ID: "agent_1", Version: 1},
-		Env:      EnvHandle{ID: "env_1"},
-		TeamName: "alpha",
-		Store:    st,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, ch, err := pending.Stream(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	drain(ch)
-
-	state, err := st.LoadRunState(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	alpha := state.Teams["alpha"]
-	if alpha.Status != "failed" || alpha.LastError != "tool confirmation requested; not supported in v1" {
-		t.Fatalf("unexpected state: %+v", alpha)
 	}
 }
 

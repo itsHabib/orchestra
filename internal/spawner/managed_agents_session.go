@@ -649,6 +649,21 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 	reason := ev.Status.StopReason.Type
 	switch reason {
 	case "end_turn":
+		blocked, err := s.teamIsBlocked(ctx)
+		if err != nil {
+			return true, err
+		}
+		if blocked {
+			// Agent called signal_completion(blocked) and then stopped
+			// emitting actions. Per DESIGN-ship-feature-workflow §7.2 the
+			// engine leaves the session alive in this case — the team is
+			// paused, awaiting a user.message via the MCP unblock tool /
+			// orchestra msg. Do NOT flip Status to "done"; the team must
+			// remain steerable (SteerableSessionID requires Status ==
+			// "running"). Advance LastEventID/At so any follow-up event
+			// has a fresh cursor.
+			return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
+		}
 		if s.summaryWriter != nil {
 			if err := s.summaryWriter(s.teamName, s.lastAgentText); err != nil {
 				msg := fmt.Sprintf("summary_write: %s", err)
@@ -669,7 +684,25 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 			ts.DurationMs = durationMillis(ts.StartedAt, ts.EndedAt)
 		})
 	case "requires_action":
-		return true, s.failTeam(ctx, raw.ID, raw.ProcessedAt, "tool confirmation requested; not supported in v1")
+		// MA emits status_idle/requires_action whenever the agent is waiting
+		// for input — either a user.custom_tool_result (sent by the
+		// pkg/orchestra dispatcher after a host-side handler runs) or a
+		// user.tool_confirmation for MCP tools whose permission_policy is
+		// always_ask. Custom tools always trigger a result; MCP tools with
+		// always_ask aren't a v1 concept (DESIGN docs/IDEAS-orchestra-mcp-
+		// addon.md "Gotcha either way"). Either way, the session is paused,
+		// not broken — failing it here used to invalidate every team that
+		// emitted a custom_tool_use, which the P2 ship_feature smoke worked
+		// around by ignoring the run error and the P4 §12.3 unblock smoke
+		// could not work around at all (the team needs to stay reachable
+		// for unblock).
+		//
+		// Returning (false, nil) keeps the session alive so the dispatcher's
+		// custom_tool_result lands and the agent's next turn proceeds. If
+		// the agent is genuinely stuck (no result ever arrives, no
+		// user.tool_confirmation lands), the per-team timeout in
+		// pkg/orchestra/runTeamMA fires and cancels the session.
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
 	case "max_turns":
 		return true, s.failTeam(ctx, raw.ID, raw.ProcessedAt, "max turns reached")
 	case "retries_exhausted":
@@ -680,6 +713,36 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 	default:
 		return true, s.failTeam(ctx, raw.ID, raw.ProcessedAt, "unknown idle stop reason: "+reason)
 	}
+}
+
+// teamIsBlocked reports whether the team's most recent signal_completion
+// outcome is "blocked". Snapshots state.json (no write) so applyIdle can
+// branch on the signal without racing the customtools handler — the
+// dispatcher writes SignalStatus synchronously before the next event is
+// processed, so by the time applyIdle runs on end_turn the value is stable.
+//
+// A missing team row, a missing store, or a load error are treated as "not
+// blocked" so a degraded state path falls through to today's terminal end_
+// turn behavior rather than silently keeping a session alive forever.
+func (s *Session) teamIsBlocked(ctx context.Context) (bool, error) {
+	if s.store == nil || s.teamName == "" {
+		return false, nil
+	}
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if state == nil {
+		return false, nil
+	}
+	ts, ok := state.Teams[s.teamName]
+	if !ok {
+		return false, nil
+	}
+	return ts.SignalStatus == "blocked", nil
 }
 
 func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.Time, fn func(*store.TeamState)) error {

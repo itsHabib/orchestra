@@ -11,6 +11,7 @@ import (
 	mcptypes "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/itsHabib/orchestra/internal/store"
+	"github.com/itsHabib/orchestra/internal/store/filestore"
 )
 
 // stubSpawner records calls without forking. Returning a nil *os.Process is
@@ -61,6 +62,21 @@ func steererFn(out *[]steerCall) Steerer {
 	}
 }
 
+type signalClearCall struct {
+	workspaceDir string
+	team         string
+}
+
+// signalClearerFn returns a SignalClearer that records calls into out and
+// returns nil. Tests that need the clearer to fail wrap the returned
+// closure to inject an error after recording.
+func signalClearerFn(out *[]signalClearCall) SignalClearer {
+	return func(_ context.Context, workspaceDir, team string) error {
+		*out = append(*out, signalClearCall{workspaceDir: workspaceDir, team: team})
+		return nil
+	}
+}
+
 func newTestServer(t *testing.T, sp Spawner, sr StateReader, st Steerer) *Server {
 	t.Helper()
 	root := t.TempDir()
@@ -97,6 +113,36 @@ func resultText(r *mcptypes.CallToolResult) string {
 		}
 	}
 	return b.String()
+}
+
+// seedRunState writes a single-team state.json into workspaceDir using the
+// production FileStore. Used by DefaultSignalClearer tests so the clearer
+// hits a real on-disk state and the conditional-write semantics are
+// exercised end-to-end. Pointer arg keeps the 384-byte TeamState off the
+// stack per the project's hugeParam threshold.
+func seedRunState(t *testing.T, workspaceDir, team string, seed *store.TeamState) {
+	t.Helper()
+	fs := filestore.New(workspaceDir)
+	err := fs.SaveRunState(context.Background(), &store.RunState{
+		Backend: "managed_agents",
+		Teams:   map[string]store.TeamState{team: *seed},
+	})
+	if err != nil {
+		t.Fatalf("seed run state: %v", err)
+	}
+}
+
+// loadTeamStateFromDisk reads back the team's TeamState from workspaceDir's
+// state.json via the production FileStore. Pairs with seedRunState so
+// DefaultSignalClearer tests round-trip through the real persistence layer.
+func loadTeamStateFromDisk(t *testing.T, workspaceDir, team string) store.TeamState {
+	t.Helper()
+	fs := filestore.New(workspaceDir)
+	state, err := fs.LoadRunState(context.Background())
+	if err != nil {
+		t.Fatalf("load run state: %v", err)
+	}
+	return state.Teams[team]
 }
 
 func TestHandleShipDesignDocs_RequiresPaths(t *testing.T) {
@@ -328,12 +374,14 @@ func TestHandleUnblock_HappyPath(t *testing.T) {
 		},
 	})
 	steerCalls := []steerCall{}
+	clearCalls := []signalClearCall{}
 	srv, err := New(&Options{
 		Registry:      registry,
 		WorkspaceRoot: filepath.Join(root, "runs"),
 		Spawner:       &stubSpawner{},
 		StateReader:   stateReader,
 		Steerer:       steererFn(&steerCalls),
+		SignalClearer: signalClearerFn(&clearCalls),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -360,6 +408,16 @@ func TestHandleUnblock_HappyPath(t *testing.T) {
 	if got.sessionID != "sess_xyz" || got.message != "make it a --debug bool" {
 		t.Fatalf("steerer args: %+v", got)
 	}
+	// Steering succeeded → the blocked signal must be cleared so the
+	// agent's eventual signal_completion(done) lands as a fresh write
+	// instead of a duplicate (DESIGN §7.2 / §14 Q10 reconciliation).
+	if len(clearCalls) != 1 {
+		t.Fatalf("signal clearer calls: got %d, want 1", len(clearCalls))
+	}
+	gotClear := clearCalls[0]
+	if gotClear.workspaceDir != stateDir(wsDir) || gotClear.team != "ship-foo" {
+		t.Fatalf("clearer args: %+v", gotClear)
+	}
 }
 
 func TestHandleUnblock_TeamNotRunning(t *testing.T) {
@@ -380,12 +438,14 @@ func TestHandleUnblock_TeamNotRunning(t *testing.T) {
 			},
 		},
 	})
+	clearCalls := []signalClearCall{}
 	srv, err := New(&Options{
 		Registry:      registry,
 		WorkspaceRoot: filepath.Join(root, "runs"),
 		Spawner:       &stubSpawner{},
 		StateReader:   stateReader,
 		Steerer:       steererFn(&[]steerCall{}),
+		SignalClearer: signalClearerFn(&clearCalls),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -408,6 +468,9 @@ func TestHandleUnblock_TeamNotRunning(t *testing.T) {
 	if !strings.Contains(resultText(res), "running") {
 		t.Fatalf("error text: %q", resultText(res))
 	}
+	if len(clearCalls) != 0 {
+		t.Fatalf("clearer must not run when steering errors out: %+v", clearCalls)
+	}
 }
 
 func TestHandleUnblock_RejectsLocalBackend(t *testing.T) {
@@ -428,12 +491,14 @@ func TestHandleUnblock_RejectsLocalBackend(t *testing.T) {
 			},
 		},
 	})
+	clearCalls := []signalClearCall{}
 	srv, err := New(&Options{
 		Registry:      registry,
 		WorkspaceRoot: filepath.Join(root, "runs"),
 		Spawner:       &stubSpawner{},
 		StateReader:   stateReader,
 		Steerer:       steererFn(&[]steerCall{}),
+		SignalClearer: signalClearerFn(&clearCalls),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -452,6 +517,147 @@ func TestHandleUnblock_RejectsLocalBackend(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatalf("expected IsError on local backend")
+	}
+	if len(clearCalls) != 0 {
+		t.Fatalf("clearer must not run when steering errors out: %+v", clearCalls)
+	}
+}
+
+func TestHandleUnblock_PropagatesClearerError(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
+	wsDir := filepath.Join(root, "runs", "alpha")
+
+	stateReader := stateReaderFn([]stateRecord{
+		{
+			dir: stateDir(wsDir),
+			state: &store.RunState{
+				Backend: "managed_agents",
+				Teams: map[string]store.TeamState{
+					"ship-foo": {Status: "running", SessionID: "sess_xyz", SignalStatus: "blocked"},
+				},
+			},
+		},
+	})
+	steerCalls := []steerCall{}
+	clearErr := errors.New("disk gremlin")
+	srv, err := New(&Options{
+		Registry:      registry,
+		WorkspaceRoot: filepath.Join(root, "runs"),
+		Spawner:       &stubSpawner{},
+		StateReader:   stateReader,
+		Steerer:       steererFn(&steerCalls),
+		SignalClearer: func(_ context.Context, _, _ string) error { return clearErr },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := registry.Put(context.Background(), &Entry{RunID: "alpha", WorkspaceDir: wsDir}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	res, err := srv.handleUnblock(context.Background(), toolReq(map[string]any{
+		"run_id":  "alpha",
+		"team":    "ship-foo",
+		"message": "make it a --debug bool",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError when clearer fails")
+	}
+	if !strings.Contains(resultText(res), "disk gremlin") {
+		t.Fatalf("error text should surface clearer failure: %q", resultText(res))
+	}
+	// Steering already landed before the clearer ran — assert that, so a
+	// future refactor can't silently move the clear to before steering
+	// without reconsidering the at-least-once-delivery contract.
+	if len(steerCalls) != 1 {
+		t.Fatalf("steerer must have been called before clearer: got %d", len(steerCalls))
+	}
+}
+
+type signalClearCase struct {
+	name        string
+	seed        store.TeamState
+	wantStatus  string
+	wantSummary string
+	wantPRURL   string
+	wantReason  string
+}
+
+func TestDefaultSignalClearer_OnlyClearsBlocked(t *testing.T) {
+	t.Parallel()
+
+	cases := []signalClearCase{
+		{
+			name: "blocked is cleared",
+			seed: store.TeamState{Status: "running", SessionID: "sess_xyz", SignalStatus: "blocked", SignalSummary: "ambiguous", SignalReason: "the doc has no concrete spec"},
+		},
+		{
+			name:        "done is preserved",
+			seed:        store.TeamState{Status: "running", SessionID: "sess_xyz", SignalStatus: "done", SignalSummary: "shipped", SignalPRURL: "https://github.com/x/y/pull/1"},
+			wantStatus:  "done",
+			wantSummary: "shipped",
+			wantPRURL:   "https://github.com/x/y/pull/1",
+		},
+		{
+			name: "empty stays empty",
+			seed: store.TeamState{Status: "running", SessionID: "sess_xyz"},
+		},
+	}
+
+	for i := range cases {
+		tc := &cases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runDefaultSignalClearerCase(t, tc)
+		})
+	}
+}
+
+// runDefaultSignalClearerCase exercises one row of the
+// TestDefaultSignalClearer_OnlyClearsBlocked table. Extracted so the parent
+// test stays under the project's gocognit threshold; the assertions stay
+// inline here because pulling them into another helper would obscure which
+// field failed.
+func runDefaultSignalClearerCase(t *testing.T, tc *signalClearCase) {
+	t.Helper()
+	workspaceDir := t.TempDir()
+	seedRunState(t, workspaceDir, "ship-foo", &tc.seed)
+
+	if err := DefaultSignalClearer(context.Background(), workspaceDir, "ship-foo"); err != nil {
+		t.Fatalf("DefaultSignalClearer: %v", err)
+	}
+
+	got := loadTeamStateFromDisk(t, workspaceDir, "ship-foo")
+	assertSignalFields(t, &got, tc)
+	// Status / SessionID must never be touched by the clearer — it
+	// operates strictly on the Signal* sub-state.
+	if got.Status != tc.seed.Status {
+		t.Fatalf("Status mutated: got %q, want %q", got.Status, tc.seed.Status)
+	}
+	if got.SessionID != tc.seed.SessionID {
+		t.Fatalf("SessionID mutated: got %q, want %q", got.SessionID, tc.seed.SessionID)
+	}
+}
+
+func assertSignalFields(t *testing.T, got *store.TeamState, want *signalClearCase) {
+	t.Helper()
+	if got.SignalStatus != want.wantStatus {
+		t.Fatalf("SignalStatus: got %q, want %q", got.SignalStatus, want.wantStatus)
+	}
+	if got.SignalSummary != want.wantSummary {
+		t.Fatalf("SignalSummary: got %q, want %q", got.SignalSummary, want.wantSummary)
+	}
+	if got.SignalPRURL != want.wantPRURL {
+		t.Fatalf("SignalPRURL: got %q, want %q", got.SignalPRURL, want.wantPRURL)
+	}
+	if got.SignalReason != want.wantReason {
+		t.Fatalf("SignalReason: got %q, want %q", got.SignalReason, want.wantReason)
 	}
 }
 
