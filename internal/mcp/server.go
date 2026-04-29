@@ -33,16 +33,13 @@ type Server struct {
 	spawner       Spawner
 	stateReader   StateReader
 	steerer       Steerer
-	signalClearer SignalClearer
 	workspaceRoot string
 }
 
 // Options configures a Server. Zero-value fields fall back to the production
 // defaults: registry at DefaultRegistryPath, workspace root at
 // DefaultWorkspaceRoot, ExecSpawner with its default binary lookup,
-// DefaultStateReader, SessionSteerer for the steerer, and
-// DefaultSignalClearer for clearing the recorded blocked signal after a
-// successful unblock.
+// DefaultStateReader, and SessionSteerer for the steerer.
 //
 // Tests inject stubs by setting the fields explicitly.
 type Options struct {
@@ -51,7 +48,6 @@ type Options struct {
 	Spawner       Spawner
 	StateReader   StateReader
 	Steerer       Steerer
-	SignalClearer SignalClearer
 }
 
 // New returns a Server with all four tools registered against the embedded
@@ -80,10 +76,6 @@ func New(opts *Options) (*Server, error) {
 	if steer == nil {
 		steer = SessionSteerer
 	}
-	clearSignal := opts.SignalClearer
-	if clearSignal == nil {
-		clearSignal = DefaultSignalClearer
-	}
 
 	mcpSrv := server.NewMCPServer(
 		ServerName,
@@ -104,7 +96,6 @@ func New(opts *Options) (*Server, error) {
 		spawner:       spawn,
 		stateReader:   read,
 		steerer:       steer,
-		signalClearer: clearSignal,
 		workspaceRoot: root,
 	}
 	regs := s.Tools()

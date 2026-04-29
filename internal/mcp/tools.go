@@ -17,13 +17,6 @@ import (
 	"github.com/itsHabib/orchestra/internal/store/filestore"
 )
 
-// blockedSignal is the SignalStatus value the unblock path looks for before
-// clearing. Mirrors signalBlocked in internal/customtools — duplicated here
-// because pulling it across package boundaries just for one literal would
-// invert the dependency direction (mcp depends on customtools today, never
-// the other way around).
-const blockedSignal = "blocked"
-
 // Tool names. Workflow-first per the project memory: ship_design_docs / list_
 // jobs / get_status / unblock — not the MA-SDK BetaManagedAgents* shape.
 const (
@@ -119,33 +112,14 @@ type StateReader func(ctx context.Context, workspaceDir string) (*store.RunState
 // SessionSteerer (which builds a fresh SDK client per call); tests pass a
 // stub that records the args. Lock-free per DESIGN-v2 §11 — orchestra msg
 // reads state.json without holding the run lock and the same applies here.
+//
+// The blocked → done recovery flow does not require any MCP-side state
+// write here: internal/customtools/signal_completion.go allows
+// signal_completion(done) to overwrite a prior blocked signal in the run
+// subprocess (the only writer of state.json), so unblock just needs to
+// land the user.message and the agent's eventual completion signal lands
+// naturally.
 type Steerer func(ctx context.Context, sessionID, message string) error
-
-// SignalClearer wipes a team's recorded signal_completion outcome so a
-// follow-up signal_completion(done) lands instead of being treated as a
-// duplicate by the customtools handler's idempotency gate (see
-// internal/customtools/signal_completion.go: writeSignalState).
-//
-// Called by handleUnblock after the steering user.message has been
-// delivered. Per DESIGN-ship-feature-workflow §7.2 the team must be
-// reachable for unblock and must eventually transition to done; the §14
-// Q10 idempotency decision applies to the duplicate-call case (an agent
-// signaling twice in a row), not to the legitimate blocked → done
-// recovery path. A SignalClearer that writes only when the recorded
-// status is "blocked" preserves Q10 for the duplicate case while letting
-// §7.2 work end-to-end.
-//
-// workspaceDir is the .orchestra directory the run subprocess writes
-// state.json into — the same path the StateReader receives. The
-// production implementation (DefaultSignalClearer) opens a FileStore
-// against that path and writes through the same atomic write-tmp +
-// rename FileStore the engine uses. State writes are not cross-process
-// serialized (DESIGN-v2 §11 keeps state-read-and-write lock-free); the
-// engine remains the primary writer. The clear runs immediately after a
-// successful steering call, before the agent has had time to react and
-// drive the next engine state update, so the practical race window is
-// narrow.
-type SignalClearer func(ctx context.Context, workspaceDir, team string) error
 
 // ToolRegistration is the registration shape returned by Tools(). Decoupled
 // from the mark3labs server type so callers can attach the same tool list to
@@ -370,20 +344,12 @@ func (s *Server) handleUnblock(ctx context.Context, req *mcptypes.CallToolReques
 	if err := s.steerer(ctx, sessionID, args.Message); err != nil {
 		return mcptypes.NewToolResultErrorf("send user.message: %v", err), nil
 	}
-	// Steering landed. Clear the team's recorded blocked signal so the
-	// agent's eventual signal_completion(done) — after acting on the
-	// user.message — lands as a fresh write instead of being rejected by
-	// the customtools handler's idempotency gate. Without this, §11.2's
-	// run-status derivation never sees signal_status=done and the run
-	// would stay in RunStatusBlocked forever (DESIGN §7.2 + §14 Q10
-	// reconciliation; see SignalClearer doc for the full rationale).
-	//
-	// The clearer is conditional on SignalStatus=="blocked" so a race
-	// where the agent signaled done concurrently with our steering does
-	// not lose the done outcome.
-	if err := s.signalClearer(ctx, stateDir(entry.WorkspaceDir), args.Team); err != nil {
-		return mcptypes.NewToolResultErrorf("clear blocked signal: %v", err), nil
-	}
+	// No host-side state write here. The signal_completion handler in
+	// internal/customtools allows the agent's follow-up
+	// signal_completion(done) to overwrite the recorded blocked signal,
+	// so the run subprocess remains the single writer of state.json and
+	// the cross-process race that an MCP-side clearer would introduce
+	// (Codex P1 / Copilot review on PR #28) is avoided structurally.
 	return jsonResult(UnblockResult{OK: true}, "ok")
 }
 
@@ -502,26 +468,6 @@ func jsonResult(payload any, fallback string) (*mcptypes.CallToolResult, error) 
 // without acquiring the run lock.
 func DefaultStateReader(ctx context.Context, workspaceDir string) (*store.RunState, error) {
 	return filestore.ReadActiveRunState(ctx, workspaceDir)
-}
-
-// DefaultSignalClearer is the production SignalClearer. It opens a
-// FileStore at workspaceDir (the .orchestra directory holding state.json)
-// and clears every Signal* field on the team — but only when SignalStatus
-// is currently "blocked", so a concurrent signal_completion(done) is not
-// clobbered. The FileStore's state mutex serializes against the engine's
-// own UpdateTeamState writes from the run subprocess.
-func DefaultSignalClearer(ctx context.Context, workspaceDir, team string) error {
-	fs := filestore.New(workspaceDir)
-	return fs.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
-		if ts.SignalStatus != blockedSignal {
-			return
-		}
-		ts.SignalStatus = ""
-		ts.SignalSummary = ""
-		ts.SignalPRURL = ""
-		ts.SignalReason = ""
-		ts.SignalAt = time.Time{}
-	})
 }
 
 // SessionSteerer constructs a SessionEventsClient on demand and sends one

@@ -237,6 +237,79 @@ func TestSignalCompletionIdempotentOnDuplicate(t *testing.T) {
 	}
 }
 
+// TestSignalCompletionBlockedToDoneTransition covers the §7.2 recovery
+// flow: a team that signaled blocked and then got unblocked via steering
+// must be able to land its eventual signal_completion(done) — otherwise
+// §11.2's run-status derivation never sees the run reach done. The
+// transition overwrites every Signal* field (including SignalReason,
+// which is no longer relevant once the team is done) and fires a fresh
+// notification.
+func TestSignalCompletionBlockedToDoneTransition(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st, captured := blockedToDoneFixture(t)
+	h := NewSignalCompletion()
+	rc := newSignalRunContext(t, st)
+	rc.Notifier = notify.NotifierFunc(func(_ context.Context, n *notify.Notification) error {
+		if n != nil {
+			*captured = append(*captured, *n)
+		}
+		return nil
+	})
+
+	first := mustJSON(t, map[string]string{"status": "blocked", "summary": "ambiguous spec", "reason": "the doc has no concrete spec"})
+	expectAccepted(ctx, t, h, rc, first, "blocked")
+
+	// blocked → done is the allowed recovery transition. The handler
+	// must overwrite all Signal* fields with the new outcome.
+	second := mustJSON(t, map[string]string{"status": "done", "summary": "shipped", "pr_url": "https://github.com/x/y/pull/42"})
+	expectAccepted(ctx, t, h, rc, second, "done")
+
+	ts := loadTeamState(t, st)
+	wantPR := "https://github.com/x/y/pull/42"
+	if ts.SignalStatus != "done" || ts.SignalSummary != "shipped" || ts.SignalPRURL != wantPR || ts.SignalReason != "" {
+		t.Fatalf("blocked → done did not overwrite all Signal* fields: %+v", ts)
+	}
+
+	// Both signals must fire notifications — the human cares about both
+	// the block (so they can act) and the completion (so they know the
+	// PR is ready).
+	if len(*captured) != 2 || (*captured)[0].Status != "blocked" || (*captured)[1].Status != "done" {
+		t.Fatalf("notify order/count: %+v", *captured)
+	}
+}
+
+func blockedToDoneFixture(t *testing.T) (*memstore.MemStore, *[]notify.Notification) {
+	t.Helper()
+	st := memstore.New()
+	if err := st.SaveRunState(context.Background(), &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	captured := make([]notify.Notification, 0, 2)
+	return st, &captured
+}
+
+// expectAccepted runs Handle and asserts the call was NOT a duplicate and
+// the recorded status matches `want`. Used by the transition test so each
+// call site stays one line.
+func expectAccepted(ctx context.Context, t *testing.T, h SignalCompletionHandler, rc *RunContext, payload []byte, want string) {
+	t.Helper()
+	raw, err := h.Handle(ctx, rc, testTeam, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	var decoded signalCompletionResult
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Duplicate {
+		t.Fatalf("call must not be a duplicate: %+v", decoded)
+	}
+	if decoded.Status != want {
+		t.Fatalf("recorded status: got %q, want %q", decoded.Status, want)
+	}
+}
+
 func TestSignalCompletionRejectsBadInput(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
