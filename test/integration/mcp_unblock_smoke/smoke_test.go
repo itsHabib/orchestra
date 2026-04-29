@@ -310,7 +310,7 @@ func pollUntilDoneAfterUnblock(parentCtx context.Context, t *testing.T, c *mcpcl
 			return doneOutcome{Team: row, PRURL: row.SignalPRURL}
 		}
 		if row.Status == "done" {
-			if prURL := teamPRURL(parentCtx, t, c, runID, team); prURL != "" {
+			if prURL := teamPRURL(t, view.WorkspaceDir, team); prURL != "" {
 				return doneOutcome{Team: row, PRURL: prURL}
 			}
 		}
@@ -337,18 +337,19 @@ func pollUntilDoneAfterUnblock(parentCtx context.Context, t *testing.T, c *mcpcl
 // MCP JobView only carries signal_pr_url (the agent-signaled URL). The
 // engine-recorded artifact PR (from OpenPullRequests=true) lives in
 // state.json at teams.<name>.repository_artifacts[*].pull_request_url —
-// behind the MCP curated API. We resolve the workspace via get_status's
-// WorkspaceDir and read state.json off disk; this is safe because state
-// writes are atomic (write-tmp + rename) and DESIGN-v2 §11 makes the read
-// path lock-free by design. Returns "" when no artifact has been
-// resolved yet so the caller keeps polling.
-func teamPRURL(parentCtx context.Context, t *testing.T, c *mcpclient.Client, runID, team string) string {
+// behind the MCP curated API. The caller passes workspaceDir directly
+// (it already has it from the just-fetched JobView), avoiding a redundant
+// MCP round-trip on every poll where row.Status == "done". Reading
+// state.json off disk is safe because writes are atomic (write-tmp +
+// rename) and DESIGN-v2 §11 makes the read path lock-free by design.
+// Returns "" when no artifact has been resolved yet so the caller keeps
+// polling.
+func teamPRURL(t *testing.T, workspaceDir, team string) string {
 	t.Helper()
-	view := fetchStatus(parentCtx, t, c, runID)
-	if view.WorkspaceDir == "" {
+	if workspaceDir == "" {
 		return ""
 	}
-	statePath := filepath.Join(view.WorkspaceDir, ".orchestra", "state.json")
+	statePath := filepath.Join(workspaceDir, ".orchestra", "state.json")
 	raw, err := os.ReadFile(statePath)
 	if err != nil {
 		// state.json may not be written yet on the first few polls;

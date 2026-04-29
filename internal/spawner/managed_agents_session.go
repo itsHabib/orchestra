@@ -721,9 +721,16 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 // dispatcher writes SignalStatus synchronously before the next event is
 // processed, so by the time applyIdle runs on end_turn the value is stable.
 //
-// A missing team row, a missing store, or a load error are treated as "not
-// blocked" so a degraded state path falls through to today's terminal end_
-// turn behavior rather than silently keeping a session alive forever.
+// Error handling:
+//   - missing store, missing team name, missing team row, or store.
+//     ErrNotFound (no state.json on disk yet) → (false, nil). The
+//     end_turn case then falls through to today's terminal "done"
+//     transition rather than silently keeping a session alive forever.
+//   - any other load error (disk full, JSON corruption, etc.) →
+//     (false, err). The error propagates through applyIdle → process →
+//     consumeStream → run.setErr and ultimately fails the team — a
+//     genuine state-store outage should not be papered over by treating
+//     the team as if it had cleanly completed.
 func (s *Session) teamIsBlocked(ctx context.Context) (bool, error) {
 	if s.store == nil || s.teamName == "" {
 		return false, nil
