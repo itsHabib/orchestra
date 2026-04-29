@@ -52,7 +52,8 @@ ORCHESTRA_MCP_TEST_DOC_PATH=docs/feat-foo.md \
 
 ## What the smoke does NOT cover
 
-- A managed GitHub fixture repo with prepared design docs (P4).
+- A managed GitHub fixture repo with prepared design docs (P4 expanded).
 - Concurrent `ship_design_docs` calls (verified ad-hoc; not gated on).
 - The HTTP transport (`--transport http`).
-- `unblock` against a real blocked agent (P4).
+- `unblock` against a real blocked agent — see the sibling
+  `test/integration/mcp_unblock_smoke` for the §12.3 acceptance.

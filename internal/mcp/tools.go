@@ -112,6 +112,13 @@ type StateReader func(ctx context.Context, workspaceDir string) (*store.RunState
 // SessionSteerer (which builds a fresh SDK client per call); tests pass a
 // stub that records the args. Lock-free per DESIGN-v2 §11 — orchestra msg
 // reads state.json without holding the run lock and the same applies here.
+//
+// The blocked → done recovery flow does not require any MCP-side state
+// write here: internal/customtools/signal_completion.go allows
+// signal_completion(done) to overwrite a prior blocked signal in the run
+// subprocess (the only writer of state.json), so unblock just needs to
+// land the user.message and the agent's eventual completion signal lands
+// naturally.
 type Steerer func(ctx context.Context, sessionID, message string) error
 
 // ToolRegistration is the registration shape returned by Tools(). Decoupled
@@ -337,6 +344,12 @@ func (s *Server) handleUnblock(ctx context.Context, req *mcptypes.CallToolReques
 	if err := s.steerer(ctx, sessionID, args.Message); err != nil {
 		return mcptypes.NewToolResultErrorf("send user.message: %v", err), nil
 	}
+	// No host-side state write here. The signal_completion handler in
+	// internal/customtools allows the agent's follow-up
+	// signal_completion(done) to overwrite the recorded blocked signal,
+	// so the run subprocess remains the single writer of state.json and
+	// the cross-process race that an MCP-side clearer would introduce
+	// (Codex P1 / Copilot review on PR #28) is avoided structurally.
 	return jsonResult(UnblockResult{OK: true}, "ok")
 }
 

@@ -89,10 +89,17 @@ type signalCompletionResult struct {
 }
 
 // Handle records the signal in the run state and fires a notification.
-// Idempotent on a second call: if the team already has a SignalStatus set,
-// the second call is a no-op and returns ok=true,duplicate=true (per §14
-// Q10). A confused agent calling twice does not erase the original outcome
-// or re-fire the notification.
+// Idempotent on a duplicate call: if the team already has a SignalStatus
+// set, the second call is a no-op and returns ok=true,duplicate=true (per
+// §14 Q10) — a confused agent calling twice cannot erase the original
+// outcome or re-fire the notification.
+//
+// Exception: the blocked → done transition is allowed and overwrites the
+// recorded state. This is the legitimate recovery flow from §7.2 (the
+// team blocks, gets unblocked via steering, then signals done) and
+// without it the run-status derivation in §11.2 never sees the team
+// reach done. All other repeated combinations (done→blocked, done→done,
+// blocked→blocked) stay idempotent — those are confused-agent shapes.
 func (SignalCompletionHandler) Handle(ctx context.Context, run *RunContext, team string, raw json.RawMessage) (json.RawMessage, error) {
 	if run == nil {
 		return nil, errors.New("signal_completion: nil run context")
@@ -189,13 +196,24 @@ type signalWrite struct {
 
 // writeSignalState applies the input to the team state under the existing
 // UpdateTeamState funnel.
+//
+// Transition rules (§7.2 + §14 Q10 reconciliation):
+//   - SignalStatus == "" → any input wins. First call after a fresh team.
+//   - SignalStatus == "blocked" + input "done" → ALLOWED. Legitimate
+//     recovery: team blocked, was unblocked via steering, now signals
+//     completion. Overwrites all Signal* fields with the new outcome.
+//   - All other repeated combinations (done→done, done→blocked,
+//     blocked→blocked) → idempotent no-op, returns duplicate=true.
+//     These are confused-agent shapes where preserving the first signal
+//     is safer than letting the second clobber it.
 func writeSignalState(ctx context.Context, st store.Store, team string, in *signalCompletionInput, now time.Time) (signalWrite, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	var out signalWrite
 	err := st.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
-		if ts.SignalStatus != "" {
+		recoverFromBlocked := ts.SignalStatus == signalBlocked && in.Status == signalDone
+		if ts.SignalStatus != "" && !recoverFromBlocked {
 			out.duplicate = true
 			out.recordedStatus = ts.SignalStatus
 			return

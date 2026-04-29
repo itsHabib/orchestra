@@ -360,6 +360,11 @@ func TestHandleUnblock_HappyPath(t *testing.T) {
 	if got.sessionID != "sess_xyz" || got.message != "make it a --debug bool" {
 		t.Fatalf("steerer args: %+v", got)
 	}
+	// handleUnblock writes no host-side state — the agent's follow-up
+	// signal_completion(done) lands in the run subprocess via the
+	// blocked → done transition rule in internal/customtools (DESIGN
+	// §7.2 + §14 Q10 reconciliation). Removing the cross-process state
+	// write closed the race Codex P1 / Copilot flagged on PR #28.
 }
 
 func TestHandleUnblock_TeamNotRunning(t *testing.T) {
