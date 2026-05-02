@@ -2,19 +2,34 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	mcptypes "github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/itsHabib/orchestra/internal/store"
 )
 
+// resultText concatenates every TextContent in r into a single string so
+// IsError-path assertions can match on the human-readable fallback the SDK
+// surfaces alongside the structured payload.
+func resultText(r *mcp.CallToolResult) string {
+	if r == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range r.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			b.WriteString(tc.Text)
+		}
+	}
+	return b.String()
+}
+
 // stubSpawner records calls without forking. Returning a nil *os.Process is
-// safe — handleShipDesignDocs only dereferences it after a non-nil check.
+// safe — Server.handle* call sites only dereference it after a non-nil check.
 type stubSpawner struct {
 	calls []Entry
 	err   error
@@ -47,21 +62,7 @@ func stateReaderFn(records []stateRecord) StateReader {
 	}
 }
 
-type steerCall struct {
-	sessionID string
-	message   string
-}
-
-// steererFn returns a Steerer that records calls into out. Tests that need
-// the steerer to fail can post-wrap the result.
-func steererFn(out *[]steerCall) Steerer {
-	return func(_ context.Context, sid, msg string) error {
-		*out = append(*out, steerCall{sessionID: sid, message: msg})
-		return nil
-	}
-}
-
-func newTestServer(t *testing.T, sp Spawner, sr StateReader, st Steerer) *Server {
+func newTestServer(t *testing.T, sp Spawner, sr StateReader) *Server {
 	t.Helper()
 	root := t.TempDir()
 	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
@@ -70,7 +71,6 @@ func newTestServer(t *testing.T, sp Spawner, sr StateReader, st Steerer) *Server
 		WorkspaceRoot: filepath.Join(root, "runs"),
 		Spawner:       sp,
 		StateReader:   sr,
-		Steerer:       st,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -78,151 +78,24 @@ func newTestServer(t *testing.T, sp Spawner, sr StateReader, st Steerer) *Server
 	return srv
 }
 
-func toolReq(args map[string]any) *mcptypes.CallToolRequest {
-	return &mcptypes.CallToolRequest{
-		Params: mcptypes.CallToolParams{
-			Arguments: args,
-		},
-	}
-}
-
-func resultText(r *mcptypes.CallToolResult) string {
-	if r == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, c := range r.Content {
-		if tc, ok := c.(mcptypes.TextContent); ok {
-			b.WriteString(tc.Text)
-		}
-	}
-	return b.String()
-}
-
-func TestHandleShipDesignDocs_RequiresPaths(t *testing.T) {
+func TestHandleListRuns_Empty(t *testing.T) {
 	t.Parallel()
 
-	sp := &stubSpawner{}
-	srv := newTestServer(t, sp, stateReaderFn(nil), steererFn(&[]steerCall{}))
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
 
-	res, err := srv.handleShipDesignDocs(context.Background(), toolReq(map[string]any{
-		"repo_url": "https://github.com/x/y",
-	}))
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected IsError on missing paths, got %s", resultText(res))
-	}
-	if !strings.Contains(resultText(res), "doc path") {
-		t.Fatalf("error text: %q", resultText(res))
-	}
-	if len(sp.calls) != 0 {
-		t.Fatalf("spawner should not be called on validation failure")
-	}
-}
-
-func TestHandleShipDesignDocs_RejectsHTTP(t *testing.T) {
-	t.Parallel()
-
-	sp := &stubSpawner{}
-	srv := newTestServer(t, sp, stateReaderFn(nil), steererFn(&[]steerCall{}))
-
-	res, err := srv.handleShipDesignDocs(context.Background(), toolReq(map[string]any{
-		"paths":    []any{"docs/a.md"},
-		"repo_url": "http://github.com/x/y",
-	}))
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected IsError on http url, got %s", resultText(res))
-	}
-}
-
-func TestHandleShipDesignDocs_HappyPath_RegistersEntry(t *testing.T) {
-	t.Parallel()
-
-	sp := &stubSpawner{}
-	srv := newTestServer(t, sp, stateReaderFn(nil), steererFn(&[]steerCall{}))
-
-	res, err := srv.handleShipDesignDocs(context.Background(), toolReq(map[string]any{
-		"paths":              []any{"docs/feat-flag-quiet.md"},
-		"repo_url":           "https://github.com/itsHabib/orchestra",
-		"default_branch":     "main",
-		"open_pull_requests": false,
-		"concurrency":        2,
-	}))
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected IsError: %s", resultText(res))
-	}
-	if len(sp.calls) != 1 {
-		t.Fatalf("spawner calls: got %d, want 1", len(sp.calls))
-	}
-	got := sp.calls[0]
-	if got.RunID == "" || got.WorkspaceDir == "" || got.YAMLPath == "" {
-		t.Fatalf("entry not populated: %+v", got)
-	}
-	// yaml file should exist on disk
-	if _, statErr := os.Stat(got.YAMLPath); statErr != nil {
-		t.Fatalf("yaml not written: %v", statErr)
-	}
-	// registry should have the run
-	all, err := srv.Registry().List(context.Background())
-	if err != nil {
-		t.Fatalf("Registry.List: %v", err)
-	}
-	if len(all) != 1 {
-		t.Fatalf("registry size: got %d, want 1", len(all))
-	}
-}
-
-func TestHandleShipDesignDocs_PropagatesSpawnFailure(t *testing.T) {
-	t.Parallel()
-
-	sp := &stubSpawner{err: errors.New("exec: not found")}
-	srv := newTestServer(t, sp, stateReaderFn(nil), steererFn(&[]steerCall{}))
-
-	res, err := srv.handleShipDesignDocs(context.Background(), toolReq(map[string]any{
-		"paths":    []any{"docs/a.md"},
-		"repo_url": "https://github.com/x/y",
-	}))
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected IsError on spawn failure, got %s", resultText(res))
-	}
-	if !strings.Contains(resultText(res), "exec") {
-		t.Fatalf("error text: %q", resultText(res))
-	}
-}
-
-func TestHandleListJobs_Empty(t *testing.T) {
-	t.Parallel()
-
-	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil), steererFn(&[]steerCall{}))
-
-	res, err := srv.handleListJobs(context.Background(), toolReq(nil))
+	res, out, err := srv.handleListRuns(context.Background(), nil, ListRunsArgs{})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("unexpected IsError: %s", resultText(res))
+		t.Fatalf("unexpected IsError")
 	}
-	views, ok := res.StructuredContent.([]JobView)
-	if !ok {
-		t.Fatalf("structured content type: %T", res.StructuredContent)
-	}
-	if len(views) != 0 {
-		t.Fatalf("len: %d, want 0", len(views))
+	if len(out.Runs) != 0 {
+		t.Fatalf("len: %d, want 0", len(out.Runs))
 	}
 }
 
-func TestHandleListJobs_DerivesStatus(t *testing.T) {
+func TestHandleListRuns_DerivesStatus(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -245,7 +118,6 @@ func TestHandleListJobs_DerivesStatus(t *testing.T) {
 		WorkspaceRoot: filepath.Join(root, "runs"),
 		Spawner:       &stubSpawner{},
 		StateReader:   stateReader,
-		Steerer:       steererFn(&[]steerCall{}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -256,18 +128,17 @@ func TestHandleListJobs_DerivesStatus(t *testing.T) {
 		t.Fatalf("registry.Put: %v", err)
 	}
 
-	res, err := srv.handleListJobs(context.Background(), toolReq(nil))
+	res, out, err := srv.handleListRuns(context.Background(), nil, ListRunsArgs{})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
-	views, ok := res.StructuredContent.([]JobView)
-	if !ok {
-		t.Fatalf("structured content type: %T", res.StructuredContent)
+	if res.IsError {
+		t.Fatalf("unexpected IsError")
 	}
-	if len(views) != 1 {
-		t.Fatalf("views: %d", len(views))
+	if len(out.Runs) != 1 {
+		t.Fatalf("runs: %d", len(out.Runs))
 	}
-	got := views[0]
+	got := out.Runs[0]
 	if got.Status != RunStatusBlocked {
 		t.Fatalf("status: got %q, want %q", got.Status, RunStatusBlocked)
 	}
@@ -276,14 +147,61 @@ func TestHandleListJobs_DerivesStatus(t *testing.T) {
 	}
 }
 
-func TestHandleGetStatus_NotFound(t *testing.T) {
+func TestHandleListRuns_ActiveOnlyFiltersDone(t *testing.T) {
 	t.Parallel()
 
-	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil), steererFn(&[]steerCall{}))
+	root := t.TempDir()
+	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
+	wsDoneDir := filepath.Join(root, "runs", "done")
+	wsRunningDir := filepath.Join(root, "runs", "running")
+	stateReader := stateReaderFn([]stateRecord{
+		{dir: stateDir(wsDoneDir), state: &store.RunState{
+			Backend: "managed_agents",
+			Teams:   map[string]store.TeamState{"a": {Status: "running", SignalStatus: "done"}},
+		}},
+		{dir: stateDir(wsRunningDir), state: &store.RunState{
+			Backend: "managed_agents",
+			Teams:   map[string]store.TeamState{"a": {Status: "running"}},
+		}},
+	})
+	srv, err := New(&Options{
+		Registry:      registry,
+		WorkspaceRoot: filepath.Join(root, "runs"),
+		Spawner:       &stubSpawner{},
+		StateReader:   stateReader,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, e := range []Entry{
+		{RunID: "done", WorkspaceDir: wsDoneDir},
+		{RunID: "running", WorkspaceDir: wsRunningDir},
+	} {
+		entry := e
+		if err := registry.Put(context.Background(), &entry); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
 
-	res, err := srv.handleGetStatus(context.Background(), toolReq(map[string]any{
-		"run_id": "ghost",
-	}))
+	_, out, err := srv.handleListRuns(context.Background(), nil, ListRunsArgs{ActiveOnly: true})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if len(out.Runs) != 1 || out.Runs[0].RunID != "running" {
+		ids := make([]string, 0, len(out.Runs))
+		for _, r := range out.Runs {
+			ids = append(ids, r.RunID)
+		}
+		t.Fatalf("active_only: got %v, want [running]", ids)
+	}
+}
+
+func TestHandleGetRun_NotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
+
+	res, _, err := srv.handleGetRun(context.Background(), nil, GetRunArgs{RunID: "ghost"})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -295,12 +213,12 @@ func TestHandleGetStatus_NotFound(t *testing.T) {
 	}
 }
 
-func TestHandleGetStatus_RequiresRunID(t *testing.T) {
+func TestHandleGetRun_RequiresRunID(t *testing.T) {
 	t.Parallel()
 
-	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil), steererFn(&[]steerCall{}))
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
 
-	res, err := srv.handleGetStatus(context.Background(), toolReq(map[string]any{}))
+	res, _, err := srv.handleGetRun(context.Background(), nil, GetRunArgs{})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -309,31 +227,28 @@ func TestHandleGetStatus_RequiresRunID(t *testing.T) {
 	}
 }
 
-func TestHandleUnblock_HappyPath(t *testing.T) {
+func TestHandleGetRun_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
 	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
 	wsDir := filepath.Join(root, "runs", "alpha")
-
 	stateReader := stateReaderFn([]stateRecord{
 		{
 			dir: stateDir(wsDir),
 			state: &store.RunState{
 				Backend: "managed_agents",
 				Teams: map[string]store.TeamState{
-					"ship-foo": {Status: "running", SessionID: "sess_xyz"},
+					"ship-foo": {Status: "running", SignalStatus: "done"},
 				},
 			},
 		},
 	})
-	steerCalls := []steerCall{}
 	srv, err := New(&Options{
 		Registry:      registry,
 		WorkspaceRoot: filepath.Join(root, "runs"),
 		Spawner:       &stubSpawner{},
 		StateReader:   stateReader,
-		Steerer:       steererFn(&steerCalls),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -342,121 +257,33 @@ func TestHandleUnblock_HappyPath(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	res, err := srv.handleUnblock(context.Background(), toolReq(map[string]any{
-		"run_id":  "alpha",
-		"team":    "ship-foo",
-		"message": "make it a --debug bool",
-	}))
+	res, view, err := srv.handleGetRun(context.Background(), nil, GetRunArgs{RunID: "alpha"})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
 	if res.IsError {
 		t.Fatalf("unexpected IsError: %s", resultText(res))
 	}
-	if len(steerCalls) != 1 {
-		t.Fatalf("steerer calls: got %d, want 1", len(steerCalls))
-	}
-	got := steerCalls[0]
-	if got.sessionID != "sess_xyz" || got.message != "make it a --debug bool" {
-		t.Fatalf("steerer args: %+v", got)
-	}
-	// handleUnblock writes no host-side state — the agent's follow-up
-	// signal_completion(done) lands in the run subprocess via the
-	// blocked → done transition rule in internal/customtools (DESIGN
-	// §7.2 + §14 Q10 reconciliation). Removing the cross-process state
-	// write closed the race Codex P1 / Copilot flagged on PR #28.
-}
-
-func TestHandleUnblock_TeamNotRunning(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
-	wsDir := filepath.Join(root, "runs", "alpha")
-
-	stateReader := stateReaderFn([]stateRecord{
-		{
-			dir: stateDir(wsDir),
-			state: &store.RunState{
-				Backend: "managed_agents",
-				Teams: map[string]store.TeamState{
-					"ship-foo": {Status: "done", SessionID: "sess_xyz"},
-				},
-			},
-		},
-	})
-	srv, err := New(&Options{
-		Registry:      registry,
-		WorkspaceRoot: filepath.Join(root, "runs"),
-		Spawner:       &stubSpawner{},
-		StateReader:   stateReader,
-		Steerer:       steererFn(&[]steerCall{}),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := registry.Put(context.Background(), &Entry{RunID: "alpha", WorkspaceDir: wsDir}); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	res, err := srv.handleUnblock(context.Background(), toolReq(map[string]any{
-		"run_id":  "alpha",
-		"team":    "ship-foo",
-		"message": "hello",
-	}))
-	if err != nil {
-		t.Fatalf("handler error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected IsError when team is done")
-	}
-	if !strings.Contains(resultText(res), "running") {
-		t.Fatalf("error text: %q", resultText(res))
+	if view.RunID != "alpha" || view.Status != RunStatusDone {
+		t.Fatalf("view: %+v", view)
 	}
 }
 
-func TestHandleUnblock_RejectsLocalBackend(t *testing.T) {
+func TestRecoverHandler_TranslatesPanicToToolError(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
-	wsDir := filepath.Join(root, "runs", "alpha")
-
-	stateReader := stateReaderFn([]stateRecord{
-		{
-			dir: stateDir(wsDir),
-			state: &store.RunState{
-				Backend: "local",
-				Teams: map[string]store.TeamState{
-					"ship-foo": {Status: "running", SessionID: "sess_xyz"},
-				},
-			},
-		},
+	wrapped := recoverHandler(func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, struct{}, error) {
+		panic("boom")
 	})
-	srv, err := New(&Options{
-		Registry:      registry,
-		WorkspaceRoot: filepath.Join(root, "runs"),
-		Spawner:       &stubSpawner{},
-		StateReader:   stateReader,
-		Steerer:       steererFn(&[]steerCall{}),
-	})
+	res, _, err := wrapped(context.Background(), nil, struct{}{})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("wrapped handler returned protocol error: %v", err)
 	}
-	if err := registry.Put(context.Background(), &Entry{RunID: "alpha", WorkspaceDir: wsDir}); err != nil {
-		t.Fatalf("Put: %v", err)
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError result, got %+v", res)
 	}
-
-	res, err := srv.handleUnblock(context.Background(), toolReq(map[string]any{
-		"run_id":  "alpha",
-		"team":    "ship-foo",
-		"message": "hello",
-	}))
-	if err != nil {
-		t.Fatalf("handler error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected IsError on local backend")
+	if !strings.Contains(resultText(res), "boom") {
+		t.Fatalf("error text missing panic value: %q", resultText(res))
 	}
 }
 
@@ -472,6 +299,7 @@ func TestDeriveStatus_PriorityOrder(t *testing.T) {
 		{"all done", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "running", SignalStatus: "done"}}, RunStatusDone},
 		{"any failed wins", []TeamView{{Status: "failed"}, {SignalStatus: "done"}}, RunStatusFailed},
 		{"failed beats blocked", []TeamView{{Status: "failed"}, {SignalStatus: "blocked"}}, RunStatusFailed},
+		{"failed beats blocked in either order", []TeamView{{SignalStatus: "blocked"}, {Status: "failed"}}, RunStatusFailed},
 		{"blocked beats running", []TeamView{{Status: "running", SignalStatus: "blocked"}, {Status: "running", SignalStatus: "done"}}, RunStatusBlocked},
 		{"some pending → running", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "running"}}, RunStatusRunning},
 	}

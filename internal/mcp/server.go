@@ -4,42 +4,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"net/http"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ServerName and ServerVersion advertise the MCP server identity to clients
-// during the initialize handshake. Bumping ServerVersion when the tool
-// surface changes is the cheapest signal to the parent Claude that a new
-// capability landed.
+// during the initialize handshake. Bumping ServerVersion when the tool surface
+// changes is the cheapest signal to the parent Claude that a new capability
+// landed.
 const (
 	ServerName    = "orchestra"
-	ServerVersion = "0.1.0"
+	ServerVersion = "0.2.0"
 )
 
-// shutdownGrace caps how long ServeHTTP waits for in-flight requests to
-// drain after ctx cancellation before forcing the server down. Keep small —
-// the parent Claude is expected to retry on transient errors.
+// shutdownGrace caps how long ServeHTTP waits for in-flight requests to drain
+// after ctx cancellation before forcing the server down. Keep small — the
+// parent Claude is expected to retry on transient errors.
 const shutdownGrace = 5 * time.Second
 
 // Server bundles the MCP protocol implementation, the run registry, and the
-// pluggable subprocess + steering dependencies. Construct via New; do not
+// pluggable subprocess + state-read dependencies. Construct via New; do not
 // zero-value a Server.
 type Server struct {
-	mcp           *server.MCPServer
+	mcp           *mcp.Server
 	registry      *Registry
 	spawner       Spawner
 	stateReader   StateReader
-	steerer       Steerer
 	workspaceRoot string
 }
 
 // Options configures a Server. Zero-value fields fall back to the production
 // defaults: registry at DefaultRegistryPath, workspace root at
-// DefaultWorkspaceRoot, ExecSpawner with its default binary lookup,
-// DefaultStateReader, and SessionSteerer for the steerer.
+// DefaultWorkspaceRoot, ExecSpawner with its default binary lookup, and
+// DefaultStateReader.
 //
 // Tests inject stubs by setting the fields explicitly.
 type Options struct {
@@ -47,11 +46,11 @@ type Options struct {
 	WorkspaceRoot string
 	Spawner       Spawner
 	StateReader   StateReader
-	Steerer       Steerer
 }
 
-// New returns a Server with all four tools registered against the embedded
-// mark3labs MCPServer. The returned value is ready to ServeStdio / ServeHTTP.
+// New returns a Server with the v1 generic tool surface registered against
+// the embedded SDK server. The returned value is ready for ServeStdio /
+// ServeHTTP.
 func New(opts *Options) (*Server, error) {
 	if opts == nil {
 		opts = &Options{}
@@ -72,45 +71,24 @@ func New(opts *Options) (*Server, error) {
 	if read == nil {
 		read = DefaultStateReader
 	}
-	steer := opts.Steerer
-	if steer == nil {
-		steer = SessionSteerer
-	}
 
-	mcpSrv := server.NewMCPServer(
-		ServerName,
-		ServerVersion,
-		// listChanged=false: the orchestra tool surface is fixed at build
-		// time, no runtime AddTool/DeleteTool. Setting this to true would
-		// require us to push tools/list_changed notifications we never
-		// generate.
-		server.WithToolCapabilities(false),
-		// Recovery: tool handler panics surface as JSON-RPC errors
-		// instead of taking the whole MCP server (and its still-running
-		// subprocess registry) down.
-		server.WithRecovery(),
-	)
 	s := &Server{
-		mcp:           mcpSrv,
+		mcp:           mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, nil),
 		registry:      registry,
 		spawner:       spawn,
 		stateReader:   read,
-		steerer:       steer,
 		workspaceRoot: root,
 	}
-	regs := s.Tools()
-	for i := range regs {
-		mcpSrv.AddTool(regs[i].Tool, regs[i].Handler)
-	}
+	s.registerTools()
 	return s, nil
 }
 
-// MCP exposes the underlying mark3labs server. Useful for tests that want to
-// drive the tool layer without going through stdio/HTTP.
-func (s *Server) MCP() *server.MCPServer { return s.mcp }
+// MCP exposes the underlying SDK server. Useful for tests that drive the tool
+// layer through an in-memory transport without forking a subprocess.
+func (s *Server) MCP() *mcp.Server { return s.mcp }
 
-// Registry exposes the run registry. Callers should treat it read-only;
-// the server is the canonical writer.
+// Registry exposes the run registry. Callers should treat it read-only; the
+// server is the canonical writer.
 func (s *Server) Registry() *Registry { return s.registry }
 
 // WorkspaceRoot exposes the configured root directory under which each new
@@ -118,44 +96,55 @@ func (s *Server) Registry() *Registry { return s.registry }
 func (s *Server) WorkspaceRoot() string { return s.workspaceRoot }
 
 // ServeStdio runs the MCP server over stdio and blocks until ctx is done or
-// the client disconnects. Listens on os.Stdin / os.Stdout, which is the
-// shape Claude Code attaches to per DESIGN §8.1.
+// the client disconnects. The SDK's StdioTransport reads from os.Stdin and
+// writes to os.Stdout, which is the shape Claude Code attaches to.
 func (s *Server) ServeStdio(ctx context.Context) error {
-	stdio := server.NewStdioServer(s.mcp)
-	if err := stdio.Listen(ctx, os.Stdin, os.Stdout); err != nil {
+	if err := s.mcp.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
-		return fmt.Errorf("mcp: stdio listen: %w", err)
+		return fmt.Errorf("mcp: stdio run: %w", err)
 	}
 	return nil
 }
 
 // ServeHTTP runs the MCP server over the streamable-HTTP transport. v0 has
-// no authentication; the cmd layer prints a "no auth" warning before
-// invoking this. ctx cancellation triggers a graceful shutdown via the
-// server's Shutdown method so in-flight requests complete.
+// no authentication; the cmd layer prints a "no auth" warning before invoking
+// this. ctx cancellation triggers a graceful shutdown via the http.Server's
+// Shutdown method so in-flight requests complete.
 func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
 	if addr == "" {
 		return errors.New("mcp: serve http: empty address")
 	}
-	httpSrv := server.NewStreamableHTTPServer(s.mcp)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcp }, nil)
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- httpSrv.Start(addr)
+		err := httpSrv.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		errCh <- err
 	}()
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return fmt.Errorf("mcp: http start: %w", err)
+			return fmt.Errorf("mcp: http listen: %w", err)
 		}
 		return nil
 	case <-ctx.Done():
 		// Detach from the canceled parent so Shutdown gets a fresh
-		// deadline for the drain — using context.Background() would
-		// trip contextcheck.
+		// deadline for the drain — using the canceled ctx directly would
+		// trip contextcheck and skip the drain entirely.
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 		defer cancel()
-		return httpSrv.Shutdown(shutdownCtx)
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("mcp: http shutdown: %w", err)
+		}
+		return nil
 	}
 }
