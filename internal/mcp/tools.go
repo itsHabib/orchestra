@@ -32,7 +32,7 @@ type ListRunsResult struct {
 
 // GetRunArgs is the get_run tool input.
 type GetRunArgs struct {
-	RunID string `json:"run_id" jsonschema:"run id returned by run"`
+	RunID string `json:"run_id" jsonschema:"run id returned by list_runs (or by the run tool once it lands)"`
 }
 
 // StateReader returns the current state.json snapshot for a workspace dir.
@@ -47,20 +47,51 @@ func DefaultStateReader(ctx context.Context, workspaceDir string) (*store.RunSta
 
 // registerTools attaches the v1 generic tool surface to the underlying SDK
 // server. Direct registration over a slice would lose the typed In/Out shape
-// AddTool's generics give us, so handlers register one at a time.
+// AddTool's generics give us, so handlers register one at a time. Each is
+// wrapped with recoverHandler so a handler panic surfaces as a tool error
+// instead of taking down the long-lived MCP server (and orphaning the run
+// subprocesses tracked in its in-process registry).
 func (s *Server) registerTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolListRuns,
 		Description: "List MCP-managed orchestra runs with their derived top-level " +
 			"status and per-team signal_completion outcomes. Pass active_only=true to " +
 			"drop runs whose status is done.",
-	}, s.handleListRuns)
+	}, recoverHandler(s.handleListRuns))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolGetRun,
 		Description: "Return one run's current status and per-team breakdown. " +
-			"run_id is the value returned by the run tool.",
-	}, s.handleGetRun)
+			"run_id is a value seen in list_runs (or returned by the run tool once it lands).",
+	}, recoverHandler(s.handleGetRun))
+}
+
+// recoverHandler wraps a typed tool handler with a deferred recover so a
+// panic translates to a tool-level error result rather than tearing down the
+// server. The MCP server is long-lived and owns the run registry; without
+// this guard, any handler panic would orphan the running subprocesses we
+// track. Mirrors the safety the old mark3labs server.WithRecovery() option
+// provided; the official SDK does not recover handler panics on its own.
+func recoverHandler[In, Out any](h mcp.ToolHandlerFor[In, Out]) mcp.ToolHandlerFor[In, Out] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		var (
+			res  *mcp.CallToolResult
+			zero Out
+			out  = zero
+			err  error
+		)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					res = errResult("tool panic: %v", r)
+					out = zero
+					err = nil
+				}
+			}()
+			res, out, err = h(ctx, req, in)
+		}()
+		return res, out, err
+	}
 }
 
 func (s *Server) handleListRuns(ctx context.Context, _ *mcp.CallToolRequest, args ListRunsArgs) (*mcp.CallToolResult, ListRunsResult, error) {
@@ -97,8 +128,13 @@ func (s *Server) handleGetRun(ctx context.Context, _ *mcp.CallToolRequest, args 
 // buildRunView fuses one registry entry with its on-disk state.json. State-
 // read errors are reported via RunView.StateError rather than failing the
 // whole list — a freshly-spawned run that hasn't written state.json yet
-// should appear in the list with status="running" and no team rows, not
-// disappear entirely.
+// should appear in the list with status="running" and an empty teams array,
+// not disappear entirely.
+//
+// Teams is initialized to an empty slice so it serializes to "teams": [] for
+// freshly-spawned runs whose state.json is still missing. A null serialization
+// would be indistinguishable from "no team data yet" vs. "the engine declared
+// zero teams" and forces clients into special-case handling.
 func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 	v := RunView{
 		RunID:        e.RunID,
@@ -108,6 +144,7 @@ func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 		DocPaths:     append([]string(nil), e.DocPaths...),
 		PID:          e.PID,
 		Status:       RunStatusRunning,
+		Teams:        []TeamView{},
 	}
 	state, err := s.stateReader(ctx, stateDir(e.WorkspaceDir))
 	if err != nil {
@@ -154,25 +191,35 @@ func teamViews(state *store.RunState) []TeamView {
 // error, etc.) which is closer to incomplete than to done. Such runs stay at
 // "running" until the engine flips a team to Status="failed", which the case
 // above promotes to RunStatusFailed.
+//
+// failed short-circuits because it always wins the priority fold; blocked is
+// tracked as a flag instead so a later-iterated failed team is not masked by
+// an earlier-iterated blocked one.
 func deriveStatus(teams []TeamView) string {
 	if len(teams) == 0 {
 		return RunStatusRunning
 	}
+	blocked := false
 	allDone := true
 	for _, t := range teams {
-		switch {
-		case t.Status == "failed":
+		if t.Status == "failed" {
 			return RunStatusFailed
-		case t.SignalStatus == "blocked":
-			return RunStatusBlocked
-		case t.SignalStatus != "done":
+		}
+		if t.SignalStatus == "blocked" {
+			blocked = true
+		}
+		if t.SignalStatus != "done" {
 			allDone = false
 		}
 	}
-	if allDone {
+	switch {
+	case blocked:
+		return RunStatusBlocked
+	case allDone:
 		return RunStatusDone
+	default:
+		return RunStatusRunning
 	}
-	return RunStatusRunning
 }
 
 // errResult builds a tool-level error CallToolResult. The error is reported to

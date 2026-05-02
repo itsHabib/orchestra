@@ -269,6 +269,24 @@ func TestHandleGetRun_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRecoverHandler_TranslatesPanicToToolError(t *testing.T) {
+	t.Parallel()
+
+	wrapped := recoverHandler(func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, struct{}, error) {
+		panic("boom")
+	})
+	res, _, err := wrapped(context.Background(), nil, struct{}{})
+	if err != nil {
+		t.Fatalf("wrapped handler returned protocol error: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError result, got %+v", res)
+	}
+	if !strings.Contains(resultText(res), "boom") {
+		t.Fatalf("error text missing panic value: %q", resultText(res))
+	}
+}
+
 func TestDeriveStatus_PriorityOrder(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +299,7 @@ func TestDeriveStatus_PriorityOrder(t *testing.T) {
 		{"all done", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "running", SignalStatus: "done"}}, RunStatusDone},
 		{"any failed wins", []TeamView{{Status: "failed"}, {SignalStatus: "done"}}, RunStatusFailed},
 		{"failed beats blocked", []TeamView{{Status: "failed"}, {SignalStatus: "blocked"}}, RunStatusFailed},
+		{"failed beats blocked in either order", []TeamView{{SignalStatus: "blocked"}, {Status: "failed"}}, RunStatusFailed},
 		{"blocked beats running", []TeamView{{Status: "running", SignalStatus: "blocked"}, {Status: "running", SignalStatus: "done"}}, RunStatusBlocked},
 		{"some pending → running", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "running"}}, RunStatusRunning},
 	}

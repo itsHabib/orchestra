@@ -317,8 +317,6 @@ github.com/google/pprof v0.0.0-20200708004538-1a94d8640e99/go.mod h1:ZgVRPoUq/hf
 github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a h1://KbezygeMJZCSHH+HgUZiTeSoiuFspbMg1ge+eFj18=
 github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a/go.mod h1:5hDyRhoBCxViHszMt12TnOpEI4VVi+U8Gm9iphldiMA=
 github.com/google/renameio v0.1.0/go.mod h1:KWCgfxg9yswjAJkECMjeO8J8rahYeXnNhOm40UhjYkI=
-github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
-github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/googleapis/gax-go/v2 v2.0.4/go.mod h1:0Wqv26UfaUD9n4G6kQubkQ+KchISgw+vpHVxEJEs9eg=
 github.com/googleapis/gax-go/v2 v2.0.5/go.mod h1:DWXyrwAJ9X0FpwwEdw+IPEYBICEFu5mhpdKc/us6bOk=
 github.com/gordonklaus/ineffassign v0.2.0 h1:Uths4KnmwxNJNzq87fwQQDDnbNb7De00VOk9Nu0TySs=
@@ -417,8 +415,6 @@ github.com/maratori/testableexamples v1.0.0 h1:dU5alXRrD8WKSjOUnmJZuzdxWOEQ57+7s
 github.com/maratori/testableexamples v1.0.0/go.mod h1:4rhjL1n20TUTT4vdh3RDqSizKLyXp7K2u6HgraZCGzE=
 github.com/maratori/testpackage v1.1.1 h1:S58XVV5AD7HADMmD0fNnziNHqKvSdDuEKdPD1rNTU04=
 github.com/maratori/testpackage v1.1.1/go.mod h1:s4gRK/ym6AMrqpOa/kEbQTV4Q4jb7WeLZzVhVVVOQMc=
-github.com/mark3labs/mcp-go v0.49.0 h1:7Ssx4d7/T86qnWoJIdye7wEEvUzv39UIbnZb/FqUZMY=
-github.com/mark3labs/mcp-go v0.49.0/go.mod h1:BflTAZAzXlrTpiO44gmjMu89n2FO56rJ9m31fp4zd5k=
 github.com/matoous/godox v1.1.0 h1:W5mqwbyWrwZv6OQ5Z1a/DHGMOvXYCBP3+Ht7KMoJhq4=
 github.com/matoous/godox v1.1.0/go.mod h1:jgE/3fUXiTurkdHOLT5WEkThTSuE7yxHv5iWPa80afs=
 github.com/matryer/is v1.4.0 h1:sosSmIWwkYITGrxZ25ULNDeKiMNzFSr4V/eqBQP0PeE=

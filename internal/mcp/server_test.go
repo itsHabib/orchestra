@@ -213,7 +213,7 @@ func assertEmptyListRuns(ctx context.Context, t *testing.T, c *mcp.ClientSession
 		t.Fatalf("CallTool list_runs: %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("list_runs reported error: %s", clientResultText(res))
+		t.Fatalf("list_runs reported error: %s", resultText(res))
 	}
 	out, err := decodeListRuns(res)
 	if err != nil {
@@ -231,10 +231,10 @@ func assertOneRunListed(ctx context.Context, t *testing.T, c *mcp.ClientSession)
 		t.Fatalf("CallTool list_runs (post-seed): %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("list_runs IsError: %s", clientResultText(res))
+		t.Fatalf("list_runs IsError: %s", resultText(res))
 	}
-	if !strings.Contains(clientResultText(res), "1 run") {
-		t.Fatalf("fallback text missing count; text=%q", clientResultText(res))
+	if !strings.Contains(resultText(res), "1 run") {
+		t.Fatalf("fallback text missing count; text=%q", resultText(res))
 	}
 	out, err := decodeListRuns(res)
 	if err != nil {
@@ -255,7 +255,7 @@ func assertGetRunGhostIsError(ctx context.Context, t *testing.T, c *mcp.ClientSe
 		t.Fatalf("CallTool get_run(ghost): %v", err)
 	}
 	if !res.IsError {
-		t.Fatalf("get_run(ghost) should report IsError; text=%q", clientResultText(res))
+		t.Fatalf("get_run(ghost) should report IsError; text=%q", resultText(res))
 	}
 }
 
@@ -274,21 +274,4 @@ func decodeListRuns(r *mcp.CallToolResult) (ListRunsResult, error) {
 		return out, err
 	}
 	return out, nil
-}
-
-// clientResultText concatenates every TextContent in r into a single string.
-// Mirrors resultText in tools_test.go but operates on the client-side result
-// type, which exposes Content as []mcp.Content the same way the server side
-// does.
-func clientResultText(r *mcp.CallToolResult) string {
-	if r == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, c := range r.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			b.WriteString(tc.Text)
-		}
-	}
-	return b.String()
 }
