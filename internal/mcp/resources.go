@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/itsHabib/orchestra/internal/messaging"
 )
 
 // Resource URIs. The runs list lives at a fixed URI; the per-run resources
@@ -27,7 +29,7 @@ func (s *Server) registerResources() {
 	s.mcp.AddResource(&mcp.Resource{
 		URI:         ResourceRunsURI,
 		Name:        "runs",
-		Description: "All MCP-managed orchestra runs as a JSON array (same shape as list_runs without filters).",
+		Description: "All MCP-managed orchestra runs. JSON object with a single \"runs\" array, same shape as list_runs without filters.",
 		MIMEType:    "application/json",
 	}, s.readRunsResource)
 
@@ -79,10 +81,19 @@ func (s *Server) readRunMessagesResource(ctx context.Context, req *mcp.ReadResou
 	if err != nil {
 		return nil, mcp.ResourceNotFoundError(req.Params.URI)
 	}
-	bus, msgsDir, err := s.busForRun(ctx, runID)
+	// Inline the registry lookup so a registry-read I/O error surfaces as
+	// a real error rather than being misclassified as "run not found".
+	// Only the "no such row" case maps to ResourceNotFoundError, matching
+	// readRunResource's discipline.
+	entry, ok, err := s.registry.Get(ctx, runID)
 	if err != nil {
+		return nil, fmt.Errorf("read registry: %w", err)
+	}
+	if !ok {
 		return nil, mcp.ResourceNotFoundError(req.Params.URI)
 	}
+	msgsDir := messagesDir(entry.WorkspaceDir)
+	bus := messaging.NewBus(msgsDir)
 	raw, err := readAllInboxes(bus, msgsDir)
 	if err != nil {
 		return nil, fmt.Errorf("read messages: %w", err)

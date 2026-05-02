@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/messaging"
+	"github.com/itsHabib/orchestra/internal/store"
 )
 
 // seedRunID is the canonical run id used by the test helpers. Each test gets
@@ -326,8 +327,200 @@ func TestHandleReadMessages_BroadcastDeduped(t *testing.T) {
 	}
 }
 
-func mustSend(t *testing.T, bus *messaging.Bus, _ string, msg *messaging.Message) {
+func TestHandleSendMessage_RejectsManagedAgentsBackend(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
+	wsDir := filepath.Join(root, "runs", seedRunID)
+	stateReader := stateReaderFn([]stateRecord{
+		{
+			dir:   stateDir(wsDir),
+			state: &store.RunState{Backend: backendManagedAgents},
+		},
+	})
+	srv, err := New(&Options{
+		Registry:      registry,
+		WorkspaceRoot: filepath.Join(root, "runs"),
+		Spawner:       &stubSpawner{},
+		StateReader:   stateReader,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	bus := messaging.NewBus(filepath.Join(wsDir, ".orchestra", "messages"))
+	if err := bus.InitInboxes([]string{"design"}); err != nil {
+		t.Fatalf("InitInboxes: %v", err)
+	}
+	if err := registry.Put(context.Background(), &Entry{
+		RunID:        seedRunID,
+		WorkspaceDir: wsDir,
+		StartedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	res, _, err := srv.handleSendMessage(context.Background(), nil, SendMessageArgs{
+		RunID:     "alpha",
+		Recipient: "design",
+		Content:   "hi",
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError on managed_agents backend; got %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "managed_agents") {
+		t.Fatalf("error text should explain backend: %q", resultText(res))
+	}
+}
+
+func TestHandleReadMessages_RejectsBroadcast(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
+	seedRun(t, srv, []string{"design"})
+
+	for _, recipient := range []string{"broadcast", "all", "Broadcast", "ALL"} {
+		res, _, err := srv.handleReadMessages(context.Background(), nil, ReadMessagesArgs{
+			RunID:     "alpha",
+			Recipient: recipient,
+		})
+		if err != nil {
+			t.Fatalf("%s: handler error: %v", recipient, err)
+		}
+		if !res.IsError {
+			t.Fatalf("%s: expected IsError; got %s", recipient, resultText(res))
+		}
+	}
+}
+
+func TestHandleSendMessage_RejectsPathTraversalInSender(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
+	seedRun(t, srv, []string{"design"})
+
+	cases := []struct {
+		name string
+		args SendMessageArgs
+	}{
+		{"sender slash", SendMessageArgs{RunID: "alpha", Recipient: "design", Content: "hi", Sender: "0-human/../shared"}},
+		{"sender dotdot", SendMessageArgs{RunID: "alpha", Recipient: "design", Content: "hi", Sender: "../escape"}},
+		{"type slash", SendMessageArgs{RunID: "alpha", Recipient: "design", Content: "hi", Type: "correction/extra"}},
+	}
+	for _, tc := range cases {
+		res, _, err := srv.handleSendMessage(context.Background(), nil, tc.args)
+		if err != nil {
+			t.Fatalf("%s: handler error: %v", tc.name, err)
+		}
+		if !res.IsError {
+			t.Fatalf("%s: expected IsError on path-unsafe value", tc.name)
+		}
+	}
+}
+
+func TestHandleSendMessage_IDsAreUniqueWithinMillisecond(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
+	seedRun(t, srv, []string{"design"})
+
+	const sends = 5
+	seen := make(map[string]struct{}, sends)
+	for i := 0; i < sends; i++ {
+		_, out, err := srv.handleSendMessage(context.Background(), nil, SendMessageArgs{
+			RunID:     "alpha",
+			Recipient: "design",
+			Content:   "ping",
+		})
+		if err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+		if _, dup := seen[out.MessageID]; dup {
+			t.Fatalf("send %d produced duplicate id %q", i, out.MessageID)
+		}
+		seen[out.MessageID] = struct{}{}
+	}
+}
+
+func TestResolveRecipient_FriendlyNameDoesNotMatchSubstring(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
+	// design and api-design both registered; "design" should land on
+	// 2-design exactly, not 3-api-design.
+	seedRun(t, srv, []string{"design", "api-design"})
+
+	msgsDir := filepath.Join(srv.WorkspaceRoot(), seedRunID, ".orchestra", "messages")
+	folder, err := resolveRecipient(msgsDir, "design")
+	if err != nil {
+		t.Fatalf("resolveRecipient: %v", err)
+	}
+	if folder != "2-design" {
+		t.Fatalf("got %q, want 2-design", folder)
+	}
+}
+
+func TestResolveRecipient_IsCaseInsensitiveOnTeamName(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
+	seedRun(t, srv, []string{"design"})
+
+	msgsDir := filepath.Join(srv.WorkspaceRoot(), seedRunID, ".orchestra", "messages")
+	folder, err := resolveRecipient(msgsDir, "Design")
+	if err != nil {
+		t.Fatalf("resolveRecipient: %v", err)
+	}
+	if folder != "2-design" {
+		t.Fatalf("got %q, want 2-design", folder)
+	}
+}
+
+func TestDeriveSubject_HandlesMultibyteRunes(t *testing.T) {
+	t.Parallel()
+
+	// 80 emoji = 80 runes = 320 bytes. Byte-slicing at the 60-byte limit
+	// would land in the middle of an emoji's UTF-8 encoding and produce
+	// the replacement character (U+FFFD); rune-slicing keeps every code
+	// point intact.
+	got := deriveSubject(strings.Repeat("🎯", 80))
+	if strings.ContainsRune(got, '�') {
+		t.Fatalf("subject contains replacement character: %q", got)
+	}
+	if got == "" {
+		t.Fatalf("empty subject from non-empty content")
+	}
+}
+
+func TestValidateIDComponent(t *testing.T) {
+	t.Parallel()
+
+	good := []string{"0-human", "1-coordinator", "2-design", "answer", "status-update"}
+	for _, v := range good {
+		if err := validateIDComponent("test", v); err != nil {
+			t.Fatalf("expected %q to be valid: %v", v, err)
+		}
+	}
+	bad := []string{"", "a/b", "..", "x\\y", "x y", "x\nb"}
+	for _, v := range bad {
+		if err := validateIDComponent("test", v); err == nil {
+			t.Fatalf("expected %q to be rejected", v)
+		}
+	}
+}
+
+// mustSend asserts the inbox folder matches msg.Recipient before delegating
+// to bus.Send. The folder param exists to make the call site self-documenting
+// — bus.Send routes by msg.Recipient, so a mismatched folder argument would
+// silently land the message in the wrong inbox without this guard.
+func mustSend(t *testing.T, bus *messaging.Bus, inbox string, msg *messaging.Message) {
 	t.Helper()
+	if inbox != msg.Recipient {
+		t.Fatalf("mustSend: inbox %q does not match msg.Recipient %q", inbox, msg.Recipient)
+	}
 	if err := bus.Send(msg); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
