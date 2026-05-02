@@ -1,18 +1,13 @@
 // Package mcp serves the orchestra control surface as an MCP server. The
-// parent Claude session attaches over stdio (default) or HTTP and drives runs
-// through four tools:
+// parent Claude session attaches over stdio (default) or HTTP and reads run
+// state through the v1 generic tool surface (list_runs, get_run; run plus
+// message tools land in the follow-up PR).
 //
-//   - ship_design_docs: spawns one orchestra run per call (subprocess) against
-//     a recipe-generated config; returns the run id.
-//   - list_jobs / get_status: read-only snapshots derived from each run's
-//     state.json plus the per-run registry.
-//   - unblock: relays a user.message into a team's MA session lock-free.
-//
-// Subprocess isolation is non-negotiable (DESIGN-ship-feature-workflow §8.4):
-// a panic in a request handler must not kill an active run, and runs survive
-// MCP server restarts because they are independent processes. The package
-// uses os/exec with a context.WithoutCancel-derived parent so request-handler
-// cancellation never propagates to the run subprocess.
+// Subprocess isolation is non-negotiable: a panic in a request handler must
+// not kill an active run, and runs survive MCP server restarts because they
+// are independent processes. The package uses os/exec with a context.
+// WithoutCancel-derived parent so request-handler cancellation never
+// propagates to the run subprocess.
 package mcp
 
 import (

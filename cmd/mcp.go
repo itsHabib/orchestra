@@ -32,11 +32,11 @@ var (
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Start the orchestra MCP server (parent-Claude entry point)",
-	Long: "Long-running MCP server that exposes ship_design_docs / list_jobs / " +
-		"get_status / unblock to a parent Claude Code session. Default transport " +
-		"is stdio (matches Claude Code's MCP client attachment shape); --transport " +
-		"http exposes a Streamable HTTP listener with NO authentication and is " +
-		"intended for trusted-host advanced use only.",
+	Long: "Long-running MCP server that exposes orchestra's generic run primitives " +
+		"to a parent Claude Code session. Default transport is stdio (matches " +
+		"Claude Code's MCP client attachment shape); --transport http exposes a " +
+		"Streamable HTTP listener with NO authentication and is intended for " +
+		"trusted-host advanced use only.",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runMCP(cmd.Context())
 	},
