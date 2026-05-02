@@ -16,7 +16,7 @@ import (
 // landed.
 const (
 	ServerName    = "orchestra"
-	ServerVersion = "0.2.0"
+	ServerVersion = "0.3.0"
 )
 
 // shutdownGrace caps how long ServeHTTP waits for in-flight requests to drain
@@ -80,6 +80,7 @@ func New(opts *Options) (*Server, error) {
 		workspaceRoot: root,
 	}
 	s.registerTools()
+	s.registerResources()
 	return s, nil
 }
 
