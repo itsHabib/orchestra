@@ -45,7 +45,43 @@ func TestMCPProtocolSmoke_LiveBinary(t *testing.T) {
 	session := startMCPClient(ctx, t, bin, registryPath, workspaceRoot)
 
 	assertToolsAdvertised(ctx, t, session)
+	assertResourcesAdvertised(ctx, t, session)
 	assertEmptyListRuns(ctx, t, session)
+}
+
+func assertResourcesAdvertised(ctx context.Context, t *testing.T, c *mcp.ClientSession) {
+	t.Helper()
+	resources, err := c.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListResources: %v", err)
+	}
+	var sawRuns bool
+	for _, r := range resources.Resources {
+		if r.URI == orchestraMCP.ResourceRunsURI {
+			sawRuns = true
+		}
+	}
+	if !sawRuns {
+		t.Fatalf("ListResources missing %q", orchestraMCP.ResourceRunsURI)
+	}
+	templates, err := c.ListResourceTemplates(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListResourceTemplates: %v", err)
+	}
+	want := map[string]bool{
+		orchestraMCP.ResourceRunTemplateURI:         false,
+		orchestraMCP.ResourceRunMessagesTemplateURI: false,
+	}
+	for _, tmpl := range templates.ResourceTemplates {
+		if _, ok := want[tmpl.URITemplate]; ok {
+			want[tmpl.URITemplate] = true
+		}
+	}
+	for uri, seen := range want {
+		if !seen {
+			t.Fatalf("ListResourceTemplates missing %q", uri)
+		}
+	}
 }
 
 func startMCPClient(ctx context.Context, t *testing.T, bin, registryPath, workspaceRoot string) *mcp.ClientSession {
@@ -75,8 +111,11 @@ func assertToolsAdvertised(ctx context.Context, t *testing.T, c *mcp.ClientSessi
 		t.Fatalf("ListTools: %v", err)
 	}
 	want := map[string]bool{
-		orchestraMCP.ToolListRuns: false,
-		orchestraMCP.ToolGetRun:   false,
+		orchestraMCP.ToolListRuns:     false,
+		orchestraMCP.ToolGetRun:       false,
+		orchestraMCP.ToolRun:          false,
+		orchestraMCP.ToolSendMessage:  false,
+		orchestraMCP.ToolReadMessages: false,
 	}
 	for _, tool := range tools.Tools {
 		if _, ok := want[tool.Name]; ok {

@@ -191,8 +191,11 @@ func assertToolsRegistered(ctx context.Context, t *testing.T, c *mcp.ClientSessi
 		t.Fatalf("ListTools: %v", err)
 	}
 	want := map[string]bool{
-		ToolListRuns: false,
-		ToolGetRun:   false,
+		ToolListRuns:     false,
+		ToolGetRun:       false,
+		ToolRun:          false,
+		ToolSendMessage:  false,
+		ToolReadMessages: false,
 	}
 	for _, tool := range tools.Tools {
 		if _, ok := want[tool.Name]; ok {

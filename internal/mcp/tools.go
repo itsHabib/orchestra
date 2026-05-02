@@ -32,7 +32,7 @@ type ListRunsResult struct {
 
 // GetRunArgs is the get_run tool input.
 type GetRunArgs struct {
-	RunID string `json:"run_id" jsonschema:"run id returned by list_runs (or by the run tool once it lands)"`
+	RunID string `json:"run_id" jsonschema:"run id returned by list_runs or by the run tool"`
 }
 
 // StateReader returns the current state.json snapshot for a workspace dir.
@@ -62,8 +62,30 @@ func (s *Server) registerTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolGetRun,
 		Description: "Return one run's current status and per-team breakdown. " +
-			"run_id is a value seen in list_runs (or returned by the run tool once it lands).",
+			"run_id is a value seen in list_runs or returned by the run tool.",
 	}, recoverHandler(s.handleGetRun))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolRun,
+		Description: "Spawn an orchestra run subprocess. Provide exactly one of inline_dag " +
+			"(simplified team list — name, role, prompt, deps) or config_path (absolute " +
+			"path to an existing orchestra.yaml). Returns the run id; poll list_runs / " +
+			"get_run to observe progress and signal_completion outcomes.",
+	}, recoverHandler(s.handleRun))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolSendMessage,
+		Description: "Send a message into a run's file-based bus. recipient is a team name, " +
+			"\"coordinator\", \"human\", or \"broadcast\". Works for both local and managed " +
+			"agents backends.",
+	}, recoverHandler(s.handleSendMessage))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolReadMessages,
+		Description: "Read messages from a run's file-based bus, newest-first. With recipient " +
+			"set, narrows to that single inbox; without it, aggregates across every inbox. " +
+			"since is an RFC3339 timestamp filter.",
+	}, recoverHandler(s.handleReadMessages))
 }
 
 // recoverHandler wraps a typed tool handler with a deferred recover so a
