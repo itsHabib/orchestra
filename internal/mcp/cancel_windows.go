@@ -4,12 +4,11 @@ package mcp
 
 import (
 	"errors"
-	"os"
 	"syscall"
 	"time"
 )
 
-// signalCancel delivers a CTRL_BREAK_EVENT to the orchestra subprocess'
+// signalCancel delivers a CTRL_BREAK_EVENT to the orchestra subprocess's
 // process group on Windows, the closest equivalent to SIGTERM. The
 // subprocess was started via [detachProcessGroup] with
 // CREATE_NEW_PROCESS_GROUP so the event lands without affecting the MCP
@@ -36,26 +35,73 @@ func signalCancel(pid int) error {
 }
 
 // waitForExit polls until the orchestra subprocess exits or the timeout
-// elapses. Windows surfaces dead pids as a [os.FindProcess] success
-// followed by a [Process.Signal] error; we open the process handle
-// each iteration to avoid keeping a stale one across the wait.
+// elapses. Uses OpenProcess + WaitForSingleObject so the wait actually
+// returns the moment the subprocess exits rather than sleeping the
+// whole drain window. Falls back to a short polled sleep when
+// OpenProcess fails so a stale handle path can't deadlock the cancel
+// tool.
 func waitForExit(pid int, timeout time.Duration) {
 	if pid <= 0 {
 		return
 	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return
-		}
-		// On Windows os.FindProcess never errors; probe via OpenProcess
-		// behind the scenes by calling Signal(0). Signal(0) on Windows
-		// returns "OS does not support sending nil signal" — accept that
-		// as "still alive" and rely on the deadline. Real exit detection
-		// would require WaitForSingleObject; the 10-second cap is the
-		// design's "best-effort drain" from the kickoff doc.
-		_ = proc
-		time.Sleep(100 * time.Millisecond)
+	const (
+		synchronize         = 0x00100000
+		processQueryLimited = 0x00001000
+		waitObject0         = 0x00000000
+		// WAIT_TIMEOUT and WAIT_FAILED are the constants Windows
+		// returns from WaitForSingleObject; named here so the branch
+		// below reads top-down without magic numbers.
+		waitTimeout = 0x00000102
+		waitFailed  = 0xFFFFFFFF
+	)
+
+	dll, err := syscall.LoadDLL("kernel32.dll")
+	if err != nil {
+		fallbackSleep(timeout)
+		return
 	}
+	defer func() { _ = dll.Release() }()
+	openProcess, err := dll.FindProc("OpenProcess")
+	if err != nil {
+		fallbackSleep(timeout)
+		return
+	}
+	waitForSingleObject, err := dll.FindProc("WaitForSingleObject")
+	if err != nil {
+		fallbackSleep(timeout)
+		return
+	}
+	closeHandle, err := dll.FindProc("CloseHandle")
+	if err != nil {
+		fallbackSleep(timeout)
+		return
+	}
+
+	handle, _, _ := openProcess.Call(uintptr(synchronize|processQueryLimited), 0, uintptr(pid))
+	if handle == 0 {
+		// Common when the process has already exited or never existed.
+		// Either way, nothing to wait on — return immediately so the
+		// caller doesn't burn the drain budget.
+		return
+	}
+	defer func() { _, _, _ = closeHandle.Call(handle) }()
+
+	ms := uint32(timeout / time.Millisecond)
+	r1, _, _ := waitForSingleObject.Call(handle, uintptr(ms))
+	switch r1 {
+	case waitObject0, waitTimeout, waitFailed:
+		// waitObject0 = process exited; waitTimeout = drain elapsed;
+		// waitFailed = handle already closed. All three are terminal
+		// for our purposes — no further wait needed.
+		return
+	default:
+		return
+	}
+}
+
+// fallbackSleep is the last-resort drain path used when the kernel32
+// helpers can't be loaded. Matches the cap promised by [cancelDrainTimeout]
+// without a real exit probe.
+func fallbackSleep(timeout time.Duration) {
+	time.Sleep(timeout)
 }

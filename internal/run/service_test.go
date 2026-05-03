@@ -226,8 +226,9 @@ func TestCancelAllRunningAgents(t *testing.T) {
 	}
 	defer func() { _ = svc.End(active) }()
 
-	// alpha → running; beta stays pending; promote a third to done so we
-	// can confirm the cancel doesn't rewrite terminal agents.
+	// alpha → running; beta → done. Confirms the cancel flips the
+	// in-flight agent (alpha) but leaves the already-terminal one
+	// (beta) alone.
 	if err := svc.RecordTeamStart(ctx, "alpha"); err != nil {
 		t.Fatalf("RecordTeamStart: %v", err)
 	}

@@ -33,10 +33,17 @@ type CancelRunArgs struct {
 // CancelRunResult is the cancel_run MCP tool output. The handler returns
 // CancelledAt unset for a no-op (run already terminal) so callers can
 // distinguish "actually canceled this run" from "already done."
+//
+// SignalError is non-empty when the tool wrote the cancellation flag to
+// state.json but the OS-level signal (SIGTERM / CTRL_BREAK_EVENT) did
+// not deliver — usually a stale PID or a permission issue. Returning
+// the run as "canceled" without surfacing the failure would lie to the
+// caller; the engine may still be running.
 type CancelRunResult struct {
 	RunID       string    `json:"run_id"`
 	CancelledAt time.Time `json:"canceled_at,omitempty"`
 	AlreadyDone bool      `json:"already_done,omitempty"`
+	SignalError string    `json:"signal_error,omitempty"`
 }
 
 func (s *Server) handleCancelRun(ctx context.Context, _ *mcp.CallToolRequest, args CancelRunArgs) (*mcp.CallToolResult, CancelRunResult, error) {
@@ -65,18 +72,31 @@ func (s *Server) handleCancelRun(ctx context.Context, _ *mcp.CallToolRequest, ar
 		return errResult("write cancellation flag: %v", err), CancelRunResult{}, nil
 	}
 
-	canceledAt := time.Now().UTC()
+	out := CancelRunResult{
+		RunID:       entry.RunID,
+		CancelledAt: time.Now().UTC(),
+	}
 	if entry.PID > 0 {
-		if err := signalCancel(entry.PID); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			// Non-fatal: the subprocess may have already exited (which
-			// is fine — the cancellation flag lands so a future read
-			// still sees the deliberate-cancel signal).
-			_ = err
+		err := signalCancel(entry.PID)
+		switch {
+		case err == nil, errors.Is(err, os.ErrProcessDone):
+			// Either the signal landed cleanly or the subprocess had
+			// already exited (the cancellation flag still lands, so a
+			// future read still sees the deliberate-cancel signal).
+		default:
+			// A real signaling failure — stale PID, EPERM, etc. Surface
+			// it on the result so callers know the engine may still be
+			// running. The textResult below also reports the failure
+			// for clients that ignore the structured payload.
+			out.SignalError = err.Error()
 		}
 	}
 	waitForExit(entry.PID, cancelDrainTimeout)
-	return textResult(fmt.Sprintf("run %s canceled", entry.RunID)),
-		CancelRunResult{RunID: entry.RunID, CancelledAt: canceledAt}, nil
+	msg := fmt.Sprintf("run %s canceled", entry.RunID)
+	if out.SignalError != "" {
+		msg = fmt.Sprintf("run %s canceled (signal failed: %s)", entry.RunID, out.SignalError)
+	}
+	return textResult(msg), out, nil
 }
 
 // runIsTerminal returns true when every agent in the snapshot has

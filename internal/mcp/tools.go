@@ -89,10 +89,13 @@ func (s *Server) registerTools() {
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolCancelRun,
-		Description: "Request cancellation of a managed orchestra run. Records the " +
-			"request on state.json, sends SIGTERM (CTRL_BREAK_EVENT on Windows) to the " +
+		Description: "Request cancellation of an MCP-managed orchestra run (works on " +
+			"both local and managed_agents backends). Records the request on " +
+			"state.json, sends SIGTERM (CTRL_BREAK_EVENT on Windows) to the " +
 			"orchestra subprocess, and waits up to 10 seconds for clean shutdown. " +
-			"Idempotent: returns gracefully when the run is already terminal.",
+			"Idempotent: returns AlreadyDone=true when the run is already terminal; " +
+			"surfaces SignalError on the result when state.json was updated but " +
+			"the signal did not deliver (stale PID, permission issue).",
 	}, recoverHandler(s.handleCancelRun))
 }
 
@@ -264,14 +267,18 @@ func deriveStatus(agents []AgentView) string {
 	}
 	blocked := false
 	allDone := true
-	allCancelled := true
+	anyCanceled := false
+	allTerminal := true
 	for i := range agents {
 		a := &agents[i]
 		if a.Status == "failed" {
 			return RunStatusFailed
 		}
-		if a.Status != "canceled" {
-			allCancelled = false
+		if a.Status == "canceled" {
+			anyCanceled = true
+		}
+		if !isTerminalStatus(a.Status, a.SignalStatus) {
+			allTerminal = false
 		}
 		if a.SignalStatus == "blocked" {
 			blocked = true
@@ -280,7 +287,12 @@ func deriveStatus(agents []AgentView) string {
 			allDone = false
 		}
 	}
-	if allCancelled {
+	// "Canceled" wins over "blocked" / "done" once nothing is still
+	// running. The CLI shutdown path (Ctrl-C / cancel_run via SIGTERM)
+	// flips pending/running agents to "canceled" but leaves agents that
+	// already reached "done" alone — without this branch a run with one
+	// done and one canceled agent would report "running" forever.
+	if allTerminal && anyCanceled {
 		return RunStatusCancelled
 	}
 	switch {
@@ -291,6 +303,19 @@ func deriveStatus(agents []AgentView) string {
 	default:
 		return RunStatusRunning
 	}
+}
+
+// isTerminalStatus reports whether an agent has reached a state that
+// will not transition further on its own. Used by [deriveStatus] to
+// distinguish "shutdown pending" (some agent still working) from
+// "shutdown complete" (every agent has settled into done / canceled /
+// blocked).
+func isTerminalStatus(status, signal string) bool {
+	switch status {
+	case "done", "failed", "canceled":
+		return true
+	}
+	return signal == "done" || signal == "blocked"
 }
 
 // errResult builds a tool-level error CallToolResult. The error is reported to
