@@ -18,7 +18,7 @@ import (
 // landed.
 const (
 	ServerName    = "orchestra"
-	ServerVersion = "0.4.0"
+	ServerVersion = "0.5.0"
 )
 
 // shutdownGrace caps how long ServeHTTP waits for in-flight requests to drain
@@ -35,6 +35,7 @@ type Server struct {
 	spawner       Spawner
 	stateReader   StateReader
 	artifactStore ArtifactStoreFactory
+	sessionEvents SessionEventsFactory
 	workspaceRoot string
 }
 
@@ -62,6 +63,7 @@ type Options struct {
 	Spawner       Spawner
 	StateReader   StateReader
 	ArtifactStore ArtifactStoreFactory
+	SessionEvents SessionEventsFactory
 }
 
 // New returns a Server with the v1 generic tool surface registered against
@@ -91,6 +93,10 @@ func New(opts *Options) (*Server, error) {
 	if artStore == nil {
 		artStore = DefaultArtifactStore
 	}
+	sessEvents := opts.SessionEvents
+	if sessEvents == nil {
+		sessEvents = DefaultSessionEventsFactory
+	}
 
 	s := &Server{
 		mcp:           mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, nil),
@@ -98,6 +104,7 @@ func New(opts *Options) (*Server, error) {
 		spawner:       spawn,
 		stateReader:   read,
 		artifactStore: artStore,
+		sessionEvents: sessEvents,
 		workspaceRoot: root,
 	}
 	s.registerTools()

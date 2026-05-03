@@ -218,6 +218,23 @@ type Agent struct {
 	// via internal/credentials. Combined with [Defaults.RequiresCredentials]
 	// at run time — the agent sees the union of both lists.
 	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
+
+	// Files declares host-side files to upload via the Anthropic Files API
+	// and mount read-only inside the agent's MA container. Each entry's
+	// Path is read at run time; the upload result is plumbed into
+	// [spawner.ResourceRef]{Type:"file"} so the file lands at the
+	// configured MountPath. Local backend ignores this field with a
+	// warning. Phase A scope: managed_agents only.
+	Files []FileMount `yaml:"files,omitempty" json:"files,omitempty"`
+}
+
+// FileMount declares one file an agent needs mounted in its MA container.
+// Path is the host-side filesystem path (relative paths resolve from the
+// orchestra.yaml's directory at validation time). MountPath is the absolute
+// container path; an empty value defaults to /workspace/<basename(Path)>.
+type FileMount struct {
+	Path      string `yaml:"path" json:"path"`
+	MountPath string `yaml:"mount,omitempty" json:"mount,omitempty"`
 }
 
 // RequiredCredentials returns the union of [Defaults.RequiresCredentials]

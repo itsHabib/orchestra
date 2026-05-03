@@ -5,21 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/itsHabib/orchestra/internal/messaging"
 )
 
-// Resource URIs. The runs list lives at a fixed URI; the per-run resources
-// use templates so the chat-side LLM can reach them via uri-templating.
+// Resource URIs. The runs list lives at a fixed URI; the per-run resource
+// uses a template so the chat-side LLM can reach it via URI templating. The
+// orchestra://runs/{run_id}/messages template was removed alongside the
+// internal/messaging bus deletion in the v3 phase A bus-removal change.
 const (
-	ResourceRunsURI                = "orchestra://runs"
-	ResourceRunTemplateURI         = "orchestra://runs/{run_id}"
-	ResourceRunMessagesTemplateURI = "orchestra://runs/{run_id}/messages"
-	resourceRunsPrefix             = "orchestra://runs/"
-	resourceRunMessagesURISuffix   = "/messages"
+	ResourceRunsURI        = "orchestra://runs"
+	ResourceRunTemplateURI = "orchestra://runs/{run_id}"
+	resourceRunsPrefix     = "orchestra://runs/"
 )
 
 // registerResources attaches the orchestra:// resources to the SDK server.
@@ -39,13 +36,6 @@ func (s *Server) registerResources() {
 		Description: "One MCP-managed orchestra run, same shape as get_run.",
 		MIMEType:    "application/json",
 	}, s.readRunResource)
-
-	s.mcp.AddResourceTemplate(&mcp.ResourceTemplate{
-		URITemplate: ResourceRunMessagesTemplateURI,
-		Name:        "run-messages",
-		Description: "All messages on a run's bus, newest-first.",
-		MIMEType:    "application/json",
-	}, s.readRunMessagesResource)
 }
 
 func (s *Server) readRunsResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
@@ -76,34 +66,7 @@ func (s *Server) readRunResource(ctx context.Context, req *mcp.ReadResourceReque
 	return jsonResource(req.Params.URI, view)
 }
 
-func (s *Server) readRunMessagesResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	runID, err := parseRunMessagesURI(req.Params.URI)
-	if err != nil {
-		return nil, mcp.ResourceNotFoundError(req.Params.URI)
-	}
-	// Inline the registry lookup so a registry-read I/O error surfaces as
-	// a real error rather than being misclassified as "run not found".
-	// Only the "no such row" case maps to ResourceNotFoundError, matching
-	// readRunResource's discipline.
-	entry, ok, err := s.registry.Get(ctx, runID)
-	if err != nil {
-		return nil, fmt.Errorf("read registry: %w", err)
-	}
-	if !ok {
-		return nil, mcp.ResourceNotFoundError(req.Params.URI)
-	}
-	msgsDir := messagesDir(entry.WorkspaceDir)
-	bus := messaging.NewBus(msgsDir)
-	raw, err := readAllInboxes(bus, msgsDir)
-	if err != nil {
-		return nil, fmt.Errorf("read messages: %w", err)
-	}
-	views := toMessageViews(raw, runID, time.Time{})
-	return jsonResource(req.Params.URI, ReadMessagesResult{Messages: views})
-}
-
-// parseRunURI extracts the run id from orchestra://runs/{run_id}. Rejects the
-// /messages variant — that is parseRunMessagesURI's job.
+// parseRunURI extracts the run id from orchestra://runs/{run_id}.
 func parseRunURI(uri string) (string, error) {
 	rest, ok := strings.CutPrefix(uri, resourceRunsPrefix)
 	if !ok {
@@ -113,22 +76,6 @@ func parseRunURI(uri string) (string, error) {
 		return "", fmt.Errorf("uri %q is not a single-run resource", uri)
 	}
 	return rest, nil
-}
-
-// parseRunMessagesURI extracts the run id from orchestra://runs/{run_id}/messages.
-func parseRunMessagesURI(uri string) (string, error) {
-	rest, ok := strings.CutPrefix(uri, resourceRunsPrefix)
-	if !ok {
-		return "", fmt.Errorf("uri %q does not match orchestra://runs/{run_id}/messages", uri)
-	}
-	runID, ok := strings.CutSuffix(rest, resourceRunMessagesURISuffix)
-	if !ok {
-		return "", fmt.Errorf("uri %q is missing /messages suffix", uri)
-	}
-	if runID == "" || strings.Contains(runID, "/") {
-		return "", fmt.Errorf("uri %q has unexpected run id segment", uri)
-	}
-	return runID, nil
 }
 
 // jsonResource serializes payload as a single TextResourceContents entry

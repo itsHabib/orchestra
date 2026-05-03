@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/event"
-	"github.com/itsHabib/orchestra/internal/messaging"
 	"github.com/itsHabib/orchestra/internal/spawner"
 )
 
@@ -194,16 +192,19 @@ type Handle struct {
 
 	// backend records the resolved backend kind so Send/Interrupt can route
 	// to the right transport without re-reading the config. Set by the
-	// engine when it wires the steering dependencies.
+	// engine when it wires the steering dependencies. Local-backend Send
+	// now returns ErrLocalSteeringNotSupported (v3.0 dropped the file bus);
+	// MA Send delivers user.message via [sessions].
 	backend string
-	// bus is the local-backend file message bus; nil under MA.
-	bus *messaging.Bus
-	// busInbox maps team name to its inbox folder name (e.g. "2-frontend").
-	// nil under MA.
-	busInbox map[string]string
 	// sessions is the MA session-events sender; nil under local.
 	sessions spawner.SessionEventSender
 }
+
+// ErrLocalSteeringNotSupported is returned by [Handle.Send] when the run is
+// using backend: local. v3.0 removed the file message bus; local agents
+// have no out-of-band steering channel. Restart the run with appended
+// context as the workaround, or switch to backend: managed_agents.
+var ErrLocalSteeringNotSupported = errors.New("orchestra: local steering not supported in v3.0; restart with appended context or switch to backend: managed_agents")
 
 // snapshotter is the minimal contract the Handle needs from the run
 // service so Status() can build a snapshot mid-run without coupling
@@ -400,12 +401,10 @@ func (h *Handle) deliverLocked(ev Event) {
 // be in status "running"; otherwise Send returns [ErrTeamNotRunning].
 // After [Handle.Wait] has returned, Send returns [ErrClosed].
 //
-// On the local backend Send writes a [messaging.MsgCorrection] message
-// from sender "0-human" to the team's file-bus inbox using atomic
-// writes, mirroring `orchestra msg`'s on-disk shape so a running team
-// reading its inbox observes the same payload. Delivery is best-effort —
-// the team consumes its inbox only at injection points, so the message
-// is read whenever the team next checks for steering.
+// On the local backend Send returns [ErrLocalSteeringNotSupported]: v3.0
+// removed the file message bus, and the local subprocess has no out-of-
+// band steering channel. Restart the run with appended context as the
+// workaround, or switch to backend: managed_agents.
 //
 // On the managed-agents backend Send delivers a user.message event to
 // the team's session via [spawner.SendUserMessage], with the same
@@ -437,24 +436,16 @@ func (h *Handle) Send(team, message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), steeringDispatchTimeout)
 	defer cancel()
 
-	if deps.backend == BackendManagedAgents {
-		if deps.sessions == nil {
-			return errors.New("orchestra: managed-agents session events client unavailable")
-		}
-		if ts.SessionID == "" {
-			return ErrTeamNotRunning
-		}
-		return steeringSendUserMessage(ctx, deps.sessions, ts.SessionID, message, steeringSendRetries)
+	if deps.backend != BackendManagedAgents {
+		return ErrLocalSteeringNotSupported
 	}
-
-	if deps.bus == nil {
-		return errors.New("orchestra: local message bus unavailable")
+	if deps.sessions == nil {
+		return errors.New("orchestra: managed-agents session events client unavailable")
 	}
-	folder, ok := deps.busInbox[team]
-	if !ok || folder == "" {
+	if ts.SessionID == "" {
 		return ErrTeamNotRunning
 	}
-	return deps.bus.Send(newSteeringBusMessage(folder, message, time.Now().UTC()))
+	return steeringSendUserMessage(ctx, deps.sessions, ts.SessionID, message, steeringSendRetries)
 }
 
 // Interrupt asks a running team to stop its current turn and return
@@ -513,8 +504,6 @@ func (h *Handle) Interrupt(team string) error {
 type steeringHandleDeps struct {
 	state    *RunState
 	backend  string
-	bus      *messaging.Bus
-	busInbox map[string]string
 	sessions spawner.SessionEventSender
 }
 
@@ -526,8 +515,6 @@ func (h *Handle) steeringDeps() (steeringHandleDeps, error) {
 	h.mu.RLock()
 	deps := steeringHandleDeps{
 		backend:  h.backend,
-		bus:      h.bus,
-		busInbox: h.busInbox,
 		sessions: h.sessions,
 	}
 	svc := h.runService
@@ -554,32 +541,6 @@ func trimTeam(team string) string {
 	return strings.TrimSpace(team)
 }
 
-// newSteeringBusMessage constructs the messaging.Message that
-// [Handle.Send] writes to a team's local-backend inbox. Sender is
-// "0-human" to mirror what the orchestra-msg skill writes via the file
-// bus. The ID encodes the wall-clock millisecond plus the type so it
-// sorts chronologically alongside other inbox entries.
-func newSteeringBusMessage(recipientFolder, content string, now time.Time) *messaging.Message {
-	msgType := messaging.MsgCorrection
-	id := strconv.FormatInt(now.UnixMilli(), 10) + "-0-human-" + string(msgType)
-	subject := content
-	// Truncate at rune boundaries so multibyte characters straddling byte 60
-	// (accents, emoji, CJK) don't leave invalid UTF-8 behind in the inbox.
-	if runes := []rune(subject); len(runes) > 60 {
-		subject = string(runes[:60])
-	}
-	return &messaging.Message{
-		ID:        id,
-		Sender:    "0-human",
-		Recipient: recipientFolder,
-		Type:      msgType,
-		Subject:   subject,
-		Content:   content,
-		Timestamp: now,
-		Read:      false,
-	}
-}
-
 // setPhase atomically updates the run phase. Called from the engine
 // goroutine on tier transitions.
 func (h *Handle) setPhase(p Phase) {
@@ -604,20 +565,14 @@ func (h *Handle) setRunService(s snapshotter) {
 	h.mu.Unlock()
 }
 
-// setSteering wires the per-backend transports the Handle's Send and
-// Interrupt methods need. Called by the engine once initLocalBackend or
-// initManagedAgentsBackend has produced its dependencies. backend is
-// expected to match cfg.Backend.Kind ("local" or "managed_agents");
-// values are guarded by mu so concurrent Send calls don't race the
-// initial assignment.
-//
-// Either bus+inbox (local backend) or sessions (MA backend) should be
-// non-nil; the unused side is left zero.
-func (h *Handle) setSteering(backend string, bus *messaging.Bus, inbox map[string]string, sessions spawner.SessionEventSender) {
+// setSteering wires the MA session-events sender Send/Interrupt need.
+// Called by the engine once initManagedAgentsBackend has produced the
+// dependency. backend is expected to match cfg.Backend.Kind ("local" or
+// "managed_agents"); local-backend Send returns ErrLocalSteeringNotSupported
+// since v3.0 dropped the file message bus.
+func (h *Handle) setSteering(backend string, sessions spawner.SessionEventSender) {
 	h.mu.Lock()
 	h.backend = backend
-	h.bus = bus
-	h.busInbox = inbox
 	h.sessions = sessions
 	h.mu.Unlock()
 }

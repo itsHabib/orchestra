@@ -118,9 +118,8 @@ func TestBeginManagedAgentsSkipsMessageBus(t *testing.T) {
 	}
 	defer func() { _ = svc.End(active) }()
 
-	if active.Bus != nil {
-		t.Fatalf("Bus=%v, want nil for managed_agents", active.Bus)
-	}
+	// v3 phase A: file message bus removed; the messages dir should not
+	// exist for either backend.
 	if _, err := os.Stat(filepath.Join(wsPath, "messages")); !os.IsNotExist(err) {
 		t.Fatalf("messages dir err=%v, want not exist", err)
 	}

@@ -69,8 +69,7 @@ func assertResourcesAdvertised(ctx context.Context, t *testing.T, c *mcp.ClientS
 		t.Fatalf("ListResourceTemplates: %v", err)
 	}
 	want := map[string]bool{
-		orchestraMCP.ResourceRunTemplateURI:         false,
-		orchestraMCP.ResourceRunMessagesTemplateURI: false,
+		orchestraMCP.ResourceRunTemplateURI: false,
 	}
 	for _, tmpl := range templates.ResourceTemplates {
 		if _, ok := want[tmpl.URITemplate]; ok {
@@ -114,8 +113,10 @@ func assertToolsAdvertised(ctx context.Context, t *testing.T, c *mcp.ClientSessi
 		orchestraMCP.ToolListRuns:     false,
 		orchestraMCP.ToolGetRun:       false,
 		orchestraMCP.ToolRun:          false,
-		orchestraMCP.ToolSendMessage:  false,
-		orchestraMCP.ToolReadMessages: false,
+		orchestraMCP.ToolCancelRun:    false,
+		orchestraMCP.ToolSteer:        false,
+		orchestraMCP.ToolGetArtifacts: false,
+		orchestraMCP.ToolReadArtifact: false,
 	}
 	for _, tool := range tools.Tools {
 		if _, ok := want[tool.Name]; ok {
