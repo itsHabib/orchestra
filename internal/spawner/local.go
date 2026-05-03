@@ -27,6 +27,17 @@ type SpawnOpts struct {
 	LogWriter      io.Writer
 	ProgressFunc   func(teamName, msg string) // called with progress updates for terminal display
 	Command        string                     // defaults to "claude"
+
+	// OnToolUse is called from the stream parser whenever the agent
+	// invokes a tool. Callers wire this to surface LastTool / LastEventAt
+	// into the run state so chat-side observers can see what the agent is
+	// doing without dipping into NDJSON. Optional — nil disables.
+	OnToolUse func(toolName string, at time.Time)
+
+	// OnSessionError is called on a stream-level error event (currently
+	// not emitted by claude -p stream-json, but reserved for parity with
+	// the MA backend's SessionErrorEvent). Optional — nil disables.
+	OnSessionError func(message string, at time.Time)
 }
 
 // LocalSubprocessSpawner adapts the existing claude -p subprocess backend.
@@ -142,7 +153,7 @@ func Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.AgentResult, error)
 	if err == nil {
 		// Exit code 0 but no result — use last assistant text
 		return &workspace.AgentResult{
-			Agent:    localOpts.TeamName,
+			Agent:     localOpts.TeamName,
 			Status:    "success",
 			Result:    parser.lastAssistText,
 			SessionID: parser.sessionID,
@@ -218,6 +229,7 @@ type streamParser struct {
 	teamName       string
 	logWriter      io.Writer
 	progress       func(teamName, msg string)
+	onToolUse      func(toolName string, at time.Time)
 	startTime      time.Time
 	result         *workspace.AgentResult
 	sessionID      string
@@ -238,6 +250,7 @@ func newStreamParser(opts *SpawnOpts) *streamParser {
 		teamName:      opts.TeamName,
 		logWriter:     opts.LogWriter,
 		progress:      progress,
+		onToolUse:     opts.OnToolUse,
 		startTime:     time.Now(),
 		teammateNames: make(map[string]string),
 	}
@@ -371,6 +384,9 @@ func (p *streamParser) handleToolUse(c *contentBlock) {
 	}
 	detail := summarizeToolUse(c.Name, c.Input)
 	p.progress(p.teamName, fmt.Sprintf("🔧 [turn %d | %s] %s", p.turnCount, p.elapsed(), detail))
+	if p.onToolUse != nil {
+		p.onToolUse(c.Name, time.Now().UTC())
+	}
 	p.trackAgentToolUse(c)
 	p.trackToolStats(c.Name)
 }

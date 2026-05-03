@@ -230,7 +230,7 @@ func TestHandleRun_ProjectNameOverridesInlineDAG(t *testing.T) {
 	_, _, err := srv.handleRun(context.Background(), nil, RunArgs{
 		InlineDAG: &InlineDAG{
 			ProjectName: "from-dag",
-			Agents: []InlineAgent{{Name: "a", Role: "r", Prompt: "p"}},
+			Agents:      []InlineAgent{{Name: "a", Role: "r", Prompt: "p"}},
 		},
 		ProjectName: "override",
 	})

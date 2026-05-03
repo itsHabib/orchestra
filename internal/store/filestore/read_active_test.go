@@ -78,7 +78,7 @@ func TestReadActiveRunState_ReadsWhileSeparateProcessHoldsLock(t *testing.T) {
 	want := &store.RunState{
 		Project: "cross-proc",
 		Backend: "managed_agents",
-		Agents:   map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_x"}},
+		Agents:  map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_x"}},
 	}
 	holderStore := filestore.New(ws)
 	if err := holderStore.SaveRunState(context.Background(), want); err != nil {

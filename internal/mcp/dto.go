@@ -21,18 +21,18 @@ const (
 // reading runs through v3.0. The MCP server populates both. The legacy alias
 // is scheduled for removal in v3.x.
 type RunView struct {
-	RunID        string      `json:"run_id"`
-	Status       string      `json:"status"`
-	StartedAt    time.Time   `json:"started_at"`
-	WorkspaceDir string      `json:"workspace_dir"`
-	RepoURL      string      `json:"repo_url,omitempty"`
-	DocPaths     []string    `json:"doc_paths,omitempty"`
-	PID          int         `json:"pid,omitempty"`
-	StateError   string      `json:"state_error,omitempty"`
-	Phase        string      `json:"phase,omitempty"`
+	RunID        string         `json:"run_id"`
+	Status       string         `json:"status"`
+	StartedAt    time.Time      `json:"started_at"`
+	WorkspaceDir string         `json:"workspace_dir"`
+	RepoURL      string         `json:"repo_url,omitempty"`
+	DocPaths     []string       `json:"doc_paths,omitempty"`
+	PID          int            `json:"pid,omitempty"`
+	StateError   string         `json:"state_error,omitempty"`
+	Phase        string         `json:"phase,omitempty"`
 	PhaseIters   map[string]int `json:"phase_iters,omitempty"`
-	LastError    string      `json:"last_error,omitempty"`
-	Agents       []AgentView `json:"agents"`
+	LastError    string         `json:"last_error,omitempty"`
+	Agents       []AgentView    `json:"agents"`
 	// Teams mirrors Agents on the wire so v2 clients keep working through
 	// v3.0. Populated by the MCP server alongside Agents; do not consume in
 	// new code. Removed in v3.x.

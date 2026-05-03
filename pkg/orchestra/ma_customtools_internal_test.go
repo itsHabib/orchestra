@@ -75,7 +75,7 @@ func runWithCustomToolEvents(t *testing.T, h customtools.Handler, eventsToEmit .
 		Project: "p",
 		RunID:   "run_test",
 		Backend: BackendManagedAgents,
-		Agents:   map[string]store.AgentState{"alpha": {Status: "pending"}},
+		Agents:  map[string]store.AgentState{"alpha": {Status: "pending"}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -307,7 +307,7 @@ func seedAlphaRun(t *testing.T) *memstore.MemStore {
 		Project: "p",
 		RunID:   "run_test",
 		Backend: BackendManagedAgents,
-		Agents:   map[string]store.AgentState{"alpha": {Status: "pending"}},
+		Agents:  map[string]store.AgentState{"alpha": {Status: "pending"}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -413,7 +413,7 @@ func runWithCustomToolEventsRaw(t *testing.T, eventsToEmit ...spawner.Event) (*o
 		Project: "p",
 		RunID:   "run_test",
 		Backend: BackendManagedAgents,
-		Agents:   map[string]store.AgentState{"alpha": {Status: "pending"}},
+		Agents:  map[string]store.AgentState{"alpha": {Status: "pending"}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

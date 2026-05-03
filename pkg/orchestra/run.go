@@ -659,6 +659,13 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		ProgressFunc: func(team, msg string) {
 			r.emitTeamMessage(tierIdx, team, "%s", msg)
 		},
+		OnToolUse: func(toolName string, at time.Time) {
+			updateCtx := context.WithoutCancel(ctx)
+			_ = r.runService.Store().UpdateAgentState(updateCtx, teamName, func(ts *store.AgentState) {
+				ts.LastTool = toolName
+				ts.LastEventAt = at
+			})
+		},
 	})
 }
 

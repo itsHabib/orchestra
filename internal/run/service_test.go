@@ -77,7 +77,7 @@ func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 	if err := base.SaveRunState(ctx, &store.RunState{
 		Project: "old",
 		RunID:   "old-run",
-		Agents:   map[string]store.AgentState{"old": {Status: "done"}},
+		Agents:  map[string]store.AgentState{"old": {Status: "done"}},
 	}); err != nil {
 		t.Fatal(err)
 	}

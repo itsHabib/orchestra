@@ -244,7 +244,8 @@ func deriveStatus(agents []AgentView) string {
 	}
 	blocked := false
 	allDone := true
-	for _, a := range agents {
+	for i := range agents {
+		a := &agents[i]
 		if a.Status == "failed" {
 			return RunStatusFailed
 		}

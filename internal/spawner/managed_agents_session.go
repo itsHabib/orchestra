@@ -626,6 +626,12 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 			ts.LastError = firstNonEmpty(ev.Message, ev.Code, "session error")
 			ts.SessionID = s.id
 		})
+	case AgentToolUseEvent:
+		return false, s.applyToolUse(ctx, raw, ev.ToolUse.Name)
+	case AgentMCPToolUseEvent:
+		return false, s.applyToolUse(ctx, raw, ev.ToolUse.Name)
+	case AgentCustomToolUseEvent:
+		return false, s.applyToolUse(ctx, raw, ev.ToolUse.Name)
 	case SpanModelRequestEndEvent:
 		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
 			ts.InputTokens += ev.Usage.InputTokens
@@ -643,6 +649,17 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 	default:
 		return false, nil
 	}
+}
+
+// applyToolUse advances LastTool / LastEventAt on the agent's state when a
+// tool-use event lands. Empty tool names are ignored — the event still
+// advances the cursor via [Session.updateTeam].
+func (s *Session) applyToolUse(ctx context.Context, raw *maEvent, toolName string) error {
+	return s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
+		if toolName != "" {
+			ts.LastTool = toolName
+		}
+	})
 }
 
 func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw *maEvent) (bool, error) {
