@@ -337,12 +337,13 @@ func mergeCancellationRequest(ctx context.Context, svc *runsvc.Service, ws *work
 	return cf.Reason
 }
 
-// mcpCancellationFile is the workspace-relative path to the
-// MCP-written cancel-request file. Mirrors
-// [internal/mcp.cancellationFileName] but kept as a separate constant
-// so pkg/orchestra doesn't import internal/mcp (the dep arrow runs the
-// other way).
-const mcpCancellationFile = ".orchestra/cancellation.json"
+// mcpCancellationFile is the file name (not path) of the MCP-written
+// cancel-request file. ws.Path already points at the workspace dir
+// (typically ".orchestra/"), so the join is just <ws.Path>/cancellation.json.
+// Mirrors [internal/mcp.cancellationFileName] but kept as a separate
+// constant so pkg/orchestra doesn't import internal/mcp (the dep arrow
+// runs the other way).
+const mcpCancellationFile = "cancellation.json"
 
 // pickEmitter returns the Handle as the engine's emitter when available;
 // otherwise a NoopEmitter so engine code can call Emit unconditionally.

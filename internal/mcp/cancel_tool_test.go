@@ -151,21 +151,28 @@ func TestRunIsTerminal(t *testing.T) {
 		{"all done", map[string]store.AgentState{"a": {Status: "done"}}, true},
 		{"all failed", map[string]store.AgentState{"a": {Status: "failed"}}, true},
 		{"all canceled", map[string]store.AgentState{"a": {Status: "canceled"}}, true},
+		{"all terminated", map[string]store.AgentState{"a": {Status: "terminated"}}, true},
 		{"mixed terminal", map[string]store.AgentState{
 			"a": {Status: "done"},
 			"b": {Status: "failed"},
 			"c": {Status: "canceled"},
+			"d": {Status: "terminated"},
 		}, true},
-		// Copilot round-2: runIsTerminal must mirror deriveStatus's
-		// fold so cancel_run's idempotent short-circuit matches what
-		// list_runs / get_run report. SignalStatus="done" or
-		// "blocked" with Status still "running" counts as terminal.
+		// SignalStatus="done" with Status still "running" still counts
+		// as terminal — the agent has explicitly signaled completion
+		// and the engine has not yet flipped the per-agent Status; if
+		// cancel_run signaled here it would race the natural shutdown.
 		{"signal done while status running", map[string]store.AgentState{
 			"a": {Status: "running", SignalStatus: "done"},
 		}, true},
-		{"signal blocked while status running", map[string]store.AgentState{
+		// SignalStatus="blocked" is NOT terminal: a blocked agent is
+		// awaiting human steering and remains killable. cancel_run on
+		// a fully-blocked run must send the signal, not short-circuit
+		// AlreadyDone — HITL workflows are the most common place a
+		// human reaches for cancel.
+		{"signal blocked is steerable, not terminal", map[string]store.AgentState{
 			"a": {Status: "running", SignalStatus: "blocked"},
-		}, true},
+		}, false},
 		{"any running without signal", map[string]store.AgentState{
 			"a": {Status: "done"},
 			"b": {Status: "running"},

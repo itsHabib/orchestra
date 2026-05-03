@@ -113,23 +113,35 @@ func (s *Server) handleCancelRun(ctx context.Context, _ *mcp.CallToolRequest, ar
 }
 
 // runIsTerminal reports whether every agent in the snapshot has
-// reached a state that won't transition further on its own. Mirrors
-// [deriveStatus]'s [isTerminalStatus] helper so cancel_run's idempotent
-// short-circuit matches what list_runs / get_run report — without this
-// alignment, cancel_run would still signal a run that observers
-// already see as "done" because every agent has SignalStatus="done"
-// while the engine hasn't flipped the per-agent Status to "done" yet.
+// reached a state that cancel_run cannot meaningfully act on. Distinct
+// from [deriveStatus]'s [isTerminalStatus] in two ways: (1) "blocked"
+// is NOT terminal here — a blocked agent is still steerable / killable
+// and HITL workflows depend on cancel_run being able to abort one;
+// reusing isTerminalStatus would short-circuit AlreadyDone on every
+// fully-blocked run. (2) "terminated" IS terminal — the spawner sets
+// it when an MA session ends abnormally and there is nothing left to
+// signal.
 func runIsTerminal(state *store.RunState) bool {
 	if state == nil || len(state.Agents) == 0 {
 		return false
 	}
 	for name := range state.Agents {
 		ts := state.Agents[name]
-		if !isTerminalStatus(ts.Status, ts.SignalStatus) {
+		if !cancelIdempotentTerminal(ts.Status, ts.SignalStatus) {
 			return false
 		}
 	}
 	return true
+}
+
+// cancelIdempotentTerminal is the cancel-side terminal predicate. See
+// [runIsTerminal] for why it diverges from [isTerminalStatus].
+func cancelIdempotentTerminal(status, signal string) bool {
+	switch status {
+	case "done", "failed", "canceled", "terminated":
+		return true
+	}
+	return signal == "done"
 }
 
 // CancellationFile is the on-disk shape of the cancel-request payload
