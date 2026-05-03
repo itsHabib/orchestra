@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -244,16 +245,8 @@ func (a *Agent) RequiredCredentials(d *Defaults) []string {
 		add(d.RequiresCredentials)
 	}
 	add(a.RequiresCredentials)
-	sortStrings(out)
+	sort.Strings(out)
 	return out
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }
 
 // SkillRef references a skill registered with Anthropic via the orchestra

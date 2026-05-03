@@ -286,9 +286,12 @@ func (s *Store) Resolve(ctx context.Context, names []string) (map[string]string,
 }
 
 // EnvNameFor returns the environment variable name a credential maps to.
-// The canonical form is upper-snake-case (e.g. `github_token` →
-// `GITHUB_TOKEN`) so existing CI/dev workflows that already export
-// `GITHUB_TOKEN` keep working without renaming.
+// The mapping uppercases letters and replaces every non-alphanumeric
+// rune with `_`; camelCase boundaries are NOT split (`AnthropicAPIKey`
+// becomes `ANTHROPICAPIKEY`, not `ANTHROPIC_API_KEY`). Snake-case names
+// like `github_token` round-trip cleanly to `GITHUB_TOKEN`, which is the
+// recommended naming convention so existing CI/dev workflows that
+// already export `GITHUB_TOKEN` keep working without renaming.
 func EnvNameFor(credName string) string { return envName(credName) }
 
 func envName(credName string) string {

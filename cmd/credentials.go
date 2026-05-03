@@ -70,10 +70,16 @@ var credentialsGetCmd = &cobra.Command{
 		name := args[0]
 		store := credentials.New("")
 		ctx := cmd.Context()
-		hasFile, err := store.Has(ctx, name)
-		if err != nil {
+		// Match Store.Resolve: a key with an empty value is treated as
+		// not-set so this command's "present" report aligns with what
+		// the run actually sees at start time. Reporting an empty
+		// stored value as present would surface "OK" here only for the
+		// run to fail moments later with a missing-credential error.
+		creds, err := store.Read(ctx)
+		if err != nil && !errors.Is(err, credentials.ErrNotFound) {
 			return err
 		}
+		hasFile := creds[name] != ""
 		envName := credentials.EnvNameFor(name)
 		// Match Store.Resolve: empty env values count as not-set so this
 		// command's "present" report aligns with what the run actually
