@@ -13,11 +13,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var teamFlag string
+var (
+	agentFlag string
+	teamFlag  string // deprecated: alias for --agent through v3.x
+)
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn <config.yaml>",
-	Short: "Spawn a single team",
+	Short: "Spawn a single agent",
 	Args:  cobra.ExactArgs(1),
 	Run: func(_ *cobra.Command, args []string) {
 		logger := olog.New()
@@ -27,7 +30,7 @@ var spawnCmd = &cobra.Command{
 			logger.Error("Validation failed: %s", err)
 			os.Exit(1)
 		}
-		// spawn is a debug entrypoint for a single team; intentionally skips
+		// spawn is a debug entrypoint for a single agent; intentionally skips
 		// the res.Warnings render loop the other commands do (pre-P2.5
 		// behavior preserved per design doc NF6 byte-identical output).
 		if !res.Valid() {
@@ -36,9 +39,17 @@ var spawnCmd = &cobra.Command{
 		}
 		cfg := res.Config
 
-		team := cfg.AgentByName(teamFlag)
-		if team == nil {
-			logger.Error("Team %q not found in config", teamFlag)
+		name := agentFlag
+		if name == "" {
+			name = teamFlag
+		}
+		if name == "" {
+			logger.Error("--agent (or deprecated --team) is required")
+			os.Exit(1)
+		}
+		agent := cfg.AgentByName(name)
+		if agent == nil {
+			logger.Error("Agent %q not found in config", name)
 			os.Exit(1)
 		}
 
@@ -50,17 +61,17 @@ var spawnCmd = &cobra.Command{
 		}
 		defer releaseRunLock()
 
-		prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, nil, "", "", injection.Capabilities{})
+		prompt := injection.BuildPrompt(agent, cfg.Name, state, cfg, nil, "", "", injection.Capabilities{})
 
-		model := team.Lead.Model
+		model := agent.Lead.Model
 		if model == "" {
 			model = cfg.Defaults.Model
 		}
 
-		logger.TeamMsg(team.Name, "Spawning %s (model: %s)", team.Lead.Role, model)
+		logger.TeamMsg(agent.Name, "Spawning %s (model: %s)", agent.Lead.Role, model)
 
 		result, err := spawner.Spawn(context.Background(), &spawner.SpawnOpts{
-			TeamName:       team.Name,
+			TeamName:       agent.Name,
 			Prompt:         prompt,
 			Model:          model,
 			MaxTurns:       cfg.Defaults.MaxTurns,
@@ -78,8 +89,6 @@ var spawnCmd = &cobra.Command{
 }
 
 func init() {
-	spawnCmd.Flags().StringVar(&teamFlag, "team", "", "Team name to spawn (required)")
-	if err := spawnCmd.MarkFlagRequired("team"); err != nil {
-		panic(err)
-	}
+	spawnCmd.Flags().StringVar(&agentFlag, "agent", "", "Agent name to spawn (required)")
+	spawnCmd.Flags().StringVar(&teamFlag, "team", "", "Deprecated: use --agent")
 }

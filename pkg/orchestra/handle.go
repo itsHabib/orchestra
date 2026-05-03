@@ -273,10 +273,11 @@ func (h *Handle) Status() Status {
 		totalCost += ts.CostUSD
 	}
 	status.Agents = agents
-	// Teams mirrors Agents so v2 SDK consumers polling
-	// handle.Status().Teams keep compiling through the v3 migration
-	// window. AgentSnapshot and TeamSnapshot are the same type
-	// (alias), so this is a free shallow copy.
+	// Teams aliases Agents (same map instance) so v2 SDK consumers
+	// polling handle.Status().Teams keep compiling through the v3
+	// migration window. AgentSnapshot and TeamSnapshot are the same
+	// type (alias). Mutating one mutates the other — the deprecated
+	// mirror is removed in v3.x, so we don't pay to clone.
 	status.Teams = agents
 	status.TotalCost = totalCost
 	return status

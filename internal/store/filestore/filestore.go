@@ -75,8 +75,8 @@ func (s *FileStore) SaveRunState(ctx context.Context, state *store.RunState) err
 	return s.saveRunState(state)
 }
 
-// UpdateAgentState performs a serialized read-modify-write on one team entry.
-func (s *FileStore) UpdateAgentState(ctx context.Context, team string, fn func(*store.AgentState)) error {
+// UpdateAgentState performs a serialized read-modify-write on one agent's entry.
+func (s *FileStore) UpdateAgentState(ctx context.Context, agent string, fn func(*store.AgentState)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -90,9 +90,9 @@ func (s *FileStore) UpdateAgentState(ctx context.Context, team string, fn func(*
 	if state.Agents == nil {
 		state.Agents = make(map[string]store.AgentState)
 	}
-	ts := state.Agents[team]
+	ts := state.Agents[agent]
 	fn(&ts)
-	state.Agents[team] = ts
+	state.Agents[agent] = ts
 	return s.saveRunState(state)
 }
 

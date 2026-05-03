@@ -55,8 +55,8 @@ func (m *MemStore) SaveRunState(ctx context.Context, s *store.RunState) error {
 	return nil
 }
 
-// UpdateAgentState performs a serialized read-modify-write on one team entry.
-func (m *MemStore) UpdateAgentState(ctx context.Context, team string, fn func(*store.AgentState)) error {
+// UpdateAgentState performs a serialized read-modify-write on one agent's entry.
+func (m *MemStore) UpdateAgentState(ctx context.Context, agent string, fn func(*store.AgentState)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -68,9 +68,9 @@ func (m *MemStore) UpdateAgentState(ctx context.Context, team string, fn func(*s
 	if m.runState.Agents == nil {
 		m.runState.Agents = make(map[string]store.AgentState)
 	}
-	ts := m.runState.Agents[team]
+	ts := m.runState.Agents[agent]
 	fn(&ts)
-	m.runState.Agents[team] = ts
+	m.runState.Agents[agent] = ts
 	return nil
 }
 
