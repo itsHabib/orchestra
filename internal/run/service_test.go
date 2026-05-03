@@ -213,6 +213,82 @@ func TestRecordTeamFailKeepsOtherTeams(t *testing.T) {
 	}
 }
 
+// TestCancelAllRunningAgents pins the engine-side cancel path: a cancel
+// request flips every still-pending or still-running agent to
+// "canceled" with the supplied reason on its LastError, and leaves
+// already-terminal agents alone.
+func TestCancelAllRunningAgents(t *testing.T) {
+	ctx := context.Background()
+	svc := New(memstore.New(), WithClock(fixedClock()))
+	active, err := svc.Begin(ctx, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.End(active) }()
+
+	// alpha → running; beta stays pending; promote a third to done so we
+	// can confirm the cancel doesn't rewrite terminal agents.
+	if err := svc.RecordTeamStart(ctx, "alpha"); err != nil {
+		t.Fatalf("RecordTeamStart: %v", err)
+	}
+	if err := svc.RecordTeamComplete(ctx, &TeamResult{
+		Agent: "beta", Status: "success", Result: "ok",
+	}); err != nil {
+		t.Fatalf("RecordTeamComplete: %v", err)
+	}
+
+	if err := svc.CancelAllRunningAgents(ctx, "user pressed stop"); err != nil {
+		t.Fatalf("CancelAllRunningAgents: %v", err)
+	}
+
+	got, err := svc.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := got.Agents["alpha"]
+	if alpha.Status != "canceled" {
+		t.Fatalf("alpha.Status = %q, want canceled", alpha.Status)
+	}
+	if alpha.LastError != "canceled by cancel_run: user pressed stop" {
+		t.Fatalf("alpha.LastError = %q", alpha.LastError)
+	}
+	if alpha.EndedAt.IsZero() {
+		t.Fatal("alpha.EndedAt should be stamped on cancel")
+	}
+	beta := got.Agents["beta"]
+	if beta.Status != "done" {
+		t.Fatalf("beta should remain done, got %q", beta.Status)
+	}
+}
+
+// TestRecordCancellationRequested writes the cancellation entry on the
+// run document — the field the engine reads on signal receipt to
+// distinguish a deliberate cancel from a crash.
+func TestRecordCancellationRequested(t *testing.T) {
+	ctx := context.Background()
+	svc := New(memstore.New(), WithClock(fixedClock()))
+	active, err := svc.Begin(ctx, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.End(active) }()
+
+	if err := svc.RecordCancellationRequested(ctx, "test reason"); err != nil {
+		t.Fatalf("RecordCancellationRequested: %v", err)
+	}
+
+	got, err := svc.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cancellation == nil {
+		t.Fatal("Cancellation should be non-nil after RecordCancellationRequested")
+	}
+	if got.Cancellation.Reason != "test reason" {
+		t.Fatalf("Cancellation.Reason = %q", got.Cancellation.Reason)
+	}
+}
+
 func TestEndReleasesLockAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	svc := New(memstore.New())

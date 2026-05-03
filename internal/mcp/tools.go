@@ -86,6 +86,14 @@ func (s *Server) registerTools() {
 			"set, narrows to that single inbox; without it, aggregates across every inbox. " +
 			"since is an RFC3339 timestamp filter.",
 	}, recoverHandler(s.handleReadMessages))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolCancelRun,
+		Description: "Request cancellation of a managed orchestra run. Records the " +
+			"request on state.json, sends SIGTERM (CTRL_BREAK_EVENT on Windows) to the " +
+			"orchestra subprocess, and waits up to 10 seconds for clean shutdown. " +
+			"Idempotent: returns gracefully when the run is already terminal.",
+	}, recoverHandler(s.handleCancelRun))
 }
 
 // recoverHandler wraps a typed tool handler with a deferred recover so a
@@ -187,6 +195,18 @@ func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 	v.Phase = state.Phase
 	v.PhaseIters = state.PhaseIters
 	v.LastError = state.LastError
+	if state.Cancellation != nil {
+		v.Cancellation = &CancellationView{
+			RequestedAt: state.Cancellation.RequestedAt,
+			Reason:      state.Cancellation.Reason,
+		}
+		// A run that has any canceled agent (or whose cancellation has
+		// landed but no agents have flipped yet) reports "canceled" at
+		// the run level so observers can short-circuit polling.
+		if v.Status == RunStatusRunning {
+			v.Status = RunStatusCancelled
+		}
+	}
 	v.Teams = v.Agents
 	return v
 }
@@ -244,10 +264,14 @@ func deriveStatus(agents []AgentView) string {
 	}
 	blocked := false
 	allDone := true
+	allCancelled := true
 	for i := range agents {
 		a := &agents[i]
 		if a.Status == "failed" {
 			return RunStatusFailed
+		}
+		if a.Status != "canceled" {
+			allCancelled = false
 		}
 		if a.SignalStatus == "blocked" {
 			blocked = true
@@ -255,6 +279,9 @@ func deriveStatus(agents []AgentView) string {
 		if a.SignalStatus != "done" {
 			allDone = false
 		}
+	}
+	if allCancelled {
+		return RunStatusCancelled
 	}
 	switch {
 	case blocked:

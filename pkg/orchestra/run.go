@@ -271,6 +271,25 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 	}
 
 	runErr := run.execute(ctx, tiers)
+	// Cancellation hook: when ctx is canceled (cancel_run sent SIGTERM,
+	// caller pressed Ctrl-C, or anything else closed the run context),
+	// flip every still-running agent to "canceled" before snapshotting.
+	// Without this, state.json keeps the agents at "running" indefinitely
+	// because the per-agent goroutines bail out without writing terminal
+	// state. Use a fresh context detached from the canceled parent so
+	// the writes actually land.
+	if ctx.Err() != nil {
+		cancelCtx := context.WithoutCancel(ctx)
+		reason := readCancellationReason(cancelCtx, runService)
+		if cancelErr := runService.CancelAllRunningAgents(cancelCtx, reason); cancelErr != nil {
+			emitter.Emit(Event{
+				Kind:    EventWarn,
+				Tier:    -1,
+				Message: fmt.Sprintf("cancel: failed to flip running agents to canceled: %v", cancelErr),
+				At:      time.Now(),
+			})
+		}
+	}
 	result, snapErr := run.buildResult(ctx, tiers, time.Since(wallStart))
 	switch {
 	case runErr != nil && snapErr != nil:
@@ -280,6 +299,18 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 	default:
 		return result, snapErr
 	}
+}
+
+// readCancellationReason extracts the cancel_run reason from state.json
+// (written by the MCP server before SIGTERM lands). Returns an empty
+// string when no cancellation request was recorded — the engine still
+// treats the ctx-cancel as a deliberate shutdown.
+func readCancellationReason(ctx context.Context, svc *runsvc.Service) string {
+	state, err := svc.Snapshot(ctx)
+	if err != nil || state == nil || state.Cancellation == nil {
+		return ""
+	}
+	return state.Cancellation.Reason
 }
 
 // pickEmitter returns the Handle as the engine's emitter when available;

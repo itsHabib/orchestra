@@ -24,6 +24,20 @@ type RunState struct {
 	// level (e.g. orchestrator-side spawner failures that don't attach to
 	// a single agent).
 	LastError string `json:"last_error,omitempty"`
+	// Cancellation records a cancel_run MCP request. Non-nil means the
+	// run has been asked to wind down; the engine reads this on signal
+	// receipt and transitions running agents to "canceled" before
+	// exiting.
+	Cancellation *Cancellation `json:"cancellation,omitempty"`
+}
+
+// Cancellation captures a cancel_run request — when the request landed
+// and the optional reason the caller supplied. The MCP server writes
+// this before signaling the orchestra subprocess so the engine can
+// distinguish a deliberate cancel from a crash.
+type Cancellation struct {
+	RequestedAt time.Time `json:"requested_at"`
+	Reason      string    `json:"reason,omitempty"`
 }
 
 // UnmarshalJSON accepts the legacy `teams` key from v2 state.json so
@@ -57,6 +71,7 @@ func (s *RunState) UnmarshalJSON(data []byte) error {
 		Phase         string                `json:"phase,omitempty"`
 		PhaseIters    map[string]int        `json:"phase_iters,omitempty"`
 		LastError     string                `json:"last_error,omitempty"`
+		Cancellation  *Cancellation         `json:"cancellation,omitempty"`
 	}
 	var raw rawRunState
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -74,6 +89,7 @@ func (s *RunState) UnmarshalJSON(data []byte) error {
 	s.Phase = raw.Phase
 	s.PhaseIters = raw.PhaseIters
 	s.LastError = raw.LastError
+	s.Cancellation = raw.Cancellation
 	return nil
 }
 

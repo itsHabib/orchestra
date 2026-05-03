@@ -232,6 +232,71 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 	return nil
 }
 
+// RecordAgentCancel transitions an agent to "canceled" and stamps an
+// explanatory LastError so observers can distinguish a deliberate cancel
+// from a crash. Used by the engine's signal handler when a cancel_run
+// request lands on a still-running agent.
+func (s *Service) RecordAgentCancel(ctx context.Context, agent, reason string) error {
+	now := s.clock().UTC()
+	cause := "canceled by cancel_run"
+	if reason != "" {
+		cause = "canceled by cancel_run: " + reason
+	}
+	if err := s.store.UpdateAgentState(ctx, agent, func(ts *store.AgentState) {
+		ts.Status = "canceled"
+		ts.EndedAt = now
+		ts.LastError = cause
+	}); err != nil {
+		return fmt.Errorf("run.RecordAgentCancel %s: %w", agent, err)
+	}
+	s.mirrorRegistry("RecordAgentCancel", agent, func(e *workspace.RegistryEntry) {
+		e.Status = "canceled"
+		e.EndedAt = now
+	})
+	return nil
+}
+
+// RecordCancellationRequested writes a [store.Cancellation] entry into
+// the run document. Called by the cancel_run MCP tool before signaling
+// the orchestra subprocess so the engine can distinguish a deliberate
+// shutdown from a crash. Idempotent: a second call replaces the entry
+// rather than failing.
+func (s *Service) RecordCancellationRequested(ctx context.Context, reason string) error {
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		return fmt.Errorf("run.RecordCancellationRequested: %w", err)
+	}
+	state.Cancellation = &store.Cancellation{
+		RequestedAt: s.clock().UTC(),
+		Reason:      reason,
+	}
+	if err := s.store.SaveRunState(ctx, state); err != nil {
+		return fmt.Errorf("run.RecordCancellationRequested save: %w", err)
+	}
+	return nil
+}
+
+// CancelAllRunningAgents transitions every agent currently in the
+// "pending" or "running" state to "canceled". Called by the engine on
+// signal receipt so observers see a clean transition rather than agents
+// stuck mid-run forever.
+func (s *Service) CancelAllRunningAgents(ctx context.Context, reason string) error {
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		return fmt.Errorf("run.CancelAllRunningAgents: %w", err)
+	}
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		if ts.Status != "running" && ts.Status != "pending" {
+			continue
+		}
+		if err := s.RecordAgentCancel(ctx, name, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RecordTeamFail transitions a team to failed and records the error summary.
 func (s *Service) RecordTeamFail(ctx context.Context, team string, cause error) error {
 	now := s.clock().UTC()
