@@ -182,6 +182,12 @@ type Result struct {
 	Project string
 	// Agents maps agent name to its final AgentResult.
 	Agents map[string]AgentResult
+	// Teams mirrors Agents so v2 SDK consumers reading `Run(...).Teams`
+	// keep compiling through the v3 transition. Populated by the engine
+	// alongside Agents; do not read in new code. Removed in v3.x.
+	//
+	// Deprecated: use Agents.
+	Teams map[string]TeamResult
 	// Tiers is the tier-by-tier agent-name layout, for ordered rendering.
 	Tiers [][]string
 	// DurationMs is the wall-clock duration of the run in milliseconds.

@@ -273,6 +273,11 @@ func (h *Handle) Status() Status {
 		totalCost += ts.CostUSD
 	}
 	status.Agents = agents
+	// Teams mirrors Agents so v2 SDK consumers polling
+	// handle.Status().Teams keep compiling through the v3 migration
+	// window. AgentSnapshot and TeamSnapshot are the same type
+	// (alias), so this is a free shallow copy.
+	status.Teams = agents
 	status.TotalCost = totalCost
 	return status
 }
@@ -665,6 +670,13 @@ type Status struct {
 	// before the engine has constructed its run service or when the
 	// snapshot read fails.
 	Agents map[string]AgentSnapshot
+	// Teams mirrors Agents so v2 SDK consumers polling
+	// `handle.Status().Teams` keep compiling through the v3 transition.
+	// Populated alongside Agents; do not read in new code. Removed in
+	// v3.x.
+	//
+	// Deprecated: use Agents.
+	Teams map[string]TeamSnapshot
 	// StartedAt is the wall-clock time at which Start returned the
 	// Handle.
 	StartedAt time.Time

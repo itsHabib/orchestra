@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -27,7 +28,24 @@ type RunState struct {
 
 // UnmarshalJSON accepts the legacy `teams` key from v2 state.json so
 // orchestra upgrades that land mid-run can keep reading workspace state.
+//
+// Probes key presence via [json.RawMessage] before decoding the typed
+// struct so a payload that explicitly sets `agents: {}` is not
+// misclassified as "agents key absent" — the previous `len(Agents) == 0`
+// fallback could silently swap an empty agents map for a populated
+// teams one. Setting both keys is rejected (matches the dual-key guard
+// on [config.Config.UnmarshalYAML], the MCP `InlineDAG.UnmarshalJSON`,
+// and the workspace `Registry.UnmarshalJSON`).
 func (s *RunState) UnmarshalJSON(data []byte) error {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	_, hasAgents := probe["agents"]
+	_, hasTeams := probe["teams"]
+	if hasAgents && hasTeams {
+		return errors.New("state.json: cannot set both `agents` and `teams`; orchestra writers should only produce one key")
+	}
 	type rawRunState struct {
 		Project       string                `json:"project"`
 		Backend       string                `json:"backend,omitempty"`
@@ -50,7 +68,7 @@ func (s *RunState) UnmarshalJSON(data []byte) error {
 	s.StartedAt = raw.StartedAt
 	s.EnvironmentID = raw.EnvironmentID
 	s.Agents = raw.Agents
-	if len(s.Agents) == 0 && len(raw.Teams) > 0 {
+	if hasTeams {
 		s.Agents = raw.Teams
 	}
 	s.Phase = raw.Phase

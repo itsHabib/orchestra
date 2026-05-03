@@ -18,7 +18,7 @@ func printRunRows(records []runRecord, limit int, now time.Time) {
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
 	}
-	fmt.Printf("%-32s  %-18s  %-10s  %-7s  %-8s  %-10s  %s\n", "RUN ID", "PROJECT", "STATUS", "TEAMS", "COST", "DURATION", "STARTED")
+	fmt.Printf("%-32s  %-18s  %-10s  %-7s  %-8s  %-10s  %s\n", "RUN ID", "PROJECT", "STATUS", "AGENTS", "COST", "DURATION", "STARTED")
 	for _, record := range records {
 		fmt.Printf("%-32s  %-18s  %-10s  %-7s  %-8s  %-10s  %s\n",
 			runIDLabel(record),
@@ -53,7 +53,7 @@ func printRunDetail(record runRecord, now time.Time) {
 		fmt.Printf("Env ID:   %s\n", state.EnvironmentID)
 	}
 	fmt.Println()
-	fmt.Printf("%-18s  %-4s  %-10s  %-8s  %-10s  %-28s  %-7s  %s\n", "TEAM", "TIER", "STATUS", "COST", "DURATION", "AGENT ID", "VERSION", "SESSION ID")
+	fmt.Printf("%-18s  %-4s  %-10s  %-8s  %-10s  %-28s  %-7s  %s\n", "AGENT", "TIER", "STATUS", "COST", "DURATION", "AGENT ID", "VERSION", "SESSION ID")
 	for _, name := range sortedRunTeamNames(state) {
 		ts := state.Agents[name]
 		fmt.Printf("%-18s  %-4s  %-10s  %-8s  %-10s  %-28s  %-7s  %s\n",

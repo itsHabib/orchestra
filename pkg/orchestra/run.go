@@ -186,6 +186,16 @@ type orchestrationRun struct {
 	// ToolResult struct does not — it only carries the ToolUseID).
 	toolNamesMu      sync.Mutex
 	toolNamesByUseID map[string]string
+
+	// lastToolByAgentMu guards lastToolByAgent, the local-backend
+	// per-agent cache of the most-recent tool name written into
+	// state.json. The OnToolUse callback consults it to skip the
+	// state-file write when the same tool fires twice in a row (very
+	// common — agents loop on Edit / Bash / Read), so observability
+	// updates don't dominate the run's I/O load even on tool-heavy
+	// sessions.
+	lastToolByAgentMu sync.Mutex
+	lastToolByAgent   map[string]string
 }
 
 type tierResult struct {
@@ -204,6 +214,23 @@ func (r *orchestrationRun) emit(ev Event) {
 		return
 	}
 	r.emitter.Emit(ev)
+}
+
+// recordToolUse updates the per-agent last-tool cache and returns true
+// when the cached value changed (i.e. the caller should persist the
+// new tool name). Returns false on consecutive identical tool uses so
+// the OnToolUse fast-path skips the state.json write.
+func (r *orchestrationRun) recordToolUse(agent, toolName string) bool {
+	r.lastToolByAgentMu.Lock()
+	defer r.lastToolByAgentMu.Unlock()
+	if r.lastToolByAgent == nil {
+		r.lastToolByAgent = make(map[string]string)
+	}
+	if r.lastToolByAgent[agent] == toolName {
+		return false
+	}
+	r.lastToolByAgent[agent] = toolName
+	return true
 }
 
 // emitInfo emits an EventInfo with Tier=-1.
@@ -357,8 +384,14 @@ func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, du
 		agents[name] = AgentResult{AgentState: ts}
 	}
 	return &Result{
-		Project:    state.Project,
-		Agents:     agents,
+		Project: state.Project,
+		Agents:  agents,
+		// Teams mirrors Agents so v2 SDK consumers reading
+		// `Run(...).Teams` keep compiling through the v3 migration
+		// window. AgentResult and TeamResult are the same type
+		// (alias), so this is a free shallow copy of the same map
+		// values rather than a separate marshal pass.
+		Teams:      agents,
 		Tiers:      tiers,
 		DurationMs: dur.Milliseconds(),
 	}, nil
@@ -621,7 +654,7 @@ func (r *orchestrationRun) spawnTeam(ctx context.Context, tierIdx int, teamName 
 func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState) (*workspace.AgentResult, error) {
 	team := r.cfg.AgentByName(teamName)
 	if team == nil {
-		return nil, fmt.Errorf("team %q not found in config", teamName)
+		return nil, fmt.Errorf("agent %q not found in config", teamName)
 	}
 	if err := r.runService.RecordTeamStart(ctx, teamName); err != nil {
 		return nil, err
@@ -660,6 +693,15 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 			r.emitTeamMessage(tierIdx, team, "%s", msg)
 		},
 		OnToolUse: func(toolName string, at time.Time) {
+			// Skip writes when the same tool fires twice in a row.
+			// Tool sequences are heavy on repetition (Edit / Edit /
+			// Edit, Bash / Bash, …); persisting on every event would
+			// burn a state-file write per tool with no observability
+			// gain, since LastTool would not change. Reviewer flagged
+			// this as a perf concern on the unbounded write path.
+			if !r.recordToolUse(teamName, toolName) {
+				return
+			}
 			updateCtx := context.WithoutCancel(ctx)
 			err := r.runService.Store().UpdateAgentState(updateCtx, teamName, func(ts *store.AgentState) {
 				ts.LastTool = toolName

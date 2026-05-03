@@ -242,6 +242,12 @@ func TestSpawn_ProgressFunc(t *testing.T) {
 	}
 }
 
+// TestSpawn_OnToolUse_FiresEveryEvent confirms the spawner-level
+// callback receives every tool_use event verbatim — throttling is the
+// caller's responsibility (pkg/orchestra dedupes consecutive identical
+// tool names before persisting to state.json). Pinning the spawner
+// behavior here keeps the throttling decision visible at the boundary
+// rather than buried in the parser.
 func TestSpawn_OnToolUse(t *testing.T) {
 	script := writeMockCommand(t, []string{
 		`{"type":"system","subtype":"init","session_id":"sess-tool"}`,
