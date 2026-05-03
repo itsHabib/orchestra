@@ -387,6 +387,42 @@ teams:
 	}
 }
 
+// TestUnmarshalYAML_RejectsBothKeysEvenWhenOneIsEmpty pins the v3 strict
+// migration guard: setting both keys is an error even when one of them is
+// `[]`. The previous implementation accepted `agents: []` plus
+// `teams: [...]` and silently treated it as legacy input, hiding migration
+// typos behind an ambiguous precedence rule.
+func TestUnmarshalYAML_RejectsBothKeysEvenWhenOneIsEmpty(t *testing.T) {
+	cases := []string{
+		// Empty agents + populated teams.
+		`
+name: p
+agents: []
+teams:
+  - {name: a, lead: {role: L}, tasks: [{summary: x}]}
+`,
+		// Populated agents + empty teams.
+		`
+name: p
+agents:
+  - {name: a, lead: {role: L}, tasks: [{summary: x}]}
+teams: []
+`,
+		// Both empty — still ambiguous, so still rejected.
+		`
+name: p
+agents: []
+teams: []
+`,
+	}
+	for i, src := range cases {
+		var cfg Config
+		if err := yaml.Unmarshal([]byte(src), &cfg); err == nil {
+			t.Errorf("case %d: expected error when both keys are present (one may be empty)", i)
+		}
+	}
+}
+
 // TestValidate_LegacyTeamsKeyEmitsWarning confirms the deprecation hint.
 func TestValidate_LegacyTeamsKeyEmitsWarning(t *testing.T) {
 	src := `

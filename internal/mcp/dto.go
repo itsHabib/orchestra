@@ -37,8 +37,14 @@ type RunView struct {
 	// v3.0. Populated by the MCP server alongside Agents; do not consume in
 	// new code. Removed in v3.x.
 	//
+	// No `omitempty`: v2 callers expect `teams: []` for runs whose
+	// state.json is missing or empty (the original schema treated nil and
+	// "no agent data yet" as the same shape on the wire). Dropping the
+	// key entirely when the slice is empty would force v2 clients into a
+	// special-case "key absent" branch that did not exist before v3.
+	//
 	// Deprecated: use Agents.
-	Teams []AgentView `json:"teams,omitempty"`
+	Teams []AgentView `json:"teams"`
 }
 
 // AgentView is the per-agent slice of a RunView. Carries the

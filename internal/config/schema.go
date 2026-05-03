@@ -26,9 +26,13 @@ type Config struct {
 }
 
 // UnmarshalYAML accepts both the v3 spelling (`agents:`) and the v2
-// spelling (`teams:`) for the agent list. Mixing both in one document is
-// rejected to avoid silent precedence surprises.
+// spelling (`teams:`) for the agent list. Setting both keys at the same
+// time is rejected — even when one of them is empty — so an accidental
+// dual-key config during migration fails fast with a clear precedence
+// error instead of silently treating the empty side as authoritative.
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
+	keys := topLevelKeysPresent(value)
+	hasAgents, hasTeams := keys.Agents, keys.Teams
 	type rawConfig struct {
 		Name        string      `yaml:"name"`
 		Backend     Backend     `yaml:"backend,omitempty"`
@@ -41,7 +45,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	if err := value.Decode(&raw); err != nil {
 		return err
 	}
-	if len(raw.Agents) > 0 && len(raw.Teams) > 0 {
+	if hasAgents && hasTeams {
 		return errors.New("config: cannot set both `agents:` and `teams:` — use `agents:` (the v3 spelling)")
 	}
 	c.Name = raw.Name
@@ -50,11 +54,46 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Coordinator = raw.Coordinator
 	c.Agents = raw.Agents
 	c.LegacyTeamsKey = false
-	if len(raw.Agents) == 0 && len(raw.Teams) > 0 {
+	if hasTeams {
 		c.Agents = raw.Teams
 		c.LegacyTeamsKey = true
 	}
 	return nil
+}
+
+// agentListKeyPresence captures which top-level slice keys
+// ([Config.UnmarshalYAML]) saw in the YAML document. Used by the dual-key
+// guard to distinguish "missing key" from "empty list" — both decode to a
+// zero-length slice, but only the former is allowed alongside its alias.
+type agentListKeyPresence struct {
+	Agents bool
+	Teams  bool
+}
+
+// topLevelKeysPresent inspects the parsed YAML node and reports whether
+// the document explicitly set `agents:` and `teams:`.
+func topLevelKeysPresent(value *yaml.Node) agentListKeyPresence {
+	var p agentListKeyPresence
+	node := value
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return p
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Kind != yaml.ScalarNode {
+			continue
+		}
+		switch key.Value {
+		case "agents":
+			p.Agents = true
+		case "teams":
+			p.Teams = true
+		}
+	}
+	return p
 }
 
 // Backend selects the runtime backend. It accepts either:

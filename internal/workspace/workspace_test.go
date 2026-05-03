@@ -148,6 +148,27 @@ func TestRegistry_LegacyTeamsKeyOnRead(t *testing.T) {
 	}
 }
 
+// TestRegistry_RejectsDualKeyOnRead pins the strict guard against
+// orchestra-written registry.json files that include both `agents` and
+// `teams`. registry.json is engine-only (never user-edited); a dual-key
+// payload almost certainly means a writer regression, so the reader fails
+// fast instead of papering over it with silent precedence.
+func TestRegistry_RejectsDualKeyOnRead(t *testing.T) {
+	chdirTemp(t)
+
+	ws, err := Ensure(".orchestra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dual := []byte(`{"project":"p","agents":[],"teams":[{"name":"alpha","status":"pending"}]}`)
+	if err := os.WriteFile(filepath.Join(ws.Path, "registry.json"), dual, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.ReadRegistry(); err == nil {
+		t.Fatal("expected error for registry.json with both `agents` and `teams` keys")
+	}
+}
+
 func TestUpdateRegistryEntry(t *testing.T) {
 	chdirTemp(t)
 

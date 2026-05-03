@@ -661,10 +661,17 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		},
 		OnToolUse: func(toolName string, at time.Time) {
 			updateCtx := context.WithoutCancel(ctx)
-			_ = r.runService.Store().UpdateAgentState(updateCtx, teamName, func(ts *store.AgentState) {
+			err := r.runService.Store().UpdateAgentState(updateCtx, teamName, func(ts *store.AgentState) {
 				ts.LastTool = toolName
 				ts.LastEventAt = at
 			})
+			if err != nil {
+				// Persistence failures here are observability-only — the
+				// agent keeps running. Surface the failure so the
+				// chat-side coordinator (or human) sees that LastTool
+				// stopped advancing instead of silently ignoring the drift.
+				r.emitWarn("LastTool persist for agent %q failed: %v", teamName, err)
+			}
 		},
 	})
 }

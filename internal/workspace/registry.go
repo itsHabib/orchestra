@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -11,15 +12,26 @@ type Registry struct {
 	Agents  []RegistryEntry `json:"agents"`
 }
 
-// UnmarshalJSON accepts the legacy `teams:` key from v2 registry.json so an
-// orchestra upgrade that lands mid-run can keep reading the in-flight file.
-// Mixed `agents`+`teams` keys are not supported (callers should not be
-// producing both).
+// UnmarshalJSON accepts the legacy `teams:` key from v2 registry.json so
+// an orchestra upgrade that lands mid-run can keep reading the in-flight
+// file. Setting both keys at the same time is rejected — registry.json is
+// orchestra-written, never hand-edited, so a dual-key payload almost
+// certainly means a writer bug; failing fast surfaces it instead of
+// papering over it with a silent precedence rule.
 func (r *Registry) UnmarshalJSON(data []byte) error {
 	type rawRegistry struct {
 		Project string          `json:"project"`
 		Agents  []RegistryEntry `json:"agents"`
 		Teams   []RegistryEntry `json:"teams"`
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	_, hasAgents := probe["agents"]
+	_, hasTeams := probe["teams"]
+	if hasAgents && hasTeams {
+		return errors.New("registry: registry.json sets both `agents` and `teams`; orchestra writers should only produce one key")
 	}
 	var raw rawRegistry
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -27,7 +39,7 @@ func (r *Registry) UnmarshalJSON(data []byte) error {
 	}
 	r.Project = raw.Project
 	r.Agents = raw.Agents
-	if len(r.Agents) == 0 && len(raw.Teams) > 0 {
+	if hasTeams {
 		r.Agents = raw.Teams
 	}
 	return nil

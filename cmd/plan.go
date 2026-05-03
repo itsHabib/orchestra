@@ -141,7 +141,7 @@ var planCmd = &cobra.Command{
 			fmt.Println()
 		}
 
-		fmt.Printf("  %d teams, %d tiers, %d tasks total\n\n", len(cfg.Agents), len(tiers), totalTasks)
+		fmt.Printf("  %d agents, %d tiers, %d tasks total\n\n", len(cfg.Agents), len(tiers), totalTasks)
 
 		if showPrompts {
 			// Build a mock state with all teams pending to show what prompts look like

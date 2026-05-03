@@ -146,6 +146,37 @@ func TestHandleRun_InlineDAG_MissingFieldRejected(t *testing.T) {
 	}
 }
 
+// TestInlineDAG_AcceptsLegacyTeamsKey verifies the v2 → v3 alias on the
+// MCP wire: clients on the legacy schema keep producing valid runs.
+func TestInlineDAG_AcceptsLegacyTeamsKey(t *testing.T) {
+	payload := []byte(`{"project_name":"demo","backend":"local","teams":[{"name":"a","role":"r","prompt":"p"}]}`)
+	var dag InlineDAG
+	if err := dag.UnmarshalJSON(payload); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if len(dag.Agents) != 1 || dag.Agents[0].Name != "a" {
+		t.Fatalf("Agents = %+v", dag.Agents)
+	}
+}
+
+// TestInlineDAG_RejectsBothKeysEvenWhenOneIsEmpty pins the strict dual-key
+// guard on the MCP `run` tool. The previous implementation silently
+// treated `agents: []` plus `teams: [...]` as legacy input — that masked
+// migration bugs in clients. After v3 the parser fails fast.
+func TestInlineDAG_RejectsBothKeysEvenWhenOneIsEmpty(t *testing.T) {
+	payloads := [][]byte{
+		[]byte(`{"agents":[],"teams":[{"name":"a","role":"r","prompt":"p"}]}`),
+		[]byte(`{"agents":[{"name":"a","role":"r","prompt":"p"}],"teams":[]}`),
+		[]byte(`{"agents":[],"teams":[]}`),
+	}
+	for i, p := range payloads {
+		var dag InlineDAG
+		if err := dag.UnmarshalJSON(p); err == nil {
+			t.Errorf("case %d: expected error for dual-key payload %s", i, p)
+		}
+	}
+}
+
 func TestHandleRun_ConfigPath_LoadsExistingYAML(t *testing.T) {
 	t.Parallel()
 

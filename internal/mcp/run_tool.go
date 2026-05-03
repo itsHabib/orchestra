@@ -39,8 +39,16 @@ type InlineDAG struct {
 }
 
 // UnmarshalJSON accepts the legacy `teams:` key alongside `agents:` so v2
-// MCP clients keep working through the v3 transition.
+// MCP clients keep working through the v3 transition. Setting both keys at
+// the same time is rejected — even when one is empty — so a migration
+// typo (`agents: []` plus `teams: [...]`) fails fast instead of silently
+// falling back to the legacy spelling.
 func (d *InlineDAG) UnmarshalJSON(data []byte) error {
+	keys, err := dagKeysPresent(data)
+	if err != nil {
+		return err
+	}
+	hasAgents, hasTeams := keys.Agents, keys.Teams
 	type rawInlineDAG struct {
 		ProjectName string        `json:"project_name,omitempty"`
 		Backend     string        `json:"backend,omitempty"`
@@ -51,16 +59,37 @@ func (d *InlineDAG) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	if len(raw.Agents) > 0 && len(raw.Teams) > 0 {
+	if hasAgents && hasTeams {
 		return errors.New("inline_dag: cannot set both `agents:` and `teams:` — use `agents:`")
 	}
 	d.ProjectName = raw.ProjectName
 	d.Backend = raw.Backend
 	d.Agents = raw.Agents
-	if len(d.Agents) == 0 && len(raw.Teams) > 0 {
+	if hasTeams {
 		d.Agents = raw.Teams
 	}
 	return nil
+}
+
+// inlineDAGKeyPresence captures whether the JSON payload for the MCP
+// `run` tool's inline DAG explicitly set `agents` and `teams`. Same role
+// as [config.agentListKeyPresence] — the dual-key guard needs to
+// distinguish a missing key from an empty list.
+type inlineDAGKeyPresence struct {
+	Agents bool
+	Teams  bool
+}
+
+// dagKeysPresent reports whether the JSON object explicitly set `agents`
+// and `teams`.
+func dagKeysPresent(data []byte) (inlineDAGKeyPresence, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return inlineDAGKeyPresence{}, err
+	}
+	_, hasAgents := probe["agents"]
+	_, hasTeams := probe["teams"]
+	return inlineDAGKeyPresence{Agents: hasAgents, Teams: hasTeams}, nil
 }
 
 // InlineAgent is one agent in an InlineDAG. Each becomes one `orchestra run`
