@@ -1,8 +1,18 @@
 # Architecture Critique: orchestra v3 Composable Workflows
 
-Reviewer: architecture-critic  
-Date: 2026-05-02  
-Docs reviewed: `docs/DESIGN-v3-composable-workflows.md`, `docs/feedback-mcp-server.md`
+Reviewer: architecture-critic
+Date: 2026-05-02
+Docs reviewed: an **earlier draft** of `docs/DESIGN-v3-composable-workflows.md` plus `docs/feedback-mcp-server.md`.
+
+> Status note: this critique was written against the pre-revision design draft.
+> Several of the issues below were resolved in the published design — most
+> notably C2 (artifact filesystem on MA), where the design now persists
+> signal-event artifacts host-side regardless of backend, and C3/C8 where
+> the gate DSL was simplified to hardcoded `signal_status` predicates and
+> the recipe runtime was deferred to Phase B. The doc is preserved unmodified
+> so the design-revision audit trail stays intact; treat references to
+> `record_artifact`, `${...}` interpolation, and the inline-expansion sub-recipe
+> mechanism as referring to the pre-revision shape, not the binding design.
 
 ---
 

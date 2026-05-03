@@ -2,7 +2,17 @@
 
 Reviewer: alternatives-advocate
 Date: 2026-05-02
-Docs reviewed: `docs/feedback-mcp-server.md`, `docs/DESIGN-v3-composable-workflows.md`
+Docs reviewed: `docs/feedback-mcp-server.md` plus an **earlier draft** of `docs/DESIGN-v3-composable-workflows.md`.
+
+> Status note: this counter-proposal was written against the pre-revision
+> design draft. The published design simplified several of the structures
+> this critique pushed back on — gate expressions are now hardcoded
+> `signal_status == X` predicates rather than a `${outputs...}` DSL,
+> artifacts ride signal-event payloads (no separate storage layer), and
+> sub-recipes were removed from v3.0. The doc is preserved unmodified so
+> the design-revision audit trail stays intact; references to
+> `${outputs...}`, `record_artifact`, the `messages/` bus, and inline-expansion
+> sub-recipes describe the pre-revision shape, not the binding design.
 
 ---
 
