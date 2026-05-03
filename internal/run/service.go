@@ -236,18 +236,34 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 // explanatory LastError so observers can distinguish a deliberate cancel
 // from a crash. Used by the engine's signal handler when a cancel_run
 // request lands on a still-running agent.
+//
+// Race-safe transition: the UpdateAgentState callback skips the rewrite
+// when the agent has already reached a terminal state. Without this
+// guard, an agent that completed successfully right as cancellation
+// was processed would see its done/failed status clobbered to
+// "canceled" — Copilot caught this in round-2 review.
 func (s *Service) RecordAgentCancel(ctx context.Context, agent, reason string) error {
 	now := s.clock().UTC()
 	cause := "canceled by cancel_run"
 	if reason != "" {
 		cause = "canceled by cancel_run: " + reason
 	}
+	canceled := false
 	if err := s.store.UpdateAgentState(ctx, agent, func(ts *store.AgentState) {
+		switch ts.Status {
+		case "done", "failed", "canceled", "terminated":
+			// Already terminal — leave history alone.
+			return
+		}
 		ts.Status = "canceled"
 		ts.EndedAt = now
 		ts.LastError = cause
+		canceled = true
 	}); err != nil {
 		return fmt.Errorf("run.RecordAgentCancel %s: %w", agent, err)
+	}
+	if !canceled {
+		return nil
 	}
 	s.mirrorRegistry("RecordAgentCancel", agent, func(e *workspace.RegistryEntry) {
 		e.Status = "canceled"
@@ -257,17 +273,26 @@ func (s *Service) RecordAgentCancel(ctx context.Context, agent, reason string) e
 }
 
 // RecordCancellationRequested writes a [store.Cancellation] entry into
-// the run document. Called by the cancel_run MCP tool before signaling
-// the orchestra subprocess so the engine can distinguish a deliberate
-// shutdown from a crash. Idempotent: a second call replaces the entry
-// rather than failing.
+// the run document, stamping it with the service clock. Called by the
+// engine when it observes ctx-cancel without an external cancel
+// request file (e.g. caller pressed Ctrl-C).
 func (s *Service) RecordCancellationRequested(ctx context.Context, reason string) error {
+	return s.RecordCancellationRequestedAt(ctx, reason, s.clock().UTC())
+}
+
+// RecordCancellationRequestedAt is the timestamp-explicit variant used
+// by the engine's signal handler when it merges a cancel request that
+// originated outside the engine (the MCP server's cancellation.json
+// file carries its own RequestedAt). Preserving the original timestamp
+// keeps observability honest — observers see *when* the user asked,
+// not when the engine got around to merging it.
+func (s *Service) RecordCancellationRequestedAt(ctx context.Context, reason string, requestedAt time.Time) error {
 	state, err := s.store.LoadRunState(ctx)
 	if err != nil {
 		return fmt.Errorf("run.RecordCancellationRequested: %w", err)
 	}
 	state.Cancellation = &store.Cancellation{
-		RequestedAt: s.clock().UTC(),
+		RequestedAt: requestedAt,
 		Reason:      reason,
 	}
 	if err := s.store.SaveRunState(ctx, state); err != nil {

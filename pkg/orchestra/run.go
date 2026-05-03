@@ -2,6 +2,7 @@ package orchestra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -273,14 +274,15 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 	runErr := run.execute(ctx, tiers)
 	// Cancellation hook: when ctx is canceled (cancel_run sent SIGTERM,
 	// caller pressed Ctrl-C, or anything else closed the run context),
-	// flip every still-running agent to "canceled" before snapshotting.
-	// Without this, state.json keeps the agents at "running" indefinitely
-	// because the per-agent goroutines bail out without writing terminal
-	// state. Use a fresh context detached from the canceled parent so
-	// the writes actually land.
+	// merge any cancel-request file the MCP server dropped into the
+	// run state, then flip every still-running agent to "canceled".
+	// Without this hook state.json keeps the agents at "running"
+	// indefinitely because the per-agent goroutines bail out without
+	// writing terminal state. Use a fresh context detached from the
+	// canceled parent so the writes actually land.
 	if ctx.Err() != nil {
 		cancelCtx := context.WithoutCancel(ctx)
-		reason := readCancellationReason(cancelCtx, runService)
+		reason := mergeCancellationRequest(cancelCtx, runService, runService.Workspace())
 		if cancelErr := runService.CancelAllRunningAgents(cancelCtx, reason); cancelErr != nil {
 			emitter.Emit(Event{
 				Kind:    EventWarn,
@@ -301,17 +303,46 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 	}
 }
 
-// readCancellationReason extracts the cancel_run reason from state.json
-// (written by the MCP server before SIGTERM lands). Returns an empty
-// string when no cancellation request was recorded — the engine still
-// treats the ctx-cancel as a deliberate shutdown.
-func readCancellationReason(ctx context.Context, svc *runsvc.Service) string {
-	state, err := svc.Snapshot(ctx)
-	if err != nil || state == nil || state.Cancellation == nil {
+// mergeCancellationRequest reads the cancel-request file written by the
+// MCP server (cancellation.json under the workspace), merges it into
+// the run state via [runsvc.Service.RecordCancellationRequested] (which
+// holds the in-process state mutex), and returns the operator-supplied
+// reason for use as the per-agent cancel cause. Returns an empty
+// reason on any failure — the engine still treats the ctx-cancel as a
+// deliberate shutdown rather than failing because cancellation.json
+// was absent or malformed.
+func mergeCancellationRequest(ctx context.Context, svc *runsvc.Service, ws *workspace.Workspace) string {
+	if ws == nil {
 		return ""
 	}
-	return state.Cancellation.Reason
+	path := filepath.Join(ws.Path, mcpCancellationFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cf struct {
+		RequestedAt time.Time `json:"requested_at"`
+		Reason      string    `json:"reason,omitempty"`
+	}
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return ""
+	}
+	// Merge into RunState.Cancellation under the engine's in-process
+	// state mutex. RecordCancellationRequested is a no-op-on-error
+	// path; observability gaps here are acceptable since we already
+	// have the reason in `cf` and the agent transitions still land.
+	if err := svc.RecordCancellationRequestedAt(ctx, cf.Reason, cf.RequestedAt); err != nil {
+		_ = err
+	}
+	return cf.Reason
 }
+
+// mcpCancellationFile is the workspace-relative path to the
+// MCP-written cancel-request file. Mirrors
+// [internal/mcp.cancellationFileName] but kept as a separate constant
+// so pkg/orchestra doesn't import internal/mcp (the dep arrow runs the
+// other way).
+const mcpCancellationFile = ".orchestra/cancellation.json"
 
 // pickEmitter returns the Handle as the engine's emitter when available;
 // otherwise a NoopEmitter so engine code can call Emit unconditionally.

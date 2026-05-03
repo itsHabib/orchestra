@@ -78,11 +78,12 @@ func TestHandleCancelRun_AlreadyTerminalIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestHandleCancelRun_WritesCancellationFlagToStateJSON pins the
-// cancellation flag the engine reads on signal receipt. We seed a real
-// state.json (no signal sent — pid 0) and verify the handler writes the
-// reason atomically.
-func TestHandleCancelRun_WritesCancellationFlagToStateJSON(t *testing.T) {
+// TestHandleCancelRun_WritesCancellationFile pins the dedicated
+// cancellation.json file the engine reads on signal receipt. The MCP
+// server writes a separate file (instead of touching state.json) to
+// avoid the cross-process read-modify-write race the round-2 review
+// caught.
+func TestHandleCancelRun_WritesCancellationFile(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -122,19 +123,19 @@ func TestHandleCancelRun_WritesCancellationFlagToStateJSON(t *testing.T) {
 		t.Fatalf("expected CancelledAt to be set on a fresh cancel, got %+v", out)
 	}
 
-	// Read state.json directly and confirm the cancellation flag landed.
-	written, err := fs.LoadRunState(context.Background())
+	// Confirm cancellation.json (not state.json) carries the request.
+	cf, err := readCancellationFile(wsDir)
 	if err != nil {
-		t.Fatalf("load state: %v", err)
+		t.Fatalf("readCancellationFile: %v", err)
 	}
-	if written.Cancellation == nil {
-		t.Fatal("Cancellation flag should be non-nil after cancel_run")
+	if cf == nil {
+		t.Fatal("cancellation.json should exist after cancel_run")
 	}
-	if written.Cancellation.Reason != "user pressed stop" {
-		t.Fatalf("Cancellation.Reason = %q", written.Cancellation.Reason)
+	if cf.Reason != "user pressed stop" {
+		t.Fatalf("Reason = %q", cf.Reason)
 	}
-	if time.Since(written.Cancellation.RequestedAt) > time.Minute {
-		t.Fatalf("Cancellation.RequestedAt = %v, want recent", written.Cancellation.RequestedAt)
+	if time.Since(cf.RequestedAt) > time.Minute {
+		t.Fatalf("RequestedAt = %v, want recent", cf.RequestedAt)
 	}
 }
 
@@ -155,7 +156,17 @@ func TestRunIsTerminal(t *testing.T) {
 			"b": {Status: "failed"},
 			"c": {Status: "canceled"},
 		}, true},
-		{"any running", map[string]store.AgentState{
+		// Copilot round-2: runIsTerminal must mirror deriveStatus's
+		// fold so cancel_run's idempotent short-circuit matches what
+		// list_runs / get_run report. SignalStatus="done" or
+		// "blocked" with Status still "running" counts as terminal.
+		{"signal done while status running", map[string]store.AgentState{
+			"a": {Status: "running", SignalStatus: "done"},
+		}, true},
+		{"signal blocked while status running", map[string]store.AgentState{
+			"a": {Status: "running", SignalStatus: "blocked"},
+		}, true},
+		{"any running without signal", map[string]store.AgentState{
 			"a": {Status: "done"},
 			"b": {Status: "running"},
 		}, false},

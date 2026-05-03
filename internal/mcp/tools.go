@@ -203,9 +203,12 @@ func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 			RequestedAt: state.Cancellation.RequestedAt,
 			Reason:      state.Cancellation.Reason,
 		}
-		// A run that has any canceled agent (or whose cancellation has
-		// landed but no agents have flipped yet) reports "canceled" at
-		// the run level so observers can short-circuit polling.
+		// Cancellation flag landed but the engine hasn't drained yet:
+		// downgrade the still-"running" status to "canceled" so
+		// observers stop polling. Already-terminal statuses (done /
+		// failed / blocked / explicit canceled) win — failed shouldn't
+		// be masked, and a clean done that happened to coincide with
+		// a cancel shouldn't be retroactively rewritten as canceled.
 		if v.Status == RunStatusRunning {
 			v.Status = RunStatusCancelled
 		}
