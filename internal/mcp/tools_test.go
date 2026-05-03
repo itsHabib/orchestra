@@ -418,6 +418,15 @@ func TestDeriveStatus_PriorityOrder(t *testing.T) {
 		{"failed beats blocked in either order", []TeamView{{SignalStatus: "blocked"}, {Status: "failed"}}, RunStatusFailed},
 		{"blocked beats running", []TeamView{{Status: "running", SignalStatus: "blocked"}, {Status: "running", SignalStatus: "done"}}, RunStatusBlocked},
 		{"some pending → running", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "running"}}, RunStatusRunning},
+		// Cancellation cases — pin the v3 cancel_run fold:
+		{"all canceled → canceled", []TeamView{{Status: "canceled"}, {Status: "canceled"}}, RunStatusCancelled},
+		// Mixed done + canceled — Codex P1: a Ctrl-C / SIGTERM hit
+		// after one agent already finished. Without this branch the
+		// run reports "running" forever even though nothing is.
+		{"done + canceled → canceled", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "canceled"}}, RunStatusCancelled},
+		// Canceled mixed with a still-running agent stays "running"
+		// because the cancel hasn't drained yet.
+		{"canceled + still running → running", []TeamView{{Status: "canceled"}, {Status: "running"}}, RunStatusRunning},
 	}
 	for _, tc := range cases {
 		got := deriveStatus(tc.teams)

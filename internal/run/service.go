@@ -232,6 +232,96 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 	return nil
 }
 
+// RecordAgentCancel transitions an agent to "canceled" and stamps an
+// explanatory LastError so observers can distinguish a deliberate cancel
+// from a crash. Used by the engine's signal handler when a cancel_run
+// request lands on a still-running agent.
+//
+// Race-safe transition: the UpdateAgentState callback skips the rewrite
+// when the agent has already reached a terminal state. Without this
+// guard, an agent that completed successfully right as cancellation
+// was processed would see its done/failed status clobbered to
+// "canceled" — Copilot caught this in round-2 review.
+func (s *Service) RecordAgentCancel(ctx context.Context, agent, reason string) error {
+	now := s.clock().UTC()
+	cause := "canceled by cancel_run"
+	if reason != "" {
+		cause = "canceled by cancel_run: " + reason
+	}
+	canceled := false
+	if err := s.store.UpdateAgentState(ctx, agent, func(ts *store.AgentState) {
+		switch ts.Status {
+		case "done", "failed", "canceled", "terminated":
+			// Already terminal — leave history alone.
+			return
+		}
+		ts.Status = "canceled"
+		ts.EndedAt = now
+		ts.LastError = cause
+		canceled = true
+	}); err != nil {
+		return fmt.Errorf("run.RecordAgentCancel %s: %w", agent, err)
+	}
+	if !canceled {
+		return nil
+	}
+	s.mirrorRegistry("RecordAgentCancel", agent, func(e *workspace.RegistryEntry) {
+		e.Status = "canceled"
+		e.EndedAt = now
+	})
+	return nil
+}
+
+// RecordCancellationRequested writes a [store.Cancellation] entry into
+// the run document, stamping it with the service clock. Called by the
+// engine when it observes ctx-cancel without an external cancel
+// request file (e.g. caller pressed Ctrl-C).
+func (s *Service) RecordCancellationRequested(ctx context.Context, reason string) error {
+	return s.RecordCancellationRequestedAt(ctx, reason, s.clock().UTC())
+}
+
+// RecordCancellationRequestedAt is the timestamp-explicit variant used
+// by the engine's signal handler when it merges a cancel request that
+// originated outside the engine (the MCP server's cancellation.json
+// file carries its own RequestedAt). Preserving the original timestamp
+// keeps observability honest — observers see *when* the user asked,
+// not when the engine got around to merging it.
+func (s *Service) RecordCancellationRequestedAt(ctx context.Context, reason string, requestedAt time.Time) error {
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		return fmt.Errorf("run.RecordCancellationRequested: %w", err)
+	}
+	state.Cancellation = &store.Cancellation{
+		RequestedAt: requestedAt,
+		Reason:      reason,
+	}
+	if err := s.store.SaveRunState(ctx, state); err != nil {
+		return fmt.Errorf("run.RecordCancellationRequested save: %w", err)
+	}
+	return nil
+}
+
+// CancelAllRunningAgents transitions every agent currently in the
+// "pending" or "running" state to "canceled". Called by the engine on
+// signal receipt so observers see a clean transition rather than agents
+// stuck mid-run forever.
+func (s *Service) CancelAllRunningAgents(ctx context.Context, reason string) error {
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		return fmt.Errorf("run.CancelAllRunningAgents: %w", err)
+	}
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		if ts.Status != "running" && ts.Status != "pending" {
+			continue
+		}
+		if err := s.RecordAgentCancel(ctx, name, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RecordTeamFail transitions a team to failed and records the error summary.
 func (s *Service) RecordTeamFail(ctx context.Context, team string, cause error) error {
 	now := s.clock().UTC()

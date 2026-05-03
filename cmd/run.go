@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/itsHabib/orchestra/pkg/orchestra"
@@ -45,7 +47,14 @@ var runCmd = &cobra.Command{
 		}
 
 		wallStart := time.Now()
-		result, err := orchestra.Run(context.Background(), res.Config,
+		// Cancel the run on SIGINT (Ctrl-C) or SIGTERM (cancel_run /
+		// `kill <pid>`) so the engine can flip running agents to
+		// "canceled" before exiting. Without this, MCP-side cancel_run
+		// would just kill the subprocess, leaving state.json with
+		// agents stuck at "running" forever.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := orchestra.Run(ctx, res.Config,
 			orchestra.WithWorkspaceDir(workspaceDir),
 			orchestra.WithEventHandler(func(ev orchestra.Event) {
 				orchestra.PrintEvent(os.Stdout, ev)

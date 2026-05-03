@@ -86,6 +86,17 @@ func (s *Server) registerTools() {
 			"set, narrows to that single inbox; without it, aggregates across every inbox. " +
 			"since is an RFC3339 timestamp filter.",
 	}, recoverHandler(s.handleReadMessages))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolCancelRun,
+		Description: "Request cancellation of an MCP-managed orchestra run (works on " +
+			"both local and managed_agents backends). Records the request on " +
+			"state.json, sends SIGTERM (CTRL_BREAK_EVENT on Windows) to the " +
+			"orchestra subprocess, and waits up to 10 seconds for clean shutdown. " +
+			"Idempotent: returns AlreadyDone=true when the run is already terminal; " +
+			"surfaces SignalError on the result when state.json was updated but " +
+			"the signal did not deliver (stale PID, permission issue).",
+	}, recoverHandler(s.handleCancelRun))
 }
 
 // recoverHandler wraps a typed tool handler with a deferred recover so a
@@ -187,6 +198,21 @@ func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 	v.Phase = state.Phase
 	v.PhaseIters = state.PhaseIters
 	v.LastError = state.LastError
+	if state.Cancellation != nil {
+		v.Cancellation = &CancellationView{
+			RequestedAt: state.Cancellation.RequestedAt,
+			Reason:      state.Cancellation.Reason,
+		}
+		// Cancellation flag landed but the engine hasn't drained yet:
+		// downgrade the still-"running" status to "canceled" so
+		// observers stop polling. Already-terminal statuses (done /
+		// failed / blocked / explicit canceled) win — failed shouldn't
+		// be masked, and a clean done that happened to coincide with
+		// a cancel shouldn't be retroactively rewritten as canceled.
+		if v.Status == RunStatusRunning {
+			v.Status = RunStatusCancelled
+		}
+	}
 	v.Teams = v.Agents
 	return v
 }
@@ -244,10 +270,18 @@ func deriveStatus(agents []AgentView) string {
 	}
 	blocked := false
 	allDone := true
+	anyCanceled := false
+	allTerminal := true
 	for i := range agents {
 		a := &agents[i]
 		if a.Status == "failed" {
 			return RunStatusFailed
+		}
+		if a.Status == "canceled" {
+			anyCanceled = true
+		}
+		if !isTerminalStatus(a.Status, a.SignalStatus) {
+			allTerminal = false
 		}
 		if a.SignalStatus == "blocked" {
 			blocked = true
@@ -255,6 +289,14 @@ func deriveStatus(agents []AgentView) string {
 		if a.SignalStatus != "done" {
 			allDone = false
 		}
+	}
+	// "Canceled" wins over "blocked" / "done" once nothing is still
+	// running. The CLI shutdown path (Ctrl-C / cancel_run via SIGTERM)
+	// flips pending/running agents to "canceled" but leaves agents that
+	// already reached "done" alone — without this branch a run with one
+	// done and one canceled agent would report "running" forever.
+	if allTerminal && anyCanceled {
+		return RunStatusCancelled
 	}
 	switch {
 	case blocked:
@@ -264,6 +306,19 @@ func deriveStatus(agents []AgentView) string {
 	default:
 		return RunStatusRunning
 	}
+}
+
+// isTerminalStatus reports whether an agent has reached a state that
+// will not transition further on its own. Used by [deriveStatus] to
+// distinguish "shutdown pending" (some agent still working) from
+// "shutdown complete" (every agent has settled into done / canceled /
+// blocked).
+func isTerminalStatus(status, signal string) bool {
+	switch status {
+	case "done", "failed", "canceled":
+		return true
+	}
+	return signal == "done" || signal == "blocked"
 }
 
 // errResult builds a tool-level error CallToolResult. The error is reported to
