@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/credentials"
 	"github.com/itsHabib/orchestra/internal/customtools"
 	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/event"
@@ -186,6 +188,14 @@ type orchestrationRun struct {
 	// ToolResult struct does not — it only carries the ToolUseID).
 	toolNamesMu      sync.Mutex
 	toolNamesByUseID map[string]string
+
+	// agentEnv is the per-agent environment overlay resolved from the
+	// credentials store + host env at run start. Keyed by agent name; the
+	// inner map is canonical env-var → secret. Empty when the agent has no
+	// `requires_credentials:` declared. Local backend forwards via cmd.Env;
+	// MA backend logs an "MA env injection deferred" warning at session
+	// start (the SDK does not expose per-session env yet — see PR description).
+	agentEnv map[string]map[string]string
 }
 
 type tierResult struct {
@@ -414,6 +424,11 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		At:      time.Now(),
 	})
 
+	agentEnv, err := resolveAgentCredentials(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if cfg.Backend.Kind == BackendManagedAgents {
 		ma, err := initManagedAgentsBackend(cfg, runService, emitter)
 		if err != nil {
@@ -428,6 +443,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		if err != nil {
 			return nil, nil, err
 		}
+		emitMACredentialWarning(emitter, agentEnv)
 		return &orchestrationRun{
 			cfg:             cfg,
 			emitter:         emitter,
@@ -441,6 +457,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 			notifier:        defaultNotifier(ws),
 			teamSkills:      resources.Skills,
 			teamCustomTools: resources.CustomTools,
+			agentEnv:        agentEnv,
 		}, tiers, nil
 	}
 
@@ -457,6 +474,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		participants: participants,
 		inboxLookup:  lookup,
 		handle:       handle,
+		agentEnv:     agentEnv,
 	}, tiers, nil
 }
 
@@ -482,6 +500,90 @@ func registerBuiltinCustomTools() {
 // level so a flaky sink (missing notify-send, timed-out osascript) leaves a
 // breadcrumb the operator can grep — an io.Discard logger here would silently
 // swallow exactly the failures the design wants surfaced.
+// resolveAgentCredentials walks every agent in cfg, computes the union of
+// per-agent and defaults-level `requires_credentials`, and resolves the
+// resulting names against the credentials store + host env. The returned
+// map is keyed by agent name; the inner map is canonical env-var name →
+// secret value. Missing names produce [credentials.ErrMissing] with a
+// message naming each absent credential — fail fast at run start beats
+// failing 10 minutes in when the agent tries to use the secret.
+func resolveAgentCredentials(ctx context.Context, cfg *Config) (map[string]map[string]string, error) {
+	credStore := credentials.New("")
+	out := make(map[string]map[string]string, len(cfg.Agents))
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		names := a.RequiredCredentials(&cfg.Defaults)
+		if len(names) == 0 {
+			continue
+		}
+		resolved, err := credStore.Resolve(ctx, names)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: %w", a.Name, err)
+		}
+		envOverlay := make(map[string]string, len(resolved))
+		// Track which credential name owns each env-var key so we can
+		// fail fast on collisions: `foo-bar` and `foo_bar` both
+		// normalize to `FOO_BAR`, and silently picking one produces
+		// nondeterministic injection (last writer wins on map
+		// iteration). Reviewer flagged both Codex P2 and Copilot.
+		keyOwner := make(map[string]string, len(resolved))
+		credNames := make([]string, 0, len(resolved))
+		for credName := range resolved {
+			credNames = append(credNames, credName)
+		}
+		sort.Strings(credNames)
+		for _, credName := range credNames {
+			envName := credentials.EnvNameFor(credName)
+			if prior, dup := keyOwner[envName]; dup {
+				return nil, fmt.Errorf("agent %q: credentials %q and %q both normalize to env var %q — pick one to avoid silent overwrites",
+					a.Name, prior, credName, envName)
+			}
+			keyOwner[envName] = credName
+			envOverlay[envName] = resolved[credName]
+		}
+		out[a.Name] = envOverlay
+	}
+	return out, nil
+}
+
+// emitMACredentialWarning surfaces a one-shot warning when an MA-backed
+// run declares `requires_credentials:` for any agent. The Anthropic
+// Managed Agents SDK does not currently expose per-session env-var
+// injection; orchestra resolves the names so dev workflows fail fast on
+// missing credentials, but the secret is not propagated into the MA
+// sandbox. See PR description / docs/DESIGN-v3-composable-workflows.md
+// §12.1 — closing this gap is a v3.x follow-up (likely via Vault IDs).
+//
+// Sorts the credential names before formatting so the warning text is
+// stable across runs — useful for grep-by-message dashboards and tests
+// that pin the message verbatim.
+func emitMACredentialWarning(emitter event.Emitter, agentEnv map[string]map[string]string) {
+	if len(agentEnv) == 0 {
+		return
+	}
+	names := make(map[string]struct{})
+	for agent := range agentEnv {
+		env := agentEnv[agent]
+		for name := range env {
+			names[name] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	flat := make([]string, 0, len(names))
+	for name := range names {
+		flat = append(flat, name)
+	}
+	sort.Strings(flat)
+	emitter.Emit(Event{
+		Kind:    EventWarn,
+		Tier:    -1,
+		Message: fmt.Sprintf("requires_credentials resolved %v but the managed-agents SDK does not yet expose per-session env injection; secrets will not reach the agent sandbox in this run (v3.x follow-up)", flat),
+		At:      time.Now(),
+	})
+}
+
 func defaultNotifier(ws *workspace.Workspace) notify.Notifier {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	sinks := make([]notify.Notifier, 0, 3)
@@ -663,6 +765,7 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		PermissionMode: r.cfg.Defaults.PermissionMode,
 		TimeoutMinutes: r.cfg.Defaults.TimeoutMinutes,
 		LogWriter:      logWriter,
+		Env:            r.agentEnv[teamName],
 		ProgressFunc: func(team, msg string) {
 			r.emitTeamMessage(tierIdx, team, "%s", msg)
 		},

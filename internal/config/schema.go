@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -169,6 +170,19 @@ type Defaults struct {
 	TimeoutMinutes       int    `yaml:"timeout_minutes" json:"timeout_minutes"`
 	InboxPollInterval    string `yaml:"inbox_poll_interval" json:"inbox_poll_interval"`
 	MAConcurrentSessions int    `yaml:"ma_concurrent_sessions,omitempty" json:"ma_concurrent_sessions,omitempty"`
+
+	// RequiresCredentials lists the credential names every agent in this
+	// run needs. Per-agent [Agent.RequiresCredentials] extends this list;
+	// the engine resolves the union via internal/credentials at run start,
+	// failing fast on any missing name.
+	//
+	// Backend coverage: under `backend.kind=local` the resolved values
+	// reach `claude -p` via cmd.Env. Under `backend.kind=managed_agents`
+	// the engine resolves the names but emits a one-shot warning at run
+	// start — the SDK does not yet expose per-session env injection, so
+	// secrets do not reach the MA sandbox. Closing the MA gap is a v3.x
+	// follow-up; see docs/DESIGN-v3-composable-workflows.md §12.1.
+	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
 }
 
 // DefaultMAConcurrentSessions caps how many managed-agents StartSession calls
@@ -198,6 +212,41 @@ type Agent struct {
 	// the agent's `agent.custom_tool_use` events through to the registered
 	// handler. Local backend ignores this field with a warning.
 	CustomTools []CustomToolRef `yaml:"custom_tools,omitempty" json:"custom_tools,omitempty"`
+
+	// RequiresCredentials lists credential names this agent needs at run
+	// start. Names resolve to environment variables on the agent's session
+	// via internal/credentials. Combined with [Defaults.RequiresCredentials]
+	// at run time — the agent sees the union of both lists.
+	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
+}
+
+// RequiredCredentials returns the union of [Defaults.RequiresCredentials]
+// and [Agent.RequiresCredentials], deduplicated and sorted. Empty when
+// neither is set.
+func (a *Agent) RequiredCredentials(d *Defaults) []string {
+	if a == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(names []string) {
+		for _, name := range names {
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			out = append(out, name)
+		}
+	}
+	if d != nil {
+		add(d.RequiresCredentials)
+	}
+	add(a.RequiresCredentials)
+	sort.Strings(out)
+	return out
 }
 
 // SkillRef references a skill registered with Anthropic via the orchestra

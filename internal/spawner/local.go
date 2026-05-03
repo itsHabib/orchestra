@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,13 @@ type SpawnOpts struct {
 	// not emitted by claude -p stream-json, but reserved for parity with
 	// the MA backend's SessionErrorEvent). Optional — nil disables.
 	OnSessionError func(message string, at time.Time)
+
+	// Env is the per-agent environment overlay layered on top of the
+	// orchestra parent environment before claude -p is launched. Keys are
+	// canonical env-var names ("GITHUB_TOKEN") and values are the secrets
+	// the credentials package resolved for this agent. Optional — nil keeps
+	// the parent env intact.
+	Env map[string]string
 }
 
 // LocalSubprocessSpawner adapts the existing claude -p subprocess backend.
@@ -177,7 +185,7 @@ func startLocalProcess(ctx context.Context, opts *SpawnOpts) (*exec.Cmd, io.Read
 	}
 
 	proc := exec.CommandContext(ctx, cmdName, buildClaudeArgs(opts)...)
-	proc.Env = claudeEnv()
+	proc.Env = claudeEnv(opts.Env)
 
 	stdout, err := proc.StdoutPipe()
 	if err != nil {
@@ -215,14 +223,41 @@ func buildClaudeArgs(opts *SpawnOpts) []string {
 	return args
 }
 
-func claudeEnv() []string {
+func claudeEnv(overlay map[string]string) []string {
 	var env []string
+	skip := make(map[string]struct{}, len(overlay))
+	for k := range overlay {
+		skip[envKey(k)] = struct{}{}
+	}
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CLAUDECODE=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
 		}
+		if eq := strings.IndexByte(e, '='); eq > 0 {
+			if _, override := skip[envKey(e[:eq])]; override {
+				continue
+			}
+		}
+		env = append(env, e)
+	}
+	for k, v := range overlay {
+		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// envKey normalizes an env-var name for the overlay-shadowing lookup.
+// Windows env names are case-insensitive ("Path" and "PATH" are the
+// same variable), so a literal map lookup misses overlay overrides
+// for keys the parent set under a different case. POSIX env names are
+// case-sensitive; the upper-case normalization is harmless there
+// because every overlay key is already uppercased by
+// [credentials.EnvNameFor].
+func envKey(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 type streamParser struct {
