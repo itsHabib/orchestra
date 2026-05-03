@@ -171,9 +171,16 @@ type Defaults struct {
 	MAConcurrentSessions int    `yaml:"ma_concurrent_sessions,omitempty" json:"ma_concurrent_sessions,omitempty"`
 
 	// RequiresCredentials lists the credential names every agent in this
-	// run needs. Names resolve to environment variables on the agent's
-	// session via internal/credentials at run start. Per-agent
-	// [Agent.RequiresCredentials] extends this list.
+	// run needs. Per-agent [Agent.RequiresCredentials] extends this list;
+	// the engine resolves the union via internal/credentials at run start,
+	// failing fast on any missing name.
+	//
+	// Backend coverage: under `backend.kind=local` the resolved values
+	// reach `claude -p` via cmd.Env. Under `backend.kind=managed_agents`
+	// the engine resolves the names but emits a one-shot warning at run
+	// start — the SDK does not yet expose per-session env injection, so
+	// secrets do not reach the MA sandbox. Closing the MA gap is a v3.x
+	// follow-up; see docs/DESIGN-v3-composable-workflows.md §12.1.
 	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
 }
 

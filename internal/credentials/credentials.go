@@ -21,18 +21,22 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"sync"
 )
 
 // FileName is the basename of the credentials store under the user's
 // orchestra config dir.
 const FileName = "credentials.json"
 
-// Store reads and writes the credentials JSON file. Methods are safe for
-// concurrent use within a single process; cross-process writes are not
-// serialized (callers should not race `orchestra credentials set` against
-// itself).
+// Store reads and writes the credentials JSON file. The mutex serializes
+// the read-modify-write paths ([Store.Set] / [Store.Delete] / [Store.Write])
+// within a single process so a concurrent caller cannot lose an update
+// when two writers grab the file at the same time. Cross-process writes
+// are not serialized; callers should not race `orchestra credentials set`
+// invocations against each other.
 type Store struct {
 	path string
+	mu   sync.Mutex
 	// warn is called for non-fatal findings (e.g. permissive file mode on
 	// non-Windows). Tests can override; production wires it to stderr.
 	warn func(format string, args ...any)
@@ -83,7 +87,16 @@ var ErrMissing = errors.New("credentials: required credential missing")
 // file is absent. Validates 0600 mode on POSIX hosts; Windows skips the
 // check because chmod has no NTFS equivalent and 0o600 emulation is
 // best-effort there.
-func (s *Store) Read(_ context.Context) (map[string]string, error) {
+func (s *Store) Read(ctx context.Context) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readLocked(ctx)
+}
+
+// readLocked is the lock-held core of [Store.Read]. Reused by Set /
+// Delete / Resolve so the read-modify-write sequences stay atomic
+// without recursing into Read's mutex.
+func (s *Store) readLocked(_ context.Context) (map[string]string, error) {
 	info, err := os.Stat(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -117,6 +130,15 @@ func (s *Store) Read(_ context.Context) (map[string]string, error) {
 // Write replaces the credentials file atomically with mode 0600. Empty
 // `creds` writes a `{}` document so subsequent reads succeed.
 func (s *Store) Write(_ context.Context, creds map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeLocked(creds)
+}
+
+// writeLocked is the lock-held core of [Store.Write], reused by [Set] /
+// [Delete] so the read-modify-write sequence runs atomically without
+// recursing into Write's mutex.
+func (s *Store) writeLocked(creds map[string]string) error {
 	if creds == nil {
 		creds = map[string]string{}
 	}
@@ -145,13 +167,18 @@ func (s *Store) Write(_ context.Context, creds map[string]string) error {
 	return nil
 }
 
-// Set writes a single credential, preserving the rest of the store. Same
-// atomic-write semantics as [Store.Write].
+// Set writes a single credential, preserving the rest of the store. The
+// read-modify-write sequence runs under the store mutex so concurrent
+// callers can't trample each other (the older comment claimed Set was
+// safe for concurrent use, but the implementation lost updates without
+// this lock — caught by review).
 func (s *Store) Set(ctx context.Context, name, value string) error {
 	if name == "" {
 		return errors.New("credentials: name is required")
 	}
-	creds, err := s.Read(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	creds, err := s.readLocked(ctx)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
@@ -159,16 +186,18 @@ func (s *Store) Set(ctx context.Context, name, value string) error {
 		creds = map[string]string{}
 	}
 	creds[name] = value
-	return s.Write(ctx, creds)
+	return s.writeLocked(creds)
 }
 
 // Delete removes a single credential. Missing names are not an error
-// (idempotent delete).
+// (idempotent delete). Same locked read-modify-write as [Set].
 func (s *Store) Delete(ctx context.Context, name string) error {
 	if name == "" {
 		return errors.New("credentials: name is required")
 	}
-	creds, err := s.Read(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	creds, err := s.readLocked(ctx)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
@@ -179,7 +208,7 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 		return nil
 	}
 	delete(creds, name)
-	return s.Write(ctx, creds)
+	return s.writeLocked(creds)
 }
 
 // Has reports whether `name` is present in the store. Missing-file is

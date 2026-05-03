@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -226,14 +227,14 @@ func claudeEnv(overlay map[string]string) []string {
 	var env []string
 	skip := make(map[string]struct{}, len(overlay))
 	for k := range overlay {
-		skip[k] = struct{}{}
+		skip[envKey(k)] = struct{}{}
 	}
 	for _, e := range os.Environ() {
 		if strings.HasPrefix(e, "CLAUDECODE=") {
 			continue
 		}
 		if eq := strings.IndexByte(e, '='); eq > 0 {
-			if _, override := skip[e[:eq]]; override {
+			if _, override := skip[envKey(e[:eq])]; override {
 				continue
 			}
 		}
@@ -243,6 +244,20 @@ func claudeEnv(overlay map[string]string) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// envKey normalizes an env-var name for the overlay-shadowing lookup.
+// Windows env names are case-insensitive ("Path" and "PATH" are the
+// same variable), so a literal map lookup misses overlay overrides
+// for keys the parent set under a different case. POSIX env names are
+// case-sensitive; the upper-case normalization is harmless there
+// because every overlay key is already uppercased by
+// [credentials.EnvNameFor].
+func envKey(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 type streamParser struct {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -73,7 +74,13 @@ var credentialsGetCmd = &cobra.Command{
 			return err
 		}
 		envName := credentials.EnvNameFor(name)
-		_, hasEnv := os.LookupEnv(envName)
+		// Match Store.Resolve: empty env values count as not-set so this
+		// command's "present" report aligns with what the run actually
+		// sees at start time. Reporting an empty env var as present
+		// would surface "OK" here only for the run to fail moments
+		// later with a missing-credential error.
+		envValue, hasEnv := os.LookupEnv(envName)
+		hasEnv = hasEnv && envValue != ""
 		out := cmd.OutOrStdout()
 		switch {
 		case hasFile && hasEnv:
@@ -130,25 +137,23 @@ var credentialsDeleteCmd = &cobra.Command{
 // the credential is absent so shell pipelines / CI can branch on it.
 var errCredentialMissing = errors.New("credential not set")
 
-// readSecretFromStdin reads one line from stdin and strips the trailing
-// newline. Used by `credentials set <name>` (no value arg) so secrets stay
-// out of shell history and `ps` listings.
+// readSecretFromStdin reads stdin to EOF (capped at 1 MiB so a runaway
+// pipe doesn't blow up RAM) and strips a single trailing CRLF / LF so a
+// pasted secret followed by Enter doesn't carry the newline through to
+// the store. The earlier single `os.Stdin.Read` was (a) truncated to
+// 64 KiB and (b) string-compared the error to detect EOF — both review-
+// flagged. [io.LimitReader] keeps the cap; [io.ReadAll] handles the
+// short-read case.
 func readSecretFromStdin() (string, error) {
-	data, err := readAllStdin()
+	const limit = 1 << 20 // 1 MiB
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, limit))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(strings.TrimRight(data, "\n"), "\r"), nil
-}
-
-func readAllStdin() (string, error) {
-	const limit = 64 * 1024
-	buf := make([]byte, limit)
-	n, err := os.Stdin.Read(buf)
-	if err != nil && err.Error() != "EOF" {
-		return "", err
-	}
-	return string(buf[:n]), nil
+	out := string(data)
+	out = strings.TrimSuffix(out, "\n")
+	out = strings.TrimSuffix(out, "\r")
+	return out, nil
 }
 
 func init() {

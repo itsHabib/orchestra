@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -473,6 +474,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		participants: participants,
 		inboxLookup:  lookup,
 		handle:       handle,
+		agentEnv:     agentEnv,
 	}, tiers, nil
 }
 
@@ -534,12 +536,17 @@ func resolveAgentCredentials(ctx context.Context, cfg *Config) (map[string]map[s
 // missing credentials, but the secret is not propagated into the MA
 // sandbox. See PR description / docs/DESIGN-v3-composable-workflows.md
 // §12.1 — closing this gap is a v3.x follow-up (likely via Vault IDs).
+//
+// Sorts the credential names before formatting so the warning text is
+// stable across runs — useful for grep-by-message dashboards and tests
+// that pin the message verbatim.
 func emitMACredentialWarning(emitter event.Emitter, agentEnv map[string]map[string]string) {
 	if len(agentEnv) == 0 {
 		return
 	}
 	names := make(map[string]struct{})
-	for _, env := range agentEnv {
+	for agent := range agentEnv {
+		env := agentEnv[agent]
 		for name := range env {
 			names[name] = struct{}{}
 		}
@@ -551,6 +558,7 @@ func emitMACredentialWarning(emitter event.Emitter, agentEnv map[string]map[stri
 	for name := range names {
 		flat = append(flat, name)
 	}
+	sort.Strings(flat)
 	emitter.Emit(Event{
 		Kind:    EventWarn,
 		Tier:    -1,
