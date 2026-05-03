@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,7 +16,85 @@ type Config struct {
 	Backend     Backend     `yaml:"backend,omitempty"`
 	Defaults    Defaults    `yaml:"defaults"`
 	Coordinator Coordinator `yaml:"coordinator,omitempty"`
-	Teams       []Team      `yaml:"teams"`
+	Agents      []Agent     `yaml:"agents"`
+
+	// LegacyTeamsKey is set true by [Config.UnmarshalYAML] when the YAML
+	// document used the deprecated `teams:` key instead of `agents:`. The
+	// validator surfaces a one-shot deprecation warning when set so authors
+	// learn the new spelling without breaking existing files. It is not a
+	// YAML field itself.
+	LegacyTeamsKey bool `yaml:"-" json:"-"`
+}
+
+// UnmarshalYAML accepts both the v3 spelling (`agents:`) and the v2
+// spelling (`teams:`) for the agent list. Setting both keys at the same
+// time is rejected — even when one of them is empty — so an accidental
+// dual-key config during migration fails fast with a clear precedence
+// error instead of silently treating the empty side as authoritative.
+func (c *Config) UnmarshalYAML(value *yaml.Node) error {
+	keys := topLevelKeysPresent(value)
+	hasAgents, hasTeams := keys.Agents, keys.Teams
+	type rawConfig struct {
+		Name        string      `yaml:"name"`
+		Backend     Backend     `yaml:"backend,omitempty"`
+		Defaults    Defaults    `yaml:"defaults"`
+		Coordinator Coordinator `yaml:"coordinator,omitempty"`
+		Agents      []Agent     `yaml:"agents"`
+		Teams       []Agent     `yaml:"teams"`
+	}
+	var raw rawConfig
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	if hasAgents && hasTeams {
+		return errors.New("config: cannot set both `agents:` and `teams:` — use `agents:` (the v3 spelling)")
+	}
+	c.Name = raw.Name
+	c.Backend = raw.Backend
+	c.Defaults = raw.Defaults
+	c.Coordinator = raw.Coordinator
+	c.Agents = raw.Agents
+	c.LegacyTeamsKey = false
+	if hasTeams {
+		c.Agents = raw.Teams
+		c.LegacyTeamsKey = true
+	}
+	return nil
+}
+
+// agentListKeyPresence captures which top-level slice keys
+// ([Config.UnmarshalYAML]) saw in the YAML document. Used by the dual-key
+// guard to distinguish "missing key" from "empty list" — both decode to a
+// zero-length slice, but only the former is allowed alongside its alias.
+type agentListKeyPresence struct {
+	Agents bool
+	Teams  bool
+}
+
+// topLevelKeysPresent inspects the parsed YAML node and reports whether
+// the document explicitly set `agents:` and `teams:`.
+func topLevelKeysPresent(value *yaml.Node) agentListKeyPresence {
+	var p agentListKeyPresence
+	node := value
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return p
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Kind != yaml.ScalarNode {
+			continue
+		}
+		switch key.Value {
+		case "agents":
+			p.Agents = true
+		case "teams":
+			p.Teams = true
+		}
+	}
+	return p
 }
 
 // Backend selects the runtime backend. It accepts either:
@@ -50,7 +129,7 @@ type RepositorySpec struct {
 	DefaultBranch string `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`
 }
 
-// EnvironmentOverride lets a single team substitute backend-level
+// EnvironmentOverride lets a single agent substitute backend-level
 // environment fields (currently just Repository) without touching others.
 type EnvironmentOverride struct {
 	Repository *RepositorySpec `yaml:"repository,omitempty" json:"repository,omitempty"`
@@ -83,7 +162,7 @@ type Coordinator struct {
 	MaxTurns int    `yaml:"max_turns,omitempty"`
 }
 
-// Defaults holds default values applied to all teams unless overridden.
+// Defaults holds default values applied to all agents unless overridden.
 type Defaults struct {
 	Model                string `yaml:"model" json:"model"`
 	MaxTurns             int    `yaml:"max_turns" json:"max_turns"`
@@ -91,6 +170,19 @@ type Defaults struct {
 	TimeoutMinutes       int    `yaml:"timeout_minutes" json:"timeout_minutes"`
 	InboxPollInterval    string `yaml:"inbox_poll_interval" json:"inbox_poll_interval"`
 	MAConcurrentSessions int    `yaml:"ma_concurrent_sessions,omitempty" json:"ma_concurrent_sessions,omitempty"`
+
+	// RequiresCredentials lists the credential names every agent in this
+	// run needs. Per-agent [Agent.RequiresCredentials] extends this list;
+	// the engine resolves the union via internal/credentials at run start,
+	// failing fast on any missing name.
+	//
+	// Backend coverage: under `backend.kind=local` the resolved values
+	// reach `claude -p` via cmd.Env. Under `backend.kind=managed_agents`
+	// the engine resolves the names but emits a one-shot warning at run
+	// start — the SDK does not yet expose per-session env injection, so
+	// secrets do not reach the MA sandbox. Closing the MA gap is a v3.x
+	// follow-up; see docs/DESIGN-v3-composable-workflows.md §12.1.
+	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
 }
 
 // DefaultMAConcurrentSessions caps how many managed-agents StartSession calls
@@ -98,8 +190,9 @@ type Defaults struct {
 // limit. Override via Defaults.MAConcurrentSessions.
 const DefaultMAConcurrentSessions = 20
 
-// Team represents a single team or solo agent in the orchestration.
-type Team struct {
+// Agent represents one node in the orchestration DAG — a solo agent or a
+// multi-member team led by [Lead]. Renamed from Team in v3.
+type Agent struct {
 	Name                string              `yaml:"name"`
 	Lead                Lead                `yaml:"lead"`
 	Members             []Member            `yaml:"members"`
@@ -108,17 +201,52 @@ type Team struct {
 	Context             string              `yaml:"context"`
 	EnvironmentOverride EnvironmentOverride `yaml:"environment_override,omitempty"`
 
-	// Skills are attached to the team's MA agent at agent-creation time.
+	// Skills are attached to the agent's MA agent at agent-creation time.
 	// Each entry is resolved against the orchestra skills cache
 	// (~/.config/orchestra/skills.json) to find a registered skill_id.
 	// Local backend ignores this field with a warning.
 	Skills []SkillRef `yaml:"skills,omitempty" json:"skills,omitempty"`
 
-	// CustomTools are host-side tools the team's MA agent can invoke. Each
+	// CustomTools are host-side tools the agent's MA agent can invoke. Each
 	// entry is resolved against the customtools registry; the engine wires
 	// the agent's `agent.custom_tool_use` events through to the registered
 	// handler. Local backend ignores this field with a warning.
 	CustomTools []CustomToolRef `yaml:"custom_tools,omitempty" json:"custom_tools,omitempty"`
+
+	// RequiresCredentials lists credential names this agent needs at run
+	// start. Names resolve to environment variables on the agent's session
+	// via internal/credentials. Combined with [Defaults.RequiresCredentials]
+	// at run time — the agent sees the union of both lists.
+	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
+}
+
+// RequiredCredentials returns the union of [Defaults.RequiresCredentials]
+// and [Agent.RequiresCredentials], deduplicated and sorted. Empty when
+// neither is set.
+func (a *Agent) RequiredCredentials(d *Defaults) []string {
+	if a == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(names []string) {
+		for _, name := range names {
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			out = append(out, name)
+		}
+	}
+	if d != nil {
+		add(d.RequiresCredentials)
+	}
+	add(a.RequiresCredentials)
+	sort.Strings(out)
+	return out
 }
 
 // SkillRef references a skill registered with Anthropic via the orchestra
@@ -139,7 +267,7 @@ type CustomToolRef struct {
 	Name string `yaml:"name" json:"name"`
 }
 
-// Task represents a unit of work assigned to a team.
+// Task represents a unit of work assigned to an agent.
 type Task struct {
 	Summary      string   `yaml:"summary" json:"summary"`
 	Details      string   `yaml:"details" json:"details,omitempty"`
@@ -147,28 +275,30 @@ type Task struct {
 	Verify       string   `yaml:"verify" json:"verify,omitempty"`
 }
 
-// Lead represents the team lead configuration.
+// Lead represents the lead role for an agent. For solo agents the Lead is
+// the sole role; for multi-member teams the lead delegates to Members.
 type Lead struct {
 	Role  string `yaml:"role" json:"role"`
 	Model string `yaml:"model" json:"model,omitempty"`
 }
 
-// Member represents a team member.
+// Member represents a sub-role inside a multi-member team agent.
 type Member struct {
 	Role  string `yaml:"role" json:"role"`
 	Focus string `yaml:"focus" json:"focus"`
 }
 
-// HasMembers returns true if the team has members (is a real team, not solo).
-func (t *Team) HasMembers() bool {
-	return len(t.Members) > 0
+// HasMembers reports whether the agent is a multi-member team rather than
+// a solo agent.
+func (a *Agent) HasMembers() bool {
+	return len(a.Members) > 0
 }
 
-// TeamByName returns a pointer to the team with the given name, or nil.
-func (c *Config) TeamByName(name string) *Team {
-	for i := range c.Teams {
-		if c.Teams[i].Name == name {
-			return &c.Teams[i]
+// AgentByName returns a pointer to the agent with the given name, or nil.
+func (c *Config) AgentByName(name string) *Agent {
+	for i := range c.Agents {
+		if c.Agents[i].Name == name {
+			return &c.Agents[i]
 		}
 	}
 	return nil
@@ -197,9 +327,9 @@ func (c *Config) ResolveDefaults() {
 	if c.Defaults.MAConcurrentSessions == 0 {
 		c.Defaults.MAConcurrentSessions = DefaultMAConcurrentSessions
 	}
-	for i := range c.Teams {
-		if c.Teams[i].Lead.Model == "" {
-			c.Teams[i].Lead.Model = c.Defaults.Model
+	for i := range c.Agents {
+		if c.Agents[i].Lead.Model == "" {
+			c.Agents[i].Lead.Model = c.Defaults.Model
 		}
 	}
 	// Coordinator defaults
@@ -218,23 +348,23 @@ func (c *Config) ResolveDefaults() {
 // pkg/orchestra re-exports this type as orchestra.Warning.
 type Warning struct {
 	// Field is the structured YAML path to the offending node, e.g.
-	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
-	// team 0's third task. Empty for project-level issues.
+	// {"agents", "0", "tasks", "2", "verify"} for a missing verify on
+	// agent 0's third task. Empty for project-level issues.
 	Field []string
-	// Team is the denormalized team name when Field points into a team
-	// subtree; empty otherwise. Exists for ergonomic display so
-	// String() can render `team "foo": message` without walking Field
+	// Agent is the denormalized agent name when Field points into an
+	// agent subtree; empty otherwise. Exists for ergonomic display so
+	// String() can render `agent "foo": message` without walking Field
 	// back into Config. Programmatic consumers should prefer Field.
-	Team string
+	Agent string
 	// Message is the human-readable description of the issue.
 	Message string
 }
 
-// String returns the human-readable form: `team "foo": message` when
-// Team is non-empty, else just Message.
+// String returns the human-readable form: `agent "foo": message` when
+// Agent is non-empty, else just Message.
 func (w Warning) String() string {
-	if w.Team != "" {
-		return fmt.Sprintf("team %q: %s", w.Team, w.Message)
+	if w.Agent != "" {
+		return fmt.Sprintf("agent %q: %s", w.Agent, w.Message)
 	}
 	return w.Message
 }
@@ -258,14 +388,20 @@ func (c *Config) Validate() *Result {
 	}
 
 	var warnings []Warning
+	if c.LegacyTeamsKey {
+		warnings = append(warnings, Warning{
+			Field:   []string{"teams"},
+			Message: "`teams:` is deprecated in v3; rename to `agents:`",
+		})
+	}
 	errs := c.validateTopLevel()
 
-	nameValidation := c.validateTeamNames()
+	nameValidation := c.validateAgentNames()
 	errs = append(errs, nameValidation.errs...)
 
-	teamValidation := c.validateTeams(nameValidation.seen)
-	warnings = append(warnings, teamValidation.warnings...)
-	errs = append(errs, teamValidation.errs...)
+	agentValidation := c.validateAgents(nameValidation.seen)
+	warnings = append(warnings, agentValidation.warnings...)
+	errs = append(errs, agentValidation.errs...)
 	warnings = append(warnings, c.validateBackendWarnings()...)
 	warnings = append(warnings, c.validateRepositoryWarnings()...)
 	errs = append(errs, c.validateRepositoryHard()...)
@@ -275,7 +411,7 @@ func (c *Config) Validate() *Result {
 	errs = append(errs, resourceShape.errs...)
 
 	// Check for cycles using DFS
-	if cycleErr := detectCycles(c.Teams); cycleErr != nil {
+	if cycleErr := detectCycles(c.Agents); cycleErr != nil {
 		errs = append(errs, *cycleErr)
 	}
 
@@ -313,10 +449,10 @@ func (c *Config) validateTopLevel() []ConfigError {
 			Message: fmt.Sprintf("backend.kind must be one of: local, managed_agents (got %q)", c.Backend.Kind),
 		})
 	}
-	if len(c.Teams) == 0 {
+	if len(c.Agents) == 0 {
 		errs = append(errs, ConfigError{
-			Field:   []string{"teams"},
-			Message: "at least one team is required",
+			Field:   []string{"agents"},
+			Message: "at least one agent is required",
 		})
 	}
 	if c.Defaults.MAConcurrentSessions < 0 {
@@ -339,11 +475,11 @@ func (c *Config) validateBackendWarnings() []Warning {
 			Message: "coordinator is not supported under backend.kind=managed_agents",
 		})
 	}
-	for i := range c.Teams {
-		if c.Teams[i].HasMembers() {
+	for i := range c.Agents {
+		if c.Agents[i].HasMembers() {
 			warnings = append(warnings, Warning{
-				Field:   []string{"teams", strconv.Itoa(i), "members"},
-				Team:    c.Teams[i].Name,
+				Field:   []string{"agents", strconv.Itoa(i), "members"},
+				Agent:   c.Agents[i].Name,
 				Message: "members are not supported under backend.kind=managed_agents",
 			})
 		}
@@ -351,7 +487,7 @@ func (c *Config) validateBackendWarnings() []Warning {
 	return warnings
 }
 
-type teamNameValidation struct {
+type agentNameValidation struct {
 	seen map[string]bool
 	errs []ConfigError
 }
@@ -361,79 +497,79 @@ type validationResult struct {
 	errs     []ConfigError
 }
 
-func (c *Config) validateTeamNames() teamNameValidation {
+func (c *Config) validateAgentNames() agentNameValidation {
 	seen := make(map[string]bool)
 	var errs []ConfigError
-	for i := range c.Teams {
-		t := &c.Teams[i]
-		if t.Name == "" {
+	for i := range c.Agents {
+		a := &c.Agents[i]
+		if a.Name == "" {
 			errs = append(errs, ConfigError{
-				Field:   []string{"teams", strconv.Itoa(i), "name"},
-				Message: "team name cannot be empty",
+				Field:   []string{"agents", strconv.Itoa(i), "name"},
+				Message: "agent name cannot be empty",
 			})
 			continue
 		}
-		if seen[t.Name] {
+		if seen[a.Name] {
 			errs = append(errs, ConfigError{
-				Field:   []string{"teams", strconv.Itoa(i), "name"},
-				Team:    t.Name,
-				Message: fmt.Sprintf("duplicate team name: %q", t.Name),
+				Field:   []string{"agents", strconv.Itoa(i), "name"},
+				Agent:   a.Name,
+				Message: fmt.Sprintf("duplicate agent name: %q", a.Name),
 			})
 		}
-		seen[t.Name] = true
+		seen[a.Name] = true
 	}
-	return teamNameValidation{seen: seen, errs: errs}
+	return agentNameValidation{seen: seen, errs: errs}
 }
 
-func (c *Config) validateTeams(seen map[string]bool) validationResult {
+func (c *Config) validateAgents(seen map[string]bool) validationResult {
 	var warnings []Warning
 	var errs []ConfigError
-	for i := range c.Teams {
-		t := &c.Teams[i]
-		if t.Name == "" {
+	for i := range c.Agents {
+		a := &c.Agents[i]
+		if a.Name == "" {
 			continue
 		}
-		taskValidation := validateTasks(t, i)
+		taskValidation := validateTasks(a, i)
 		warnings = append(warnings, taskValidation.warnings...)
 		errs = append(errs, taskValidation.errs...)
-		errs = append(errs, validateDependencies(t, i, seen)...)
-		warnings = append(warnings, validateTeamSize(t, i)...)
-		warnings = append(warnings, validateTaskRatio(t, i)...)
+		errs = append(errs, validateDependencies(a, i, seen)...)
+		warnings = append(warnings, validateAgentSize(a, i)...)
+		warnings = append(warnings, validateTaskRatio(a, i)...)
 	}
 	return validationResult{warnings: warnings, errs: errs}
 }
 
-func validateTasks(t *Team, teamIdx int) validationResult {
+func validateTasks(a *Agent, agentIdx int) validationResult {
 	var warnings []Warning
 	var errs []ConfigError
-	teamFieldPrefix := []string{"teams", strconv.Itoa(teamIdx)}
-	if len(t.Tasks) == 0 {
+	agentFieldPrefix := []string{"agents", strconv.Itoa(agentIdx)}
+	if len(a.Tasks) == 0 {
 		errs = append(errs, ConfigError{
-			Field:   append(append([]string{}, teamFieldPrefix...), "tasks"),
-			Team:    t.Name,
+			Field:   append(append([]string{}, agentFieldPrefix...), "tasks"),
+			Agent:   a.Name,
 			Message: "at least one task is required",
 		})
 	}
-	for i, task := range t.Tasks {
-		taskFieldPrefix := append(append([]string{}, teamFieldPrefix...), "tasks", strconv.Itoa(i))
+	for i, task := range a.Tasks {
+		taskFieldPrefix := append(append([]string{}, agentFieldPrefix...), "tasks", strconv.Itoa(i))
 		if task.Summary == "" {
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, taskFieldPrefix...), "summary"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("task %d has empty summary", i+1),
 			})
 		}
 		if task.Details == "" {
 			warnings = append(warnings, Warning{
 				Field:   append(append([]string{}, taskFieldPrefix...), "details"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("task %d (%q) has empty details", i+1, task.Summary),
 			})
 		}
 		if task.Verify == "" {
 			warnings = append(warnings, Warning{
 				Field:   append(append([]string{}, taskFieldPrefix...), "verify"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("task %d (%q) has empty verify command", i+1, task.Summary),
 			})
 		}
@@ -441,69 +577,69 @@ func validateTasks(t *Team, teamIdx int) validationResult {
 	return validationResult{warnings: warnings, errs: errs}
 }
 
-func validateDependencies(t *Team, teamIdx int, seen map[string]bool) []ConfigError {
+func validateDependencies(a *Agent, agentIdx int, seen map[string]bool) []ConfigError {
 	var errs []ConfigError
-	field := []string{"teams", strconv.Itoa(teamIdx), "depends_on"}
-	for _, dep := range t.DependsOn {
-		if dep == t.Name {
+	field := []string{"agents", strconv.Itoa(agentIdx), "depends_on"}
+	for _, dep := range a.DependsOn {
+		if dep == a.Name {
 			errs = append(errs, ConfigError{
 				Field:   field,
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: "cannot depend on itself",
 			})
 		}
 		if !seen[dep] {
 			errs = append(errs, ConfigError{
 				Field:   field,
-				Team:    t.Name,
-				Message: fmt.Sprintf("depends on unknown team %q", dep),
+				Agent:   a.Name,
+				Message: fmt.Sprintf("depends on unknown agent %q", dep),
 			})
 		}
 	}
 	return errs
 }
 
-func validateTeamSize(t *Team, teamIdx int) []Warning {
-	if len(t.Members) <= 5 {
+func validateAgentSize(a *Agent, agentIdx int) []Warning {
+	if len(a.Members) <= 5 {
 		return nil
 	}
 	return []Warning{{
-		Field:   []string{"teams", strconv.Itoa(teamIdx), "members"},
-		Team:    t.Name,
-		Message: fmt.Sprintf("has %d members (recommended: 3-5); consider splitting into smaller teams", len(t.Members)),
+		Field:   []string{"agents", strconv.Itoa(agentIdx), "members"},
+		Agent:   a.Name,
+		Message: fmt.Sprintf("has %d members (recommended: 3-5); consider splitting into smaller teams", len(a.Members)),
 	}}
 }
 
-func validateTaskRatio(t *Team, teamIdx int) []Warning {
-	divisor := len(t.Members)
+func validateTaskRatio(a *Agent, agentIdx int) []Warning {
+	divisor := len(a.Members)
 	if divisor == 0 {
 		divisor = 1
 	}
-	ratio := len(t.Tasks) / divisor
-	if len(t.Tasks) == 0 || (ratio >= 2 && ratio <= 8) {
+	ratio := len(a.Tasks) / divisor
+	if len(a.Tasks) == 0 || (ratio >= 2 && ratio <= 8) {
 		return nil
 	}
 	return []Warning{{
-		Field:   []string{"teams", strconv.Itoa(teamIdx), "tasks"},
-		Team:    t.Name,
+		Field:   []string{"agents", strconv.Itoa(agentIdx), "tasks"},
+		Agent:   a.Name,
 		Message: fmt.Sprintf("task/member ratio is %d (recommended: 2-8)", ratio),
 	}}
 }
 
-func detectCycles(teams []Team) *ConfigError {
+func detectCycles(agents []Agent) *ConfigError {
 	const (
 		white = iota
 		gray
 		black
 	)
 	color := make(map[string]int)
-	for i := range teams {
-		color[teams[i].Name] = white
+	for i := range agents {
+		color[agents[i].Name] = white
 	}
 
 	deps := make(map[string][]string)
-	for i := range teams {
-		deps[teams[i].Name] = teams[i].DependsOn
+	for i := range agents {
+		deps[agents[i].Name] = agents[i].DependsOn
 	}
 
 	var found *ConfigError
@@ -513,9 +649,9 @@ func detectCycles(teams []Team) *ConfigError {
 		for _, dep := range deps[name] {
 			if color[dep] == gray {
 				found = &ConfigError{
-					Field:   []string{"teams"},
-					Team:    dep,
-					Message: fmt.Sprintf("dependency cycle detected involving team %q", dep),
+					Field:   []string{"agents"},
+					Agent:   dep,
+					Message: fmt.Sprintf("dependency cycle detected involving agent %q", dep),
 				}
 				return true
 			}
@@ -529,9 +665,9 @@ func detectCycles(teams []Team) *ConfigError {
 		return false
 	}
 
-	for i := range teams {
-		if color[teams[i].Name] == white {
-			if visit(teams[i].Name) {
+	for i := range agents {
+		if color[agents[i].Name] == white {
+			if visit(agents[i].Name) {
 				return found
 			}
 		}
@@ -539,33 +675,33 @@ func detectCycles(teams []Team) *ConfigError {
 	return nil
 }
 
-// validateResourceShape covers the per-team Skills and CustomTools fields
+// validateResourceShape covers the per-agent Skills and CustomTools fields
 // without consulting any external registry. Resolution-against-registries
 // happens in [ValidateResourceReferences] because that needs the live skills
 // cache and customtools registry passed in by the engine.
 func (c *Config) validateResourceShape() validationResult {
 	var out validationResult
 	localBackend := c.Backend.Kind == "local" || c.Backend.Kind == ""
-	for i := range c.Teams {
-		t := &c.Teams[i]
-		teamPrefix := []string{"teams", strconv.Itoa(i)}
-		out.errs = append(out.errs, validateSkillRefs(t, teamPrefix)...)
-		out.errs = append(out.errs, validateCustomToolRefs(t, teamPrefix)...)
+	for i := range c.Agents {
+		a := &c.Agents[i]
+		agentPrefix := []string{"agents", strconv.Itoa(i)}
+		out.errs = append(out.errs, validateSkillRefs(a, agentPrefix)...)
+		out.errs = append(out.errs, validateCustomToolRefs(a, agentPrefix)...)
 		if localBackend {
-			out.warnings = append(out.warnings, localBackendResourceWarnings(t, teamPrefix)...)
+			out.warnings = append(out.warnings, localBackendResourceWarnings(a, agentPrefix)...)
 		}
 	}
 	return out
 }
 
-func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
+func validateSkillRefs(a *Agent, agentPrefix []string) []ConfigError {
 	var errs []ConfigError
-	for j, sk := range t.Skills {
-		fieldPrefix := append(append([]string{}, teamPrefix...), "skills", strconv.Itoa(j))
+	for j, sk := range a.Skills {
+		fieldPrefix := append(append([]string{}, agentPrefix...), "skills", strconv.Itoa(j))
 		if sk.Name == "" {
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, fieldPrefix...), "name"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("skill %d has empty name", j+1),
 			})
 		}
@@ -586,7 +722,7 @@ func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
 			// in.
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, fieldPrefix...), "type"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("skill %q: type=anthropic is not yet supported (use type: custom with `orchestra skills upload`)", sk.Name),
 			})
 		default:
@@ -595,7 +731,7 @@ func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
 			// who typo the type into thinking the typo is the problem.
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, fieldPrefix...), "type"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("skill %q: type must be \"custom\" (got %q)", sk.Name, sk.Type),
 			})
 		}
@@ -603,14 +739,14 @@ func validateSkillRefs(t *Team, teamPrefix []string) []ConfigError {
 	return errs
 }
 
-func validateCustomToolRefs(t *Team, teamPrefix []string) []ConfigError {
+func validateCustomToolRefs(a *Agent, agentPrefix []string) []ConfigError {
 	var errs []ConfigError
-	for j, ct := range t.CustomTools {
-		fieldPrefix := append(append([]string{}, teamPrefix...), "custom_tools", strconv.Itoa(j))
+	for j, ct := range a.CustomTools {
+		fieldPrefix := append(append([]string{}, agentPrefix...), "custom_tools", strconv.Itoa(j))
 		if ct.Name == "" {
 			errs = append(errs, ConfigError{
 				Field:   append(append([]string{}, fieldPrefix...), "name"),
-				Team:    t.Name,
+				Agent:   a.Name,
 				Message: fmt.Sprintf("custom_tool %d has empty name", j+1),
 			})
 		}
@@ -618,22 +754,22 @@ func validateCustomToolRefs(t *Team, teamPrefix []string) []ConfigError {
 	return errs
 }
 
-// localBackendResourceWarnings surfaces a once-per-team warning when Skills
+// localBackendResourceWarnings surfaces a once-per-agent warning when Skills
 // or CustomTools are set under backend.kind=local — parity with the
 // members/coordinator-under-MA pattern in validateBackendWarnings.
-func localBackendResourceWarnings(t *Team, teamPrefix []string) []Warning {
+func localBackendResourceWarnings(a *Agent, agentPrefix []string) []Warning {
 	var warnings []Warning
-	if len(t.Skills) > 0 {
+	if len(a.Skills) > 0 {
 		warnings = append(warnings, Warning{
-			Field:   append(append([]string{}, teamPrefix...), "skills"),
-			Team:    t.Name,
+			Field:   append(append([]string{}, agentPrefix...), "skills"),
+			Agent:   a.Name,
 			Message: "skills are not supported under backend.kind=local",
 		})
 	}
-	if len(t.CustomTools) > 0 {
+	if len(a.CustomTools) > 0 {
 		warnings = append(warnings, Warning{
-			Field:   append(append([]string{}, teamPrefix...), "custom_tools"),
-			Team:    t.Name,
+			Field:   append(append([]string{}, agentPrefix...), "custom_tools"),
+			Agent:   a.Name,
 			Message: "custom_tools are not supported under backend.kind=local",
 		})
 	}
@@ -641,8 +777,8 @@ func localBackendResourceWarnings(t *Team, teamPrefix []string) []Warning {
 }
 
 // ValidateResourceReferences runs the additional validation that depends on
-// external registries: that team.Skills entries resolve to skills the user
-// has registered (per the orchestra skills cache) and that team.CustomTools
+// external registries: that agent.Skills entries resolve to skills the user
+// has registered (per the orchestra skills cache) and that agent.CustomTools
 // entries resolve to handlers wired into the customtools registry.
 //
 // Under backend.kind=managed_agents an unknown reference is a hard error.
@@ -667,11 +803,11 @@ func (c *Config) ValidateResourceReferences(skillNames, customToolNames map[stri
 	}
 	res := &Result{}
 	maBackend := c.Backend.Kind == "managed_agents"
-	for i := range c.Teams {
-		t := &c.Teams[i]
-		teamPrefix := []string{"teams", strconv.Itoa(i)}
-		appendUnknownSkillFindings(res, t, teamPrefix, skillNames, maBackend)
-		appendUnknownToolFindings(res, t, teamPrefix, customToolNames, maBackend)
+	for i := range c.Agents {
+		a := &c.Agents[i]
+		agentPrefix := []string{"agents", strconv.Itoa(i)}
+		appendUnknownSkillFindings(res, a, agentPrefix, skillNames, maBackend)
+		appendUnknownToolFindings(res, a, agentPrefix, customToolNames, maBackend)
 	}
 	if res.Valid() {
 		res.Config = c
@@ -679,32 +815,32 @@ func (c *Config) ValidateResourceReferences(skillNames, customToolNames map[stri
 	return res
 }
 
-func appendUnknownSkillFindings(res *Result, t *Team, teamPrefix []string, skillNames map[string]bool, hardError bool) {
-	for j, sk := range t.Skills {
+func appendUnknownSkillFindings(res *Result, a *Agent, agentPrefix []string, skillNames map[string]bool, hardError bool) {
+	for j, sk := range a.Skills {
 		if sk.Name == "" || skillNames[sk.Name] {
 			continue
 		}
-		field := append(append([]string{}, teamPrefix...), "skills", strconv.Itoa(j), "name")
+		field := append(append([]string{}, agentPrefix...), "skills", strconv.Itoa(j), "name")
 		msg := fmt.Sprintf("skill %q is not registered (run `orchestra skills upload %s`)", sk.Name, sk.Name)
 		if hardError {
-			res.Errors = append(res.Errors, ConfigError{Field: field, Team: t.Name, Message: msg})
+			res.Errors = append(res.Errors, ConfigError{Field: field, Agent: a.Name, Message: msg})
 		} else {
-			res.Warnings = append(res.Warnings, Warning{Field: field, Team: t.Name, Message: msg})
+			res.Warnings = append(res.Warnings, Warning{Field: field, Agent: a.Name, Message: msg})
 		}
 	}
 }
 
-func appendUnknownToolFindings(res *Result, t *Team, teamPrefix []string, toolNames map[string]bool, hardError bool) {
-	for j, ct := range t.CustomTools {
+func appendUnknownToolFindings(res *Result, a *Agent, agentPrefix []string, toolNames map[string]bool, hardError bool) {
+	for j, ct := range a.CustomTools {
 		if ct.Name == "" || toolNames[ct.Name] {
 			continue
 		}
-		field := append(append([]string{}, teamPrefix...), "custom_tools", strconv.Itoa(j), "name")
+		field := append(append([]string{}, agentPrefix...), "custom_tools", strconv.Itoa(j), "name")
 		msg := fmt.Sprintf("custom_tool %q has no registered handler", ct.Name)
 		if hardError {
-			res.Errors = append(res.Errors, ConfigError{Field: field, Team: t.Name, Message: msg})
+			res.Errors = append(res.Errors, ConfigError{Field: field, Agent: a.Name, Message: msg})
 		} else {
-			res.Warnings = append(res.Warnings, Warning{Field: field, Team: t.Name, Message: msg})
+			res.Warnings = append(res.Warnings, Warning{Field: field, Agent: a.Name, Message: msg})
 		}
 	}
 }

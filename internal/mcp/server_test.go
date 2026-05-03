@@ -125,7 +125,7 @@ func newProtocolServer(t *testing.T) *Server {
 			dir: stateDir(wsDir),
 			state: &store.RunState{
 				Backend: "managed_agents",
-				Teams: map[string]store.TeamState{
+				Agents: map[string]store.AgentState{
 					"ship-foo": {
 						Status:        "running",
 						SessionID:     "sess_test",

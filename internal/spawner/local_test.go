@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func goCommand() string {
@@ -86,8 +87,8 @@ func TestSpawn_SuccessResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Team != "test-team" {
-		t.Fatalf("expected test-team, got %s", result.Team)
+	if result.Agent != "test-team" {
+		t.Fatalf("expected test-team, got %s", result.Agent)
 	}
 	if result.Status != "success" {
 		t.Fatalf("expected success, got %s", result.Status)
@@ -237,6 +238,99 @@ func TestSpawn_ProgressFunc(t *testing.T) {
 	for _, key := range []string{"session", "thinking", "write", "tool_result", "finished"} {
 		if !found[key] {
 			t.Errorf("missing progress message for %q. Got: %v", key, messages)
+		}
+	}
+}
+
+func TestSpawn_EnvOverlayReachesChild(t *testing.T) {
+	// Mock claude reads GITHUB_TOKEN from its env and echoes the value on
+	// stdout via a result event. Verifies the overlay layered on top of
+	// the parent process env actually reaches the child.
+	dir := t.TempDir()
+	name := "mock-claude"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	binPath := filepath.Join(dir, name)
+	srcPath := filepath.Join(dir, "main.go")
+	src := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+func main() {
+	got := os.Getenv("GITHUB_TOKEN")
+	for _, line := range []map[string]any{
+		{"type": "system", "subtype": "init", "session_id": "sess-env"},
+		{"type": "result", "subtype": "success", "result": "GITHUB_TOKEN=" + got, "total_cost_usd": 0, "num_turns": 1, "duration_ms": 1, "session_id": "sess-env"},
+	} {
+		b, _ := json.Marshal(line)
+		fmt.Println(string(b))
+	}
+}
+`
+	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.CommandContext(context.Background(), goCommand(), "build", "-o", binPath, srcPath)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build mock: %v\n%s", err, out)
+	}
+
+	result, err := Spawn(context.Background(), &SpawnOpts{
+		TeamName: "env-team",
+		Prompt:   "go",
+		Command:  binPath,
+		Env:      map[string]string{"GITHUB_TOKEN": "ghp_from_overlay"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if result.Result != "GITHUB_TOKEN=ghp_from_overlay" {
+		t.Fatalf("child env did not see overlay: result=%q", result.Result)
+	}
+}
+
+// TestSpawn_OnToolUse confirms the spawner-level callback receives every
+// tool_use event verbatim — throttling is the caller's responsibility
+// (pkg/orchestra dedupes consecutive identical tool names before
+// persisting to state.json). Pinning the spawner behavior here keeps the
+// throttling decision visible at the boundary rather than buried in the
+// parser.
+func TestSpawn_OnToolUse(t *testing.T) {
+	script := writeMockCommand(t, []string{
+		`{"type":"system","subtype":"init","session_id":"sess-tool"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/foo.go"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/bar.go"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}`,
+		`{"type":"result","subtype":"success","result":"ok","total_cost_usd":0,"num_turns":1,"duration_ms":1,"session_id":"sess-tool"}`,
+	}, nil, 0, 0)
+
+	var seen []string
+	_, err := Spawn(context.Background(), &SpawnOpts{
+		TeamName: "test-team",
+		Prompt:   "do",
+		Command:  script,
+		OnToolUse: func(name string, _ time.Time) {
+			seen = append(seen, name)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	want := []string{"Bash", "Edit", "Write"}
+	if len(seen) != len(want) {
+		t.Fatalf("OnToolUse calls = %v, want %v", seen, want)
+	}
+	for i, name := range want {
+		if seen[i] != name {
+			t.Errorf("OnToolUse[%d] = %q, want %q", i, seen[i], name)
 		}
 	}
 }

@@ -96,8 +96,8 @@ func readRunStateFile(path string) (*runStateFile, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	if state.Teams == nil {
-		state.Teams = make(map[string]store.TeamState)
+	if state.Agents == nil {
+		state.Agents = make(map[string]store.AgentState)
 	}
 	return &runStateFile{state: &state, modifiedAt: info.ModTime().UTC()}, nil
 }

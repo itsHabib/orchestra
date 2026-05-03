@@ -42,7 +42,7 @@ func (r *orchestrationRun) dependencySummary(dep string, state *store.RunState) 
 	if depResult.Result != "" {
 		return depResult.Result
 	}
-	if ts, ok := state.Teams[dep]; ok {
+	if ts, ok := state.Agents[dep]; ok {
 		return ts.ResultSummary
 	}
 	return ""

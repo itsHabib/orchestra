@@ -14,7 +14,7 @@ import (
 // internal/config until this surface is marked stable.
 type Config = config.Config
 
-// Defaults holds default values applied to all teams unless overridden.
+// Defaults holds default values applied to all agents unless overridden.
 //
 // Experimental: aliased from internal/config.
 type Defaults = config.Defaults
@@ -37,7 +37,7 @@ type ManagedAgentsBackend = config.ManagedAgentsBackend
 // Experimental: aliased from internal/config.
 type RepositorySpec = config.RepositorySpec
 
-// EnvironmentOverride lets a single team substitute backend-level
+// EnvironmentOverride lets a single agent substitute backend-level
 // environment fields (currently just Repository) without touching others.
 //
 // Experimental: aliased from internal/config.
@@ -48,28 +48,35 @@ type EnvironmentOverride = config.EnvironmentOverride
 // Experimental: aliased from internal/config.
 type Coordinator = config.Coordinator
 
-// Team represents a single team or solo agent in the orchestration.
+// Agent represents one node in the orchestration DAG — a solo agent or a
+// multi-member team led by [Lead]. Renamed from [Team] in v3.
 //
 // Experimental: aliased from internal/config.
-type Team = config.Team
+type Agent = config.Agent
 
-// Lead represents the team lead configuration.
+// Team is the v2 spelling of [Agent], retained as an alias so existing
+// SDK code keeps compiling during the v3 migration window.
+//
+// Deprecated: use [Agent].
+type Team = config.Agent
+
+// Lead represents the lead role for an agent.
 //
 // Experimental: aliased from internal/config.
 type Lead = config.Lead
 
-// Member represents a team member.
+// Member represents a sub-role inside a multi-member team agent.
 //
 // Experimental: aliased from internal/config.
 type Member = config.Member
 
-// Task represents a unit of work assigned to a team.
+// Task represents a unit of work assigned to an agent.
 //
 // Experimental: aliased from internal/config.
 type Task = config.Task
 
 // SkillRef references a skill registered in the orchestra skills cache that
-// should be attached to the team's MA agent. Type defaults to "custom"
+// should be attached to the agent's MA agent. Type defaults to "custom"
 // (skills the user uploaded via `orchestra skills upload`); "anthropic" is
 // reserved for first-party skills.
 //
@@ -84,8 +91,8 @@ type CustomToolRef = config.CustomToolRef
 
 // Warning represents a non-fatal validation issue surfaced by LoadConfig
 // or Validate. It does not block execution. Field is the structured YAML
-// path to the offending node (empty for project-level issues); Team is
-// the denormalized team name when Field points into a team subtree.
+// path to the offending node (empty for project-level issues); Agent is
+// the denormalized agent name when Field points into an agent subtree.
 //
 // Experimental: aliased from internal/config.
 type Warning = config.Warning
@@ -130,12 +137,17 @@ var ErrInvalidConfig = config.ErrInvalidConfig
 // Experimental: aliased from internal/store.
 type RunState = store.RunState
 
-// TeamState is the persisted execution state for one team. After P2.0 it
-// includes NumTurns alongside the existing token / cost counters, so the
-// SDK can render a complete summary without dipping into the workspace.
+// AgentState is the persisted execution state for one agent. Renamed from
+// [TeamState] in v3 alongside the agent rename.
 //
 // Experimental: aliased from internal/store.
-type TeamState = store.TeamState
+type AgentState = store.AgentState
+
+// TeamState is the v2 alias for [AgentState], retained for SDK
+// backwards-compat through the v3 migration window.
+//
+// Deprecated: use [AgentState].
+type TeamState = store.AgentState
 
 // RepositoryArtifact records repository output produced by a managed agent.
 //
@@ -161,28 +173,40 @@ const (
 var ErrRunInProgress = errors.New("orchestra: run already in progress for workspace")
 
 // Result is the SDK's view of a completed (or partially completed) run.
-// All per-team data the CLI summary renderer needs lives here — callers do
+// All per-agent data the CLI summary renderer needs lives here — callers do
 // not need to read .orchestra/results/ off disk.
 //
 // Experimental: field set may grow as dogfood apps surface needs.
 type Result struct {
 	// Project is the configured project name.
 	Project string
-	// Teams maps team name to its final TeamResult.
+	// Agents maps agent name to its final AgentResult.
+	Agents map[string]AgentResult
+	// Teams mirrors Agents so v2 SDK consumers reading `Run(...).Teams`
+	// keep compiling through the v3 transition. Populated by the engine
+	// alongside Agents; do not read in new code. Removed in v3.x.
+	//
+	// Deprecated: use Agents.
 	Teams map[string]TeamResult
-	// Tiers is the tier-by-tier team-name layout, for ordered rendering.
+	// Tiers is the tier-by-tier agent-name layout, for ordered rendering.
 	Tiers [][]string
 	// DurationMs is the wall-clock duration of the run in milliseconds.
 	DurationMs int64
 }
 
-// TeamResult is the SDK-shaped per-team view: it embeds [TeamState] so all
-// status, cost, token, and turn counters are accessible directly. The
+// AgentResult is the SDK-shaped per-agent view: it embeds [AgentState] so
+// all status, cost, token, and turn counters are accessible directly. The
 // wrapper exists so future SDK-only fields can be added without touching
-// the persisted [TeamState].
+// the persisted [AgentState].
 //
 // Experimental: this shape is stable in spirit, but additive growth is
 // expected during the experimental phase.
-type TeamResult struct {
-	TeamState
+type AgentResult struct {
+	AgentState
 }
+
+// TeamResult is the v2 alias for [AgentResult], retained for SDK
+// backwards-compat through the v3 migration window.
+//
+// Deprecated: use [AgentResult].
+type TeamResult = AgentResult

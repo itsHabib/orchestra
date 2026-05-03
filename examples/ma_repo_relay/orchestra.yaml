@@ -16,7 +16,7 @@ defaults:
   permission_mode: acceptEdits
   timeout_minutes: 30
 
-teams:
+agents:
   - name: editor
     lead:
       role: "README Editor"

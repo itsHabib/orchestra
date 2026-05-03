@@ -99,7 +99,7 @@ func TestSteeringDelivery_LiveMA(t *testing.T) {
 	}
 
 	finalState := loadState(t, statePath)
-	intro := finalState.Teams["intro"]
+	intro := finalState.Agents["intro"]
 	if intro.LastEventID == "" {
 		t.Fatal("LastEventID never advanced")
 	}
@@ -134,7 +134,7 @@ func waitForRunningTeam(t *testing.T, statePath, team string, deadline time.Dura
 	for time.Now().Before(end) {
 		st, err := tryLoadState(statePath)
 		if err == nil {
-			ts, ok := st.Teams[team]
+			ts, ok := st.Agents[team]
 			if ok && ts.Status == "running" && ts.SessionID != "" {
 				return nil
 			}

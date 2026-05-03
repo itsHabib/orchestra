@@ -1,19 +1,100 @@
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"errors"
+	"time"
+)
 
 // RunState is the active run document stored under a workspace.
 type RunState struct {
-	Project       string               `json:"project"`
-	Backend       string               `json:"backend,omitempty"`
-	RunID         string               `json:"run_id,omitempty"`
-	StartedAt     time.Time            `json:"started_at,omitempty"`
-	EnvironmentID string               `json:"environment_id,omitempty"`
-	Teams         map[string]TeamState `json:"teams"`
+	Project       string                `json:"project"`
+	Backend       string                `json:"backend,omitempty"`
+	RunID         string                `json:"run_id,omitempty"`
+	StartedAt     time.Time             `json:"started_at,omitempty"`
+	EnvironmentID string                `json:"environment_id,omitempty"`
+	Agents        map[string]AgentState `json:"agents"`
+
+	// Phase is the v3 recipe-runtime phase the run is currently in. Empty
+	// for non-recipe runs.
+	Phase string `json:"phase,omitempty"`
+	// PhaseIters tracks recipe-phase re-entry counts.
+	PhaseIters map[string]int `json:"phase_iters,omitempty"`
+	// LastError carries the most recent fatal error captured at the run
+	// level (e.g. orchestrator-side spawner failures that don't attach to
+	// a single agent).
+	LastError string `json:"last_error,omitempty"`
+	// Cancellation records a cancel_run MCP request. Non-nil means the
+	// run has been asked to wind down; the engine reads this on signal
+	// receipt and transitions running agents to "canceled" before
+	// exiting.
+	Cancellation *Cancellation `json:"cancellation,omitempty"`
 }
 
-// TeamState captures the persisted execution state for one team.
-type TeamState struct {
+// Cancellation captures a cancel_run request — when the request landed
+// and the optional reason the caller supplied. The MCP server writes
+// this before signaling the orchestra subprocess so the engine can
+// distinguish a deliberate cancel from a crash.
+type Cancellation struct {
+	RequestedAt time.Time `json:"requested_at"`
+	Reason      string    `json:"reason,omitempty"`
+}
+
+// UnmarshalJSON accepts the legacy `teams` key from v2 state.json so
+// orchestra upgrades that land mid-run can keep reading workspace state.
+//
+// Probes key presence via [json.RawMessage] before decoding the typed
+// struct so a payload that explicitly sets `agents: {}` is not
+// misclassified as "agents key absent" — the previous `len(Agents) == 0`
+// fallback could silently swap an empty agents map for a populated
+// teams one. Setting both keys is rejected (matches the dual-key guard
+// on [config.Config.UnmarshalYAML], the MCP `InlineDAG.UnmarshalJSON`,
+// and the workspace `Registry.UnmarshalJSON`).
+func (s *RunState) UnmarshalJSON(data []byte) error {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	_, hasAgents := probe["agents"]
+	_, hasTeams := probe["teams"]
+	if hasAgents && hasTeams {
+		return errors.New("state.json: cannot set both `agents` and `teams`; orchestra writers should only produce one key")
+	}
+	type rawRunState struct {
+		Project       string                `json:"project"`
+		Backend       string                `json:"backend,omitempty"`
+		RunID         string                `json:"run_id,omitempty"`
+		StartedAt     time.Time             `json:"started_at,omitempty"`
+		EnvironmentID string                `json:"environment_id,omitempty"`
+		Agents        map[string]AgentState `json:"agents"`
+		Teams         map[string]AgentState `json:"teams"`
+		Phase         string                `json:"phase,omitempty"`
+		PhaseIters    map[string]int        `json:"phase_iters,omitempty"`
+		LastError     string                `json:"last_error,omitempty"`
+		Cancellation  *Cancellation         `json:"cancellation,omitempty"`
+	}
+	var raw rawRunState
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	s.Project = raw.Project
+	s.Backend = raw.Backend
+	s.RunID = raw.RunID
+	s.StartedAt = raw.StartedAt
+	s.EnvironmentID = raw.EnvironmentID
+	s.Agents = raw.Agents
+	if hasTeams {
+		s.Agents = raw.Teams
+	}
+	s.Phase = raw.Phase
+	s.PhaseIters = raw.PhaseIters
+	s.LastError = raw.LastError
+	s.Cancellation = raw.Cancellation
+	return nil
+}
+
+// AgentState captures the persisted execution state for one agent.
+type AgentState struct {
 	Status     string    `json:"status"`
 	Tier       *int      `json:"tier,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
@@ -30,6 +111,7 @@ type TeamState struct {
 	AgentVersion        int                  `json:"agent_version,omitempty"`
 	LastEventID         string               `json:"last_event_id,omitempty"`
 	LastEventAt         time.Time            `json:"last_event_at,omitempty"`
+	LastTool            string               `json:"last_tool,omitempty"`
 	RepositoryArtifacts []RepositoryArtifact `json:"repository_artifacts,omitempty"`
 
 	CostUSD                  float64 `json:"cost_usd,omitempty"`
@@ -39,11 +121,11 @@ type TeamState struct {
 	CacheReadInputTokens     int64   `json:"cache_read_input_tokens,omitempty"`
 	NumTurns                 int     `json:"num_turns,omitempty"`
 
-	// Signal* are the host-recorded outcome of the team's signal_completion
+	// Signal* are the host-recorded outcome of the agent's signal_completion
 	// custom tool call. SignalStatus is "" until the agent calls the tool;
 	// "done" or "blocked" thereafter. The remaining fields carry whatever
 	// metadata the agent attached. Idempotent: a second call with the same
-	// team is a no-op (the first signal wins) so a confused agent calling
+	// agent is a no-op (the first signal wins) so a confused agent calling
 	// twice does not erase the original outcome.
 	SignalStatus  string    `json:"signal_status,omitempty"`
 	SignalSummary string    `json:"signal_summary,omitempty"`

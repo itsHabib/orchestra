@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,24 @@ type SpawnOpts struct {
 	LogWriter      io.Writer
 	ProgressFunc   func(teamName, msg string) // called with progress updates for terminal display
 	Command        string                     // defaults to "claude"
+
+	// OnToolUse is called from the stream parser whenever the agent
+	// invokes a tool. Callers wire this to surface LastTool / LastEventAt
+	// into the run state so chat-side observers can see what the agent is
+	// doing without dipping into NDJSON. Optional — nil disables.
+	OnToolUse func(toolName string, at time.Time)
+
+	// OnSessionError is called on a stream-level error event (currently
+	// not emitted by claude -p stream-json, but reserved for parity with
+	// the MA backend's SessionErrorEvent). Optional — nil disables.
+	OnSessionError func(message string, at time.Time)
+
+	// Env is the per-agent environment overlay layered on top of the
+	// orchestra parent environment before claude -p is launched. Keys are
+	// canonical env-var names ("GITHUB_TOKEN") and values are the secrets
+	// the credentials package resolved for this agent. Optional — nil keeps
+	// the parent env intact.
+	Env map[string]string
 }
 
 // LocalSubprocessSpawner adapts the existing claude -p subprocess backend.
@@ -40,7 +59,7 @@ func NewLocalSubprocessSpawner() *LocalSubprocessSpawner {
 }
 
 // Spawn runs a local claude -p subprocess.
-func (s *LocalSubprocessSpawner) Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.TeamResult, error) {
+func (s *LocalSubprocessSpawner) Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.AgentResult, error) {
 	localOpts := cloneSpawnOpts(opts)
 	if localOpts.Command == "" {
 		localOpts.Command = s.Command
@@ -111,7 +130,7 @@ type contentBlock struct {
 
 // Spawn runs claude -p with the given prompt, parses stream-json output,
 // and returns the structured result. Blocks until the process exits or times out.
-func Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.TeamResult, error) {
+func Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.AgentResult, error) {
 	localOpts := cloneSpawnOpts(opts)
 	ctx, cancel := withSpawnTimeout(ctx, localOpts.TimeoutMinutes)
 	if cancel != nil {
@@ -141,8 +160,8 @@ func Spawn(ctx context.Context, opts *SpawnOpts) (*workspace.TeamResult, error) 
 	// Process exited without a result message
 	if err == nil {
 		// Exit code 0 but no result — use last assistant text
-		return &workspace.TeamResult{
-			Team:      localOpts.TeamName,
+		return &workspace.AgentResult{
+			Agent:     localOpts.TeamName,
 			Status:    "success",
 			Result:    parser.lastAssistText,
 			SessionID: parser.sessionID,
@@ -166,7 +185,7 @@ func startLocalProcess(ctx context.Context, opts *SpawnOpts) (*exec.Cmd, io.Read
 	}
 
 	proc := exec.CommandContext(ctx, cmdName, buildClaudeArgs(opts)...)
-	proc.Env = claudeEnv()
+	proc.Env = claudeEnv(opts.Env)
 
 	stdout, err := proc.StdoutPipe()
 	if err != nil {
@@ -204,22 +223,50 @@ func buildClaudeArgs(opts *SpawnOpts) []string {
 	return args
 }
 
-func claudeEnv() []string {
+func claudeEnv(overlay map[string]string) []string {
 	var env []string
+	skip := make(map[string]struct{}, len(overlay))
+	for k := range overlay {
+		skip[envKey(k)] = struct{}{}
+	}
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CLAUDECODE=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
 		}
+		if eq := strings.IndexByte(e, '='); eq > 0 {
+			if _, override := skip[envKey(e[:eq])]; override {
+				continue
+			}
+		}
+		env = append(env, e)
+	}
+	for k, v := range overlay {
+		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// envKey normalizes an env-var name for the overlay-shadowing lookup.
+// Windows env names are case-insensitive ("Path" and "PATH" are the
+// same variable), so a literal map lookup misses overlay overrides
+// for keys the parent set under a different case. POSIX env names are
+// case-sensitive; the upper-case normalization is harmless there
+// because every overlay key is already uppercased by
+// [credentials.EnvNameFor].
+func envKey(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 type streamParser struct {
 	teamName       string
 	logWriter      io.Writer
 	progress       func(teamName, msg string)
+	onToolUse      func(toolName string, at time.Time)
 	startTime      time.Time
-	result         *workspace.TeamResult
+	result         *workspace.AgentResult
 	sessionID      string
 	lastAssistText string
 	turnCount      int
@@ -238,12 +285,13 @@ func newStreamParser(opts *SpawnOpts) *streamParser {
 		teamName:      opts.TeamName,
 		logWriter:     opts.LogWriter,
 		progress:      progress,
+		onToolUse:     opts.OnToolUse,
 		startTime:     time.Now(),
 		teammateNames: make(map[string]string),
 	}
 }
 
-func (p *streamParser) read(stdout io.Reader) (*workspace.TeamResult, error) {
+func (p *streamParser) read(stdout io.Reader) (*workspace.AgentResult, error) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for long lines
 	for scanner.Scan() {
@@ -371,6 +419,9 @@ func (p *streamParser) handleToolUse(c *contentBlock) {
 	}
 	detail := summarizeToolUse(c.Name, c.Input)
 	p.progress(p.teamName, fmt.Sprintf("🔧 [turn %d | %s] %s", p.turnCount, p.elapsed(), detail))
+	if p.onToolUse != nil {
+		p.onToolUse(c.Name, time.Now().UTC())
+	}
 	p.trackAgentToolUse(c)
 	p.trackToolStats(c.Name)
 }
@@ -410,8 +461,8 @@ func (p *streamParser) handleUser(evt *streamEvent) {
 func (p *streamParser) handleResult(evt *streamEvent) {
 	inputTokens := evt.Usage.InputTokens + evt.Usage.CacheCreationInputTokens + evt.Usage.CacheReadInputTokens
 	outputTokens := evt.Usage.OutputTokens
-	p.result = &workspace.TeamResult{
-		Team:         p.teamName,
+	p.result = &workspace.AgentResult{
+		Agent:        p.teamName,
 		Status:       evt.Subtype,
 		Result:       evt.Result,
 		CostUSD:      eventCost(evt),
@@ -469,12 +520,12 @@ func waitForLocalProcess(proc *exec.Cmd, gotResult bool, progress func(string, s
 type CoordinatorHandle struct {
 	cancel context.CancelFunc
 	done   chan struct{}
-	result *workspace.TeamResult
+	result *workspace.AgentResult
 	err    error
 }
 
 // Wait blocks until the coordinator exits and returns its result.
-func (h *CoordinatorHandle) Wait() (*workspace.TeamResult, error) {
+func (h *CoordinatorHandle) Wait() (*workspace.AgentResult, error) {
 	<-h.done
 	return h.result, h.err
 }

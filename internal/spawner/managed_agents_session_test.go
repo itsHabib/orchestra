@@ -85,7 +85,7 @@ func TestManagedAgentsTranslator_EndTurnWritesSummaryAndDoneState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status != "done" || alpha.ResultSummary != "final summary" {
 		t.Fatalf("unexpected state: %+v", alpha)
 	}
@@ -141,7 +141,7 @@ func TestManagedAgentsTranslator_RequiresActionKeepsSessionAlive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status == "failed" {
 		t.Fatalf("requires_action must not fail the team (custom-tool result is on its way); got %+v", alpha)
 	}
@@ -173,7 +173,7 @@ func TestManagedAgentsTranslator_EndTurnAfterBlockedSignalKeepsSessionAlive(t *t
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			// Pre-block state: customtools handler already wrote
 			// SignalStatus="blocked" + reason in response to the agent's
 			// signal_completion(blocked) call.
@@ -218,7 +218,7 @@ func TestManagedAgentsTranslator_EndTurnAfterBlockedSignalKeepsSessionAlive(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status != "running" {
 		t.Fatalf("Status: got %q, want %q (blocked teams must stay reachable)", alpha.Status, "running")
 	}
@@ -270,7 +270,7 @@ func TestManagedAgentsTranslator_DedupesBeforeLogAndState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.InputTokens != 10 || alpha.OutputTokens != 4 || alpha.CacheCreationInputTokens != 3 || alpha.CacheReadInputTokens != 2 {
 		t.Fatalf("usage double-counted or missing: %+v", alpha)
 	}
@@ -333,7 +333,7 @@ func TestManagedAgentsTranslator_ReconnectBackfillsWithoutDuplicates(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status != "done" || alpha.ResultSummary != "after reconnect" {
 		t.Fatalf("unexpected state: %+v", alpha)
 	}
@@ -382,7 +382,7 @@ func TestManagedAgentsTranslator_SummaryWriteFailureFailsTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status != "failed" || !strings.Contains(alpha.LastError, "summary_write") {
 		t.Fatalf("unexpected state: %+v", alpha)
 	}
@@ -416,7 +416,7 @@ func TestManagedAgentsTranslator_StateWriteFailureExits(t *testing.T) {
 		t.Fatalf("session.Err()=%v, want state_write panic", session.Err())
 	}
 	if st.calls < 2 {
-		t.Fatalf("UpdateTeamState calls=%d, want primary plus fallback", st.calls)
+		t.Fatalf("UpdateAgentState calls=%d, want primary plus fallback", st.calls)
 	}
 }
 
@@ -663,7 +663,7 @@ func TestManagedAgentsTranslator_UserEchoAdvancesLastEventOnly(t *testing.T) {
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {
 				Status:       "running",
 				SessionID:    "sess_1",
@@ -700,7 +700,7 @@ func TestManagedAgentsTranslator_UserEchoAdvancesLastEventOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status != "running" {
 		t.Fatalf("Status=%q, want unchanged 'running' (echoes must not transition state)", alpha.Status)
 	}
@@ -721,7 +721,7 @@ func seededSessionStore(t *testing.T) *memstore.MemStore {
 	if err := st.SaveRunState(context.Background(), &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "pending"},
 		},
 	}); err != nil {
@@ -885,7 +885,7 @@ type failingUpdateStore struct {
 	err        error
 }
 
-func (s *failingUpdateStore) UpdateTeamState(context.Context, string, func(*store.TeamState)) error {
+func (s *failingUpdateStore) UpdateAgentState(context.Context, string, func(*store.AgentState)) error {
 	s.calls++
 	if s.panicValue != nil {
 		panic(s.panicValue)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -106,7 +107,7 @@ func TestHandleListRuns_DerivesStatus(t *testing.T) {
 			dir: stateDir(wsDir),
 			state: &store.RunState{
 				Backend: "managed_agents",
-				Teams: map[string]store.TeamState{
+				Agents: map[string]store.AgentState{
 					"ship-foo": {Status: "running", SignalStatus: "done", SignalSummary: "shipped", SignalPRURL: "https://github.com/x/y/pull/1"},
 					"ship-bar": {Status: "running", SignalStatus: "blocked", SignalReason: "ambiguous"},
 				},
@@ -142,8 +143,8 @@ func TestHandleListRuns_DerivesStatus(t *testing.T) {
 	if got.Status != RunStatusBlocked {
 		t.Fatalf("status: got %q, want %q", got.Status, RunStatusBlocked)
 	}
-	if len(got.Teams) != 2 {
-		t.Fatalf("teams: %d", len(got.Teams))
+	if len(got.Agents) != 2 {
+		t.Fatalf("teams: %d", len(got.Agents))
 	}
 }
 
@@ -157,11 +158,11 @@ func TestHandleListRuns_ActiveOnlyFiltersDone(t *testing.T) {
 	stateReader := stateReaderFn([]stateRecord{
 		{dir: stateDir(wsDoneDir), state: &store.RunState{
 			Backend: "managed_agents",
-			Teams:   map[string]store.TeamState{"a": {Status: "running", SignalStatus: "done"}},
+			Agents:  map[string]store.AgentState{"a": {Status: "running", SignalStatus: "done"}},
 		}},
 		{dir: stateDir(wsRunningDir), state: &store.RunState{
 			Backend: "managed_agents",
-			Teams:   map[string]store.TeamState{"a": {Status: "running"}},
+			Agents:  map[string]store.AgentState{"a": {Status: "running"}},
 		}},
 	})
 	srv, err := New(&Options{
@@ -238,7 +239,7 @@ func TestHandleGetRun_HappyPath(t *testing.T) {
 			dir: stateDir(wsDir),
 			state: &store.RunState{
 				Backend: "managed_agents",
-				Teams: map[string]store.TeamState{
+				Agents: map[string]store.AgentState{
 					"ship-foo": {Status: "running", SignalStatus: "done"},
 				},
 			},
@@ -266,6 +267,121 @@ func TestHandleGetRun_HappyPath(t *testing.T) {
 	}
 	if view.RunID != "alpha" || view.Status != RunStatusDone {
 		t.Fatalf("view: %+v", view)
+	}
+}
+
+// observabilityFixture builds an MCP server returning a single run with a
+// fully-populated AgentState. Helper for the v3 RunView / AgentView
+// observability tests.
+func observabilityFixture(t *testing.T, eventAt time.Time) *Server {
+	t.Helper()
+	root := t.TempDir()
+	registry := NewRegistry(filepath.Join(root, "mcp-runs.json"))
+	wsDir := filepath.Join(root, "runs", "obs")
+	stateReader := stateReaderFn([]stateRecord{
+		{
+			dir: stateDir(wsDir),
+			state: &store.RunState{
+				Backend:    "managed_agents",
+				Phase:      "implementation",
+				PhaseIters: map[string]int{"implementation": 2},
+				LastError:  "nope",
+				Agents: map[string]store.AgentState{
+					"engineer": {
+						Status:                   "running",
+						LastTool:                 "Bash",
+						LastEventAt:              eventAt,
+						LastError:                "billing_error: out of credits",
+						InputTokens:              100,
+						OutputTokens:             50,
+						CacheCreationInputTokens: 25,
+						CacheReadInputTokens:     400,
+						ResultSummary:            "shipped PR #42",
+						Artifacts:                []string{"design_doc"},
+					},
+				},
+			},
+		},
+	})
+	srv, err := New(&Options{
+		Registry:      registry,
+		WorkspaceRoot: filepath.Join(root, "runs"),
+		Spawner:       &stubSpawner{},
+		StateReader:   stateReader,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := registry.Put(context.Background(), &Entry{RunID: "obs", WorkspaceDir: wsDir}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	return srv
+}
+
+// TestHandleGetRun_RunLevelObservability pins the run-level fields the v3
+// RunView extension surfaces from state.json (Phase, PhaseIters, LastError).
+func TestHandleGetRun_RunLevelObservability(t *testing.T) {
+	t.Parallel()
+
+	eventAt := time.Date(2026, 5, 2, 12, 30, 0, 0, time.UTC)
+	srv := observabilityFixture(t, eventAt)
+
+	_, view, err := srv.handleGetRun(context.Background(), nil, GetRunArgs{RunID: "obs"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if view.Phase != "implementation" {
+		t.Errorf("Phase = %q, want implementation", view.Phase)
+	}
+	if view.PhaseIters["implementation"] != 2 {
+		t.Errorf("PhaseIters = %v", view.PhaseIters)
+	}
+	if view.LastError != "nope" {
+		t.Errorf("LastError = %q", view.LastError)
+	}
+	// `teams` mirror still populated for v2 wire compat.
+	if len(view.Teams) != 1 || view.Teams[0].Name != "engineer" {
+		t.Errorf("Teams mirror missing or wrong: %+v", view.Teams)
+	}
+}
+
+// TestHandleGetRun_AgentViewObservability pins the per-agent fields the v3
+// AgentView extension surfaces from state.json (LastTool, LastEventAt,
+// LastError, Tokens, ResultSummary, Artifacts).
+func TestHandleGetRun_AgentViewObservability(t *testing.T) {
+	t.Parallel()
+
+	eventAt := time.Date(2026, 5, 2, 12, 30, 0, 0, time.UTC)
+	srv := observabilityFixture(t, eventAt)
+
+	_, view, err := srv.handleGetRun(context.Background(), nil, GetRunArgs{RunID: "obs"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(view.Agents) != 1 {
+		t.Fatalf("Agents = %v", view.Agents)
+	}
+	a := view.Agents[0]
+	if a.LastTool != "Bash" {
+		t.Errorf("LastTool = %q", a.LastTool)
+	}
+	if !a.LastEventAt.Equal(eventAt) {
+		t.Errorf("LastEventAt = %v, want %v", a.LastEventAt, eventAt)
+	}
+	if a.LastError != "billing_error: out of credits" {
+		t.Errorf("LastError = %q", a.LastError)
+	}
+	if a.Tokens.InputTokens != 100 || a.Tokens.OutputTokens != 50 {
+		t.Errorf("Tokens = %+v", a.Tokens)
+	}
+	if a.Tokens.CacheCreationInputTokens != 25 || a.Tokens.CacheReadInputTokens != 400 {
+		t.Errorf("Cache tokens = %+v", a.Tokens)
+	}
+	if a.ResultSummary != "shipped PR #42" {
+		t.Errorf("ResultSummary = %q", a.ResultSummary)
+	}
+	if len(a.Artifacts) != 1 || a.Artifacts[0] != "design_doc" {
+		t.Errorf("Artifacts = %v", a.Artifacts)
 	}
 }
 
@@ -302,6 +418,15 @@ func TestDeriveStatus_PriorityOrder(t *testing.T) {
 		{"failed beats blocked in either order", []TeamView{{SignalStatus: "blocked"}, {Status: "failed"}}, RunStatusFailed},
 		{"blocked beats running", []TeamView{{Status: "running", SignalStatus: "blocked"}, {Status: "running", SignalStatus: "done"}}, RunStatusBlocked},
 		{"some pending → running", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "running"}}, RunStatusRunning},
+		// Cancellation cases — pin the v3 cancel_run fold:
+		{"all canceled → canceled", []TeamView{{Status: "canceled"}, {Status: "canceled"}}, RunStatusCancelled},
+		// Mixed done + canceled — Codex P1: a Ctrl-C / SIGTERM hit
+		// after one agent already finished. Without this branch the
+		// run reports "running" forever even though nothing is.
+		{"done + canceled → canceled", []TeamView{{Status: "running", SignalStatus: "done"}, {Status: "canceled"}}, RunStatusCancelled},
+		// Canceled mixed with a still-running agent stays "running"
+		// because the cancel hasn't drained yet.
+		{"canceled + still running → running", []TeamView{{Status: "canceled"}, {Status: "running"}}, RunStatusRunning},
 	}
 	for _, tc := range cases {
 		got := deriveStatus(tc.teams)

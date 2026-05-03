@@ -22,6 +22,58 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// TestLoadRunState_LegacyTeamsKeyMigrates pins the v2→v3 read-side
+// migration: a state.json with only the legacy `teams:` key loads cleanly
+// into RunState.Agents and the next save writes `agents:` going forward.
+func TestLoadRunState_LegacyTeamsKeyMigrates(t *testing.T) {
+	ctx := context.Background()
+	workspaceDir := filepath.Join(t.TempDir(), ".orchestra")
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"project":"legacy","run_id":"r1","teams":{"alpha":{"status":"running"}}}`)
+	if err := os.WriteFile(filepath.Join(workspaceDir, "state.json"), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := filestore.New(workspaceDir, filestore.WithConfigDir(filepath.Join(t.TempDir(), "config")))
+	got, err := s.LoadRunState(ctx)
+	if err != nil {
+		t.Fatalf("LoadRunState: %v", err)
+	}
+	if len(got.Agents) != 1 || got.Agents["alpha"].Status != "running" {
+		t.Fatalf("Agents = %+v, want one alpha=running", got.Agents)
+	}
+
+	// Saving back should write the canonical `agents:` key.
+	if err := s.SaveRunState(ctx, got); err != nil {
+		t.Fatalf("SaveRunState: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspaceDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(data), `"agents"`) {
+		t.Fatalf("expected `\"agents\"` key in saved state.json, got: %s", data)
+	}
+	if contains(string(data), `"teams"`) {
+		t.Fatalf("legacy `\"teams\"` key should not be re-emitted, got: %s", data)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && indexOf(s, sub) >= 0
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestArchiveRunMovesActiveFiles(t *testing.T) {
 	ctx := context.Background()
 	workspaceDir := filepath.Join(t.TempDir(), ".orchestra")
@@ -30,7 +82,7 @@ func TestArchiveRunMovesActiveFiles(t *testing.T) {
 	if err := s.SaveRunState(ctx, &store.RunState{
 		Project: "archive-test",
 		RunID:   "run-42",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "done"}},
+		Agents:  map[string]store.AgentState{"alpha": {Status: "done"}},
 	}); err != nil {
 		t.Fatal(err)
 	}

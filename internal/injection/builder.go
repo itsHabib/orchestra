@@ -36,7 +36,7 @@ type UpstreamMount struct {
 // inboxFolder is this team's message bus folder name (e.g., "2-data-engine"); empty disables messaging.
 // messagesPath is the base path to the messages directory.
 // caps carries optional toggles like ArtifactPublish; pass Capabilities{} for the local backend.
-func BuildPrompt(team *config.Team, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string, inboxFolder, messagesPath string, caps Capabilities) string {
+func BuildPrompt(team *config.Agent, projectName string, state *workspace.State, cfg *config.Config, tierPeers []string, inboxFolder, messagesPath string, caps Capabilities) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are: %s\n", team.Lead.Role)
@@ -83,7 +83,7 @@ func writeTasks(b *strings.Builder, tasks []config.Task) {
 	}
 }
 
-func writeTierPeers(b *strings.Builder, team *config.Team, cfg *config.Config, tierPeers []string) {
+func writeTierPeers(b *strings.Builder, team *config.Agent, cfg *config.Config, tierPeers []string) {
 	peers := peersExcept(tierPeers, team.Name)
 	if len(peers) == 0 {
 		return
@@ -95,7 +95,7 @@ func writeTierPeers(b *strings.Builder, team *config.Team, cfg *config.Config, t
 	b.WriteString("If you need to share interface contracts or coordination notes with peers,\n")
 	b.WriteString("write them to .orchestra/shared/ so other teams can reference them.\n\n")
 	for _, p := range peers {
-		pt := cfg.TeamByName(p)
+		pt := cfg.AgentByName(p)
 		if pt == nil {
 			continue
 		}
@@ -118,7 +118,7 @@ func peersExcept(tierPeers []string, teamName string) []string {
 	return peers
 }
 
-func writeTeamMembers(b *strings.Builder, team *config.Team) {
+func writeTeamMembers(b *strings.Builder, team *config.Agent) {
 	if !team.HasMembers() {
 		return
 	}
@@ -136,19 +136,19 @@ func writeTeamMembers(b *strings.Builder, team *config.Team) {
 	b.WriteString("\n")
 }
 
-func writeDependencyContext(b *strings.Builder, team *config.Team, state *workspace.State, cfg *config.Config) {
+func writeDependencyContext(b *strings.Builder, team *config.Agent, state *workspace.State, cfg *config.Config) {
 	if len(team.DependsOn) == 0 || state == nil {
 		return
 	}
 
 	b.WriteString("## Context from Previous Teams\n")
 	for _, depName := range team.DependsOn {
-		ts, ok := state.Teams[depName]
+		ts, ok := state.Agents[depName]
 		if !ok || ts.Status != "done" {
 			continue
 		}
 		depRole := depName
-		if depTeam := cfg.TeamByName(depName); depTeam != nil {
+		if depTeam := cfg.AgentByName(depName); depTeam != nil {
 			depRole = depTeam.Lead.Role
 		}
 		fmt.Fprintf(b, "### %s (%s) — Completed\n", depName, depRole)

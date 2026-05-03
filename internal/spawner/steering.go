@@ -68,7 +68,7 @@ func SteerableSessionID(state *store.RunState, team string) (string, error) {
 	if state.Backend != "" && state.Backend != "managed_agents" {
 		return "", ErrLocalBackend
 	}
-	ts, ok := state.Teams[team]
+	ts, ok := state.Agents[team]
 	if !ok {
 		return "", fmt.Errorf("%w: %q", ErrTeamNotFound, team)
 	}
@@ -89,9 +89,9 @@ func ListTeamSessions(state *store.RunState) []TeamSession {
 	if state == nil {
 		return nil
 	}
-	out := make([]TeamSession, 0, len(state.Teams))
-	for name := range state.Teams {
-		ts := state.Teams[name]
+	out := make([]TeamSession, 0, len(state.Agents))
+	for name := range state.Agents {
+		ts := state.Agents[name]
 		out = append(out, TeamSession{
 			Team:        name,
 			Status:      ts.Status,

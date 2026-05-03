@@ -14,8 +14,14 @@ import (
 	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
-// TeamResult is the structured result recorded for a completed team.
-type TeamResult = workspace.TeamResult
+// AgentResult is the structured result recorded for a completed agent.
+type AgentResult = workspace.AgentResult
+
+// TeamResult is the v2 alias for [AgentResult], retained so internal callers
+// keep building during the v3 migration window.
+//
+// Deprecated: use [AgentResult].
+type TeamResult = workspace.AgentResult
 
 // Service owns run lifecycle choreography above the Store.
 type Service struct {
@@ -170,7 +176,7 @@ func (s *Service) Snapshot(ctx context.Context) (*store.RunState, error) {
 // RecordTeamStart transitions a team to running and stamps its start time.
 func (s *Service) RecordTeamStart(ctx context.Context, team string) error {
 	now := s.clock().UTC()
-	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	if err := s.store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		ts.Status = "running"
 		ts.StartedAt = now
 		ts.EndedAt = time.Time{}
@@ -188,19 +194,19 @@ func (s *Service) RecordTeamStart(ctx context.Context, team string) error {
 }
 
 // RecordTeamComplete transitions a team to done and records result counters.
-// The team name is taken from result.Team.
+// The team name is taken from result.Agent.
 func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) error {
 	if result == nil {
 		return fmt.Errorf("%w: nil team result", store.ErrInvalidArgument)
 	}
-	if result.Team == "" {
+	if result.Agent == "" {
 		return fmt.Errorf("%w: team result missing team name", store.ErrInvalidArgument)
 	}
 
 	now := s.clock().UTC()
-	team := result.Team
+	team := result.Agent
 	var endedAt time.Time
-	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	if err := s.store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		ts.Status = "done"
 		if ts.EndedAt.IsZero() {
 			ts.EndedAt = now
@@ -226,6 +232,96 @@ func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) er
 	return nil
 }
 
+// RecordAgentCancel transitions an agent to "canceled" and stamps an
+// explanatory LastError so observers can distinguish a deliberate cancel
+// from a crash. Used by the engine's signal handler when a cancel_run
+// request lands on a still-running agent.
+//
+// Race-safe transition: the UpdateAgentState callback skips the rewrite
+// when the agent has already reached a terminal state. Without this
+// guard, an agent that completed successfully right as cancellation
+// was processed would see its done/failed status clobbered to
+// "canceled" — Copilot caught this in round-2 review.
+func (s *Service) RecordAgentCancel(ctx context.Context, agent, reason string) error {
+	now := s.clock().UTC()
+	cause := "canceled by cancel_run"
+	if reason != "" {
+		cause = "canceled by cancel_run: " + reason
+	}
+	canceled := false
+	if err := s.store.UpdateAgentState(ctx, agent, func(ts *store.AgentState) {
+		switch ts.Status {
+		case "done", "failed", "canceled", "terminated":
+			// Already terminal — leave history alone.
+			return
+		}
+		ts.Status = "canceled"
+		ts.EndedAt = now
+		ts.LastError = cause
+		canceled = true
+	}); err != nil {
+		return fmt.Errorf("run.RecordAgentCancel %s: %w", agent, err)
+	}
+	if !canceled {
+		return nil
+	}
+	s.mirrorRegistry("RecordAgentCancel", agent, func(e *workspace.RegistryEntry) {
+		e.Status = "canceled"
+		e.EndedAt = now
+	})
+	return nil
+}
+
+// RecordCancellationRequested writes a [store.Cancellation] entry into
+// the run document, stamping it with the service clock. Called by the
+// engine when it observes ctx-cancel without an external cancel
+// request file (e.g. caller pressed Ctrl-C).
+func (s *Service) RecordCancellationRequested(ctx context.Context, reason string) error {
+	return s.RecordCancellationRequestedAt(ctx, reason, s.clock().UTC())
+}
+
+// RecordCancellationRequestedAt is the timestamp-explicit variant used
+// by the engine's signal handler when it merges a cancel request that
+// originated outside the engine (the MCP server's cancellation.json
+// file carries its own RequestedAt). Preserving the original timestamp
+// keeps observability honest — observers see *when* the user asked,
+// not when the engine got around to merging it.
+func (s *Service) RecordCancellationRequestedAt(ctx context.Context, reason string, requestedAt time.Time) error {
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		return fmt.Errorf("run.RecordCancellationRequested: %w", err)
+	}
+	state.Cancellation = &store.Cancellation{
+		RequestedAt: requestedAt,
+		Reason:      reason,
+	}
+	if err := s.store.SaveRunState(ctx, state); err != nil {
+		return fmt.Errorf("run.RecordCancellationRequested save: %w", err)
+	}
+	return nil
+}
+
+// CancelAllRunningAgents transitions every agent currently in the
+// "pending" or "running" state to "canceled". Called by the engine on
+// signal receipt so observers see a clean transition rather than agents
+// stuck mid-run forever.
+func (s *Service) CancelAllRunningAgents(ctx context.Context, reason string) error {
+	state, err := s.store.LoadRunState(ctx)
+	if err != nil {
+		return fmt.Errorf("run.CancelAllRunningAgents: %w", err)
+	}
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		if ts.Status != "running" && ts.Status != "pending" {
+			continue
+		}
+		if err := s.RecordAgentCancel(ctx, name, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RecordTeamFail transitions a team to failed and records the error summary.
 func (s *Service) RecordTeamFail(ctx context.Context, team string, cause error) error {
 	now := s.clock().UTC()
@@ -234,7 +330,7 @@ func (s *Service) RecordTeamFail(ctx context.Context, team string, cause error) 
 		causeText = cause.Error()
 	}
 
-	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	if err := s.store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		ts.Status = "failed"
 		ts.EndedAt = now
 		ts.LastError = causeText
@@ -311,21 +407,21 @@ func (s *Service) seedState(cfg *config.Config) (*store.RunState, error) {
 		Backend:   backend,
 		RunID:     now.Format("20060102T150405.000000000Z"),
 		StartedAt: now,
-		Teams:     make(map[string]store.TeamState, len(cfg.Teams)),
+		Agents:    make(map[string]store.AgentState, len(cfg.Agents)),
 	}
-	tiers, err := dag.BuildTiers(cfg.Teams)
+	tiers, err := dag.BuildTiers(cfg.Agents)
 	if err != nil {
 		return nil, err
 	}
-	tierByTeam := make(map[string]int, len(cfg.Teams))
+	tierByTeam := make(map[string]int, len(cfg.Agents))
 	for tierIdx, names := range tiers {
 		for _, name := range names {
 			tierByTeam[name] = tierIdx
 		}
 	}
-	for i := range cfg.Teams {
-		tier := tierByTeam[cfg.Teams[i].Name]
-		state.Teams[cfg.Teams[i].Name] = store.TeamState{
+	for i := range cfg.Agents {
+		tier := tierByTeam[cfg.Agents[i].Name]
+		state.Agents[cfg.Agents[i].Name] = store.AgentState{
 			Status: "pending",
 			Tier:   &tier,
 		}
@@ -344,9 +440,9 @@ func (s *Service) seedWorkspaceFiles(ws *workspace.Workspace, cfg *config.Config
 		return nil, nil
 	}
 
-	names := make([]string, len(cfg.Teams))
-	for i := range cfg.Teams {
-		names[i] = cfg.Teams[i].Name
+	names := make([]string, len(cfg.Agents))
+	for i := range cfg.Agents {
+		names[i] = cfg.Agents[i].Name
 	}
 	bus := messaging.NewBus(ws.MessagesPath())
 	if err := bus.InitInboxes(names); err != nil {

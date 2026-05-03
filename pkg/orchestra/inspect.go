@@ -182,7 +182,7 @@ func ListSessions(workspaceDir string) ([]SessionInfo, error) {
 	rows := spawner.ListTeamSessions(state)
 	out := make([]SessionInfo, 0, len(rows))
 	for _, row := range rows {
-		ts, ok := state.Teams[row.Team]
+		ts, ok := state.Agents[row.Team]
 		var startedAt time.Time
 		if ok {
 			startedAt = ts.StartedAt
@@ -307,8 +307,8 @@ func readRunMetadata(path string) (*runMetadataFile, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if state.Teams == nil {
-		state.Teams = make(map[string]store.TeamState)
+	if state.Agents == nil {
+		state.Agents = make(map[string]store.AgentState)
 	}
 	return &runMetadataFile{state: &state, modifiedAt: info.ModTime().UTC()}, nil
 }
@@ -355,28 +355,28 @@ func (r runMetadataRecord) toSummary() RunSummary {
 	}
 	summary.Project = state.Project
 	summary.Status = aggregateRunSummaryStatus(state, r.active)
-	summary.TeamCount = len(state.Teams)
-	for name := range state.Teams {
-		summary.TotalCost += state.Teams[name].CostUSD
+	summary.TeamCount = len(state.Agents)
+	for name := range state.Agents {
+		summary.TotalCost += state.Agents[name].CostUSD
 	}
 	summary.EndedAt = latestTeamEndTime(state)
 	return summary
 }
 
 func aggregateRunSummaryStatus(state *store.RunState, active bool) string {
-	if state == nil || len(state.Teams) == 0 {
+	if state == nil || len(state.Agents) == 0 {
 		return "unknown"
 	}
 	counts := make(map[string]int)
-	for name := range state.Teams {
-		counts[firstNonEmpty(state.Teams[name].Status, "pending")]++
+	for name := range state.Agents {
+		counts[firstNonEmpty(state.Agents[name].Status, "pending")]++
 	}
 	switch {
 	case counts["failed"] > 0:
 		return "failed"
-	case counts["terminated"] == len(state.Teams):
+	case counts["terminated"] == len(state.Agents):
 		return "canceled"
-	case counts["done"] == len(state.Teams):
+	case counts["done"] == len(state.Agents):
 		return "done"
 	case active || counts["running"] > 0 || counts["idle"] > 0 || counts["pending"] > 0:
 		return "in_progress"
@@ -390,8 +390,8 @@ func latestTeamEndTime(state *store.RunState) time.Time {
 	if state == nil {
 		return end
 	}
-	for name := range state.Teams {
-		ended := state.Teams[name].EndedAt
+	for name := range state.Agents {
+		ended := state.Agents[name].EndedAt
 		if ended.After(end) {
 			end = ended
 		}

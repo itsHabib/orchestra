@@ -18,7 +18,7 @@ func printRunRows(records []runRecord, limit int, now time.Time) {
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
 	}
-	fmt.Printf("%-32s  %-18s  %-10s  %-7s  %-8s  %-10s  %s\n", "RUN ID", "PROJECT", "STATUS", "TEAMS", "COST", "DURATION", "STARTED")
+	fmt.Printf("%-32s  %-18s  %-10s  %-7s  %-8s  %-10s  %s\n", "RUN ID", "PROJECT", "STATUS", "AGENTS", "COST", "DURATION", "STARTED")
 	for _, record := range records {
 		fmt.Printf("%-32s  %-18s  %-10s  %-7s  %-8s  %-10s  %s\n",
 			runIDLabel(record),
@@ -53,9 +53,9 @@ func printRunDetail(record runRecord, now time.Time) {
 		fmt.Printf("Env ID:   %s\n", state.EnvironmentID)
 	}
 	fmt.Println()
-	fmt.Printf("%-18s  %-4s  %-10s  %-8s  %-10s  %-28s  %-7s  %s\n", "TEAM", "TIER", "STATUS", "COST", "DURATION", "AGENT ID", "VERSION", "SESSION ID")
+	fmt.Printf("%-18s  %-4s  %-10s  %-8s  %-10s  %-28s  %-7s  %s\n", "AGENT", "TIER", "STATUS", "COST", "DURATION", "AGENT ID", "VERSION", "SESSION ID")
 	for _, name := range sortedRunTeamNames(state) {
-		ts := state.Teams[name]
+		ts := state.Agents[name]
 		fmt.Printf("%-18s  %-4s  %-10s  %-8s  %-10s  %-28s  %-7s  %s\n",
 			compactCell(name, 18),
 			formatTier(ts.Tier),
@@ -91,13 +91,13 @@ func shortSHA(sha string) string {
 }
 
 func sortedRunTeamNames(state *store.RunState) []string {
-	names := make([]string, 0, len(state.Teams))
-	for name := range state.Teams {
+	names := make([]string, 0, len(state.Agents))
+	for name := range state.Agents {
 		names = append(names, name)
 	}
 	sort.Slice(names, func(i, j int) bool {
-		ti := state.Teams[names[i]].Tier
-		tj := state.Teams[names[j]].Tier
+		ti := state.Agents[names[i]].Tier
+		tj := state.Agents[names[j]].Tier
 		if tierSortValue(ti) != tierSortValue(tj) {
 			return tierSortValue(ti) < tierSortValue(tj)
 		}
@@ -114,12 +114,12 @@ func tierSortValue(tier *int) int {
 }
 
 func aggregateRunStatus(state *store.RunState) string {
-	if state == nil || len(state.Teams) == 0 {
+	if state == nil || len(state.Agents) == 0 {
 		return "unknown"
 	}
 	counts := make(map[string]int)
-	for name := range state.Teams {
-		ts := state.Teams[name]
+	for name := range state.Agents {
+		ts := state.Agents[name]
 		status := firstDisplay(ts.Status, "pending")
 		counts[status]++
 	}
@@ -132,9 +132,9 @@ func aggregateRunStatus(state *store.RunState) string {
 		return "running"
 	case counts["pending"] > 0:
 		return "pending"
-	case counts["done"] == len(state.Teams):
+	case counts["done"] == len(state.Agents):
 		return "done"
-	case counts["terminated"] == len(state.Teams):
+	case counts["terminated"] == len(state.Agents):
 		return "terminated"
 	default:
 		return "mixed"
@@ -142,11 +142,11 @@ func aggregateRunStatus(state *store.RunState) string {
 }
 
 func isRunTerminal(record runRecord) bool {
-	if record.state == nil || len(record.state.Teams) == 0 {
+	if record.state == nil || len(record.state.Agents) == 0 {
 		return false
 	}
-	for name := range record.state.Teams {
-		ts := record.state.Teams[name]
+	for name := range record.state.Agents {
+		ts := record.state.Agents[name]
 		switch firstDisplay(ts.Status, "pending") {
 		case "done", "failed", "terminated", "canceled", "skipped":
 		default:
@@ -161,8 +161,8 @@ func totalRunCost(state *store.RunState) float64 {
 	if state == nil {
 		return total
 	}
-	for name := range state.Teams {
-		total += state.Teams[name].CostUSD
+	for name := range state.Agents {
+		total += state.Agents[name].CostUSD
 	}
 	return total
 }
@@ -185,8 +185,8 @@ func runDuration(record runRecord, now time.Time) time.Duration {
 		}
 	}
 	var maxDuration time.Duration
-	for name := range state.Teams {
-		dur := state.Teams[name].DurationMs
+	for name := range state.Agents {
+		dur := state.Agents[name].DurationMs
 		if dur <= 0 {
 			continue
 		}
@@ -200,8 +200,8 @@ func runDuration(record runRecord, now time.Time) time.Duration {
 
 func latestTeamEnd(state *store.RunState) time.Time {
 	var end time.Time
-	for name := range state.Teams {
-		ended := state.Teams[name].EndedAt
+	for name := range state.Agents {
+		ended := state.Agents[name].EndedAt
 		if ended.After(end) {
 			end = ended
 		}
@@ -209,7 +209,7 @@ func latestTeamEnd(state *store.RunState) time.Time {
 	return end
 }
 
-func teamDuration(ts *store.TeamState, now time.Time) time.Duration {
+func teamDuration(ts *store.AgentState, now time.Time) time.Duration {
 	if ts.DurationMs > 0 {
 		return (time.Duration(ts.DurationMs) * time.Millisecond).Round(time.Second)
 	}
@@ -227,12 +227,12 @@ func teamCountLabel(state *store.RunState) string {
 		return "0"
 	}
 	done := 0
-	for name := range state.Teams {
-		if state.Teams[name].Status == "done" {
+	for name := range state.Agents {
+		if state.Agents[name].Status == "done" {
 			done++
 		}
 	}
-	return fmt.Sprintf("%d/%d", done, len(state.Teams))
+	return fmt.Sprintf("%d/%d", done, len(state.Agents))
 }
 
 func formatTier(tier *int) string {

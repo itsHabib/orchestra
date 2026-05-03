@@ -9,8 +9,8 @@ import (
 
 const validRepoURL = "https://github.com/itsHabib/orchestra"
 
-func mustValidTeams() []Team {
-	return []Team{
+func mustValidAgents() []Agent {
+	return []Agent{
 		{
 			Name:  "alpha",
 			Lead:  Lead{Role: "Lead"},
@@ -28,7 +28,7 @@ func TestRepository_DefaultsAppliedOnResolve(t *testing.T) {
 				Repository: &RepositorySpec{URL: validRepoURL},
 			},
 		},
-		Teams: mustValidTeams(),
+		Agents: mustValidAgents(),
 	}
 	cfg.ResolveDefaults()
 
@@ -50,7 +50,7 @@ func TestRepository_ValidateURLFailure(t *testing.T) {
 				Repository: &RepositorySpec{URL: "git@github.com:foo/bar.git"},
 			},
 		},
-		Teams: mustValidTeams(),
+		Agents: mustValidAgents(),
 	}
 	cfg.ResolveDefaults()
 	res := cfg.Validate()
@@ -71,7 +71,7 @@ func TestRepository_OpenPRRequiresRepository(t *testing.T) {
 				OpenPullRequests: true,
 			},
 		},
-		Teams: mustValidTeams(),
+		Agents: mustValidAgents(),
 	}
 	cfg.ResolveDefaults()
 	res := cfg.Validate()
@@ -92,7 +92,7 @@ func TestRepository_OverrideShadowsProject(t *testing.T) {
 				Repository: &RepositorySpec{URL: validRepoURL},
 			},
 		},
-		Teams: []Team{
+		Agents: []Agent{
 			{
 				Name:  "alpha",
 				Lead:  Lead{Role: "Lead"},
@@ -108,7 +108,7 @@ func TestRepository_OverrideShadowsProject(t *testing.T) {
 	if !res.Valid() {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	got := cfg.Teams[0].EffectiveRepository(cfg)
+	got := cfg.Agents[0].EffectiveRepository(cfg)
 	if got == nil || got.URL != "https://github.com/other/repo" {
 		t.Fatalf("override not effective, got %+v", got)
 	}
@@ -123,7 +123,7 @@ func TestRepository_CrossRepoDependsOnWarns(t *testing.T) {
 				Repository: &RepositorySpec{URL: validRepoURL},
 			},
 		},
-		Teams: []Team{
+		Agents: []Agent{
 			{Name: "alpha", Lead: Lead{Role: "L"}, Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}},
 			{
 				Name:      "beta",
@@ -146,7 +146,7 @@ func TestRepository_CrossRepoDependsOnWarns(t *testing.T) {
 	}
 	found := false
 	for _, w := range res.Warnings {
-		if w.Team == "beta" && strings.Contains(w.Message, "different repository") {
+		if w.Agent == "beta" && strings.Contains(w.Message, "different repository") {
 			found = true
 			break
 		}
@@ -156,6 +156,8 @@ func TestRepository_CrossRepoDependsOnWarns(t *testing.T) {
 	}
 }
 
+// TestRepository_YAMLParsesNestedBackend uses the legacy `teams:` key on
+// purpose to exercise the parser alias from v2 → v3.
 func TestRepository_YAMLParsesNestedBackend(t *testing.T) {
 	src := `
 name: p
@@ -198,7 +200,10 @@ teams:
 	if !cfg.Backend.ManagedAgents.OpenPullRequests {
 		t.Fatal("OpenPullRequests should be true")
 	}
-	override := cfg.Teams[0].EnvironmentOverride.Repository
+	if !cfg.LegacyTeamsKey {
+		t.Fatal("LegacyTeamsKey should be true when YAML used `teams:`")
+	}
+	override := cfg.Agents[0].EnvironmentOverride.Repository
 	if override == nil || override.URL != "https://github.com/itsHabib/other" {
 		t.Fatalf("override = %+v", override)
 	}

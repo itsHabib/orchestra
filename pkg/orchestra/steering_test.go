@@ -66,7 +66,7 @@ func waitForTeamRunning(t *testing.T, h *orchestra.Handle, team string, deadline
 	end := time.Now().Add(deadline)
 	for time.Now().Before(end) {
 		st := h.Status()
-		ts, ok := st.Teams[team]
+		ts, ok := st.Agents[team]
 		if ok && ts.Status == "running" {
 			return
 		}

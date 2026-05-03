@@ -61,7 +61,7 @@ func writeCoordinatorTier(b *strings.Builder, cfg *config.Config, tierIdx int, t
 	}
 	b.WriteString("\n")
 	for _, name := range tierNames {
-		team := cfg.TeamByName(name)
+		team := cfg.AgentByName(name)
 		if team == nil {
 			continue
 		}
@@ -78,7 +78,7 @@ func folderForParticipant(name string, folders map[string]string) string {
 	return name
 }
 
-func writeCoordinatorTeamMembers(b *strings.Builder, team *config.Team) {
+func writeCoordinatorTeamMembers(b *strings.Builder, team *config.Agent) {
 	if len(team.Members) == 0 {
 		return
 	}

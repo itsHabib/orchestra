@@ -195,7 +195,7 @@ type signalWrite struct {
 }
 
 // writeSignalState applies the input to the team state under the existing
-// UpdateTeamState funnel.
+// UpdateAgentState funnel.
 //
 // Transition rules (§7.2 + §14 Q10 reconciliation):
 //   - SignalStatus == "" → any input wins. First call after a fresh team.
@@ -211,7 +211,7 @@ func writeSignalState(ctx context.Context, st store.Store, team string, in *sign
 		now = time.Now().UTC()
 	}
 	var out signalWrite
-	err := st.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	err := st.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		recoverFromBlocked := ts.SignalStatus == signalBlocked && in.Status == signalDone
 		if ts.SignalStatus != "" && !recoverFromBlocked {
 			out.duplicate = true

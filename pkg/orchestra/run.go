@@ -2,17 +2,20 @@ package orchestra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/itsHabib/orchestra/internal/config"
+	"github.com/itsHabib/orchestra/internal/credentials"
 	"github.com/itsHabib/orchestra/internal/customtools"
 	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/event"
@@ -81,7 +84,7 @@ func CloneConfig(cfg *Config) *Config {
 	}
 	clone := *cfg
 	clone.Backend = cloneBackend(cfg.Backend)
-	clone.Teams = cloneTeams(cfg.Teams)
+	clone.Agents = cloneAgents(cfg.Agents)
 	return &clone
 }
 
@@ -112,11 +115,11 @@ func cloneEnvironmentOverride(e config.EnvironmentOverride) config.EnvironmentOv
 	return out
 }
 
-func cloneTeams(in []Team) []Team {
+func cloneAgents(in []Agent) []Agent {
 	if in == nil {
 		return nil
 	}
-	out := make([]Team, len(in))
+	out := make([]Agent, len(in))
 	for i := range in {
 		out[i] = in[i]
 		out[i].Members = cloneSlice(in[i].Members)
@@ -186,11 +189,19 @@ type orchestrationRun struct {
 	// ToolResult struct does not — it only carries the ToolUseID).
 	toolNamesMu      sync.Mutex
 	toolNamesByUseID map[string]string
+
+	// agentEnv is the per-agent environment overlay resolved from the
+	// credentials store + host env at run start. Keyed by agent name; the
+	// inner map is canonical env-var → secret. Empty when the agent has no
+	// `requires_credentials:` declared. Local backend forwards via cmd.Env;
+	// MA backend logs an "MA env injection deferred" warning at session
+	// start (the SDK does not expose per-session env yet — see PR description).
+	agentEnv map[string]map[string]string
 }
 
 type tierResult struct {
 	name string
-	res  *workspace.TeamResult
+	res  *workspace.AgentResult
 	err  error
 }
 
@@ -261,6 +272,26 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 	}
 
 	runErr := run.execute(ctx, tiers)
+	// Cancellation hook: when ctx is canceled (cancel_run sent SIGTERM,
+	// caller pressed Ctrl-C, or anything else closed the run context),
+	// merge any cancel-request file the MCP server dropped into the
+	// run state, then flip every still-running agent to "canceled".
+	// Without this hook state.json keeps the agents at "running"
+	// indefinitely because the per-agent goroutines bail out without
+	// writing terminal state. Use a fresh context detached from the
+	// canceled parent so the writes actually land.
+	if ctx.Err() != nil {
+		cancelCtx := context.WithoutCancel(ctx)
+		reason := mergeCancellationRequest(cancelCtx, runService, runService.Workspace())
+		if cancelErr := runService.CancelAllRunningAgents(cancelCtx, reason); cancelErr != nil {
+			emitter.Emit(Event{
+				Kind:    EventWarn,
+				Tier:    -1,
+				Message: fmt.Sprintf("cancel: failed to flip running agents to canceled: %v", cancelErr),
+				At:      time.Now(),
+			})
+		}
+	}
 	result, snapErr := run.buildResult(ctx, tiers, time.Since(wallStart))
 	switch {
 	case runErr != nil && snapErr != nil:
@@ -271,6 +302,48 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 		return result, snapErr
 	}
 }
+
+// mergeCancellationRequest reads the cancel-request file written by the
+// MCP server (cancellation.json under the workspace), merges it into
+// the run state via [runsvc.Service.RecordCancellationRequested] (which
+// holds the in-process state mutex), and returns the operator-supplied
+// reason for use as the per-agent cancel cause. Returns an empty
+// reason on any failure — the engine still treats the ctx-cancel as a
+// deliberate shutdown rather than failing because cancellation.json
+// was absent or malformed.
+func mergeCancellationRequest(ctx context.Context, svc *runsvc.Service, ws *workspace.Workspace) string {
+	if ws == nil {
+		return ""
+	}
+	path := filepath.Join(ws.Path, mcpCancellationFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cf struct {
+		RequestedAt time.Time `json:"requested_at"`
+		Reason      string    `json:"reason,omitempty"`
+	}
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return ""
+	}
+	// Merge into RunState.Cancellation under the engine's in-process
+	// state mutex. RecordCancellationRequested is a no-op-on-error
+	// path; observability gaps here are acceptable since we already
+	// have the reason in `cf` and the agent transitions still land.
+	if err := svc.RecordCancellationRequestedAt(ctx, cf.Reason, cf.RequestedAt); err != nil {
+		_ = err
+	}
+	return cf.Reason
+}
+
+// mcpCancellationFile is the file name (not path) of the MCP-written
+// cancel-request file. ws.Path already points at the workspace dir
+// (typically ".orchestra/"), so the join is just <ws.Path>/cancellation.json.
+// Mirrors [internal/mcp.cancellationFileName] but kept as a separate
+// constant so pkg/orchestra doesn't import internal/mcp (the dep arrow
+// runs the other way).
+const mcpCancellationFile = "cancellation.json"
 
 // pickEmitter returns the Handle as the engine's emitter when available;
 // otherwise a NoopEmitter so engine code can call Emit unconditionally.
@@ -351,14 +424,21 @@ func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, du
 	if state == nil {
 		return nil, errors.New("orchestra: snapshot returned nil state")
 	}
-	teams := make(map[string]TeamResult, len(state.Teams))
-	for name := range state.Teams {
-		ts := state.Teams[name]
-		teams[name] = TeamResult{TeamState: ts}
+	agents := make(map[string]AgentResult, len(state.Agents))
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		agents[name] = AgentResult{AgentState: ts}
 	}
 	return &Result{
-		Project:    state.Project,
-		Teams:      teams,
+		Project: state.Project,
+		Agents:  agents,
+		// Teams aliases Agents (same map instance) so v2 SDK consumers
+		// reading `Run(...).Teams` keep compiling through the v3
+		// migration window. AgentResult and TeamResult are the same
+		// type (alias). Mutating Teams mutates Agents and vice versa
+		// — the deprecated mirror is removed in v3.x, so we don't pay
+		// to clone.
+		Teams:      agents,
 		Tiers:      tiers,
 		DurationMs: dur.Milliseconds(),
 	}, nil
@@ -396,7 +476,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		At:      time.Now(),
 	})
 
-	tiers, err := dag.BuildTiers(cfg.Teams)
+	tiers, err := dag.BuildTiers(cfg.Agents)
 	if err != nil {
 		return nil, nil, fmt.Errorf("building DAG: %w", err)
 	}
@@ -406,6 +486,11 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		Message: fmt.Sprintf("DAG: %d tiers", len(tiers)),
 		At:      time.Now(),
 	})
+
+	agentEnv, err := resolveAgentCredentials(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	if cfg.Backend.Kind == BackendManagedAgents {
 		ma, err := initManagedAgentsBackend(cfg, runService, emitter)
@@ -421,6 +506,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		if err != nil {
 			return nil, nil, err
 		}
+		emitMACredentialWarning(emitter, agentEnv)
 		return &orchestrationRun{
 			cfg:             cfg,
 			emitter:         emitter,
@@ -434,6 +520,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 			notifier:        defaultNotifier(ws),
 			teamSkills:      resources.Skills,
 			teamCustomTools: resources.CustomTools,
+			agentEnv:        agentEnv,
 		}, tiers, nil
 	}
 
@@ -450,6 +537,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		participants: participants,
 		inboxLookup:  lookup,
 		handle:       handle,
+		agentEnv:     agentEnv,
 	}, tiers, nil
 }
 
@@ -475,6 +563,90 @@ func registerBuiltinCustomTools() {
 // level so a flaky sink (missing notify-send, timed-out osascript) leaves a
 // breadcrumb the operator can grep — an io.Discard logger here would silently
 // swallow exactly the failures the design wants surfaced.
+// resolveAgentCredentials walks every agent in cfg, computes the union of
+// per-agent and defaults-level `requires_credentials`, and resolves the
+// resulting names against the credentials store + host env. The returned
+// map is keyed by agent name; the inner map is canonical env-var name →
+// secret value. Missing names produce [credentials.ErrMissing] with a
+// message naming each absent credential — fail fast at run start beats
+// failing 10 minutes in when the agent tries to use the secret.
+func resolveAgentCredentials(ctx context.Context, cfg *Config) (map[string]map[string]string, error) {
+	credStore := credentials.New("")
+	out := make(map[string]map[string]string, len(cfg.Agents))
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		names := a.RequiredCredentials(&cfg.Defaults)
+		if len(names) == 0 {
+			continue
+		}
+		resolved, err := credStore.Resolve(ctx, names)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: %w", a.Name, err)
+		}
+		envOverlay := make(map[string]string, len(resolved))
+		// Track which credential name owns each env-var key so we can
+		// fail fast on collisions: `foo-bar` and `foo_bar` both
+		// normalize to `FOO_BAR`, and silently picking one produces
+		// nondeterministic injection (last writer wins on map
+		// iteration). Reviewer flagged both Codex P2 and Copilot.
+		keyOwner := make(map[string]string, len(resolved))
+		credNames := make([]string, 0, len(resolved))
+		for credName := range resolved {
+			credNames = append(credNames, credName)
+		}
+		sort.Strings(credNames)
+		for _, credName := range credNames {
+			envName := credentials.EnvNameFor(credName)
+			if prior, dup := keyOwner[envName]; dup {
+				return nil, fmt.Errorf("agent %q: credentials %q and %q both normalize to env var %q — pick one to avoid silent overwrites",
+					a.Name, prior, credName, envName)
+			}
+			keyOwner[envName] = credName
+			envOverlay[envName] = resolved[credName]
+		}
+		out[a.Name] = envOverlay
+	}
+	return out, nil
+}
+
+// emitMACredentialWarning surfaces a one-shot warning when an MA-backed
+// run declares `requires_credentials:` for any agent. The Anthropic
+// Managed Agents SDK does not currently expose per-session env-var
+// injection; orchestra resolves the names so dev workflows fail fast on
+// missing credentials, but the secret is not propagated into the MA
+// sandbox. See PR description / docs/DESIGN-v3-composable-workflows.md
+// §12.1 — closing this gap is a v3.x follow-up (likely via Vault IDs).
+//
+// Sorts the credential names before formatting so the warning text is
+// stable across runs — useful for grep-by-message dashboards and tests
+// that pin the message verbatim.
+func emitMACredentialWarning(emitter event.Emitter, agentEnv map[string]map[string]string) {
+	if len(agentEnv) == 0 {
+		return
+	}
+	names := make(map[string]struct{})
+	for agent := range agentEnv {
+		env := agentEnv[agent]
+		for name := range env {
+			names[name] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	flat := make([]string, 0, len(names))
+	for name := range names {
+		flat = append(flat, name)
+	}
+	sort.Strings(flat)
+	emitter.Emit(Event{
+		Kind:    EventWarn,
+		Tier:    -1,
+		Message: fmt.Sprintf("requires_credentials resolved %v but the managed-agents SDK does not yet expose per-session env injection; secrets will not reach the agent sandbox in this run (v3.x follow-up)", flat),
+		At:      time.Now(),
+	})
+}
+
 func defaultNotifier(ws *workspace.Workspace) notify.Notifier {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	sinks := make([]notify.Notifier, 0, 3)
@@ -535,8 +707,8 @@ func cfgNeedsGitHub(cfg *Config) bool {
 	if cfg.Backend.ManagedAgents != nil && cfg.Backend.ManagedAgents.Repository != nil {
 		return true
 	}
-	for i := range cfg.Teams {
-		if cfg.Teams[i].EnvironmentOverride.Repository != nil {
+	for i := range cfg.Agents {
+		if cfg.Agents[i].EnvironmentOverride.Repository != nil {
 			return true
 		}
 	}
@@ -547,7 +719,7 @@ func initLocalBackend(cfg *Config, ws *workspace.Workspace, active *runsvc.Activ
 	if active.Bus == nil {
 		return nil, nil, errors.New("run began without message bus")
 	}
-	participants := messaging.BuildParticipants(teamNamesFromConfig(cfg.Teams))
+	participants := messaging.BuildParticipants(teamNamesFromConfig(cfg.Agents))
 	lookup := inboxLookupFromParticipants(participants)
 	emitter.Emit(Event{
 		Kind:    EventInfo,
@@ -618,10 +790,10 @@ func (r *orchestrationRun) spawnTeam(ctx context.Context, tierIdx int, teamName 
 	results <- tierResult{name: teamName, res: res, err: err}
 }
 
-func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState) (*workspace.TeamResult, error) {
-	team := r.cfg.TeamByName(teamName)
+func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState) (*workspace.AgentResult, error) {
+	team := r.cfg.AgentByName(teamName)
 	if team == nil {
-		return nil, fmt.Errorf("team %q not found in config", teamName)
+		return nil, fmt.Errorf("agent %q not found in config", teamName)
 	}
 	if err := r.runService.RecordTeamStart(ctx, teamName); err != nil {
 		return nil, err
@@ -656,8 +828,32 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		PermissionMode: r.cfg.Defaults.PermissionMode,
 		TimeoutMinutes: r.cfg.Defaults.TimeoutMinutes,
 		LogWriter:      logWriter,
+		Env:            r.agentEnv[teamName],
 		ProgressFunc: func(team, msg string) {
 			r.emitTeamMessage(tierIdx, team, "%s", msg)
+		},
+		OnToolUse: func(toolName string, at time.Time) {
+			// Persist on every tool event. LastEventAt is the per-event
+			// liveness signal documented in the v3 design — a tight
+			// Edit/Edit/Edit loop must keep advancing it so chat-side
+			// observers can tell the agent is still progressing. We
+			// considered deduping consecutive same-tool writes to save
+			// I/O, but that froze LastEventAt during the most common
+			// loop shape and defeated the field's purpose. If real
+			// workloads later show state-file write contention, debounce
+			// the LastEventAt-only path instead of restoring the dedupe.
+			updateCtx := context.WithoutCancel(ctx)
+			err := r.runService.Store().UpdateAgentState(updateCtx, teamName, func(ts *store.AgentState) {
+				ts.LastTool = toolName
+				ts.LastEventAt = at
+			})
+			if err != nil {
+				// Persistence failures here are observability-only — the
+				// agent keeps running. Surface the failure so the
+				// chat-side coordinator (or human) sees that LastTool
+				// stopped advancing instead of silently ignoring the drift.
+				r.emitWarn("LastTool persist for agent %q failed: %v", teamName, err)
+			}
 		},
 	})
 }
@@ -711,7 +907,7 @@ func (r *orchestrationRun) markTeamFailed(ctx context.Context, tierIdx int, team
 	return nil
 }
 
-func (r *orchestrationRun) recordTeamResult(ctx context.Context, tierIdx int, teamName string, result *workspace.TeamResult) error {
+func (r *orchestrationRun) recordTeamResult(ctx context.Context, tierIdx int, teamName string, result *workspace.AgentResult) error {
 	var msg string
 	if result.NumTurns > 0 {
 		msg = fmt.Sprintf("Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))

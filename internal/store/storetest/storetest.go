@@ -15,8 +15,8 @@ import (
 func RunConformance(t *testing.T, factory func(*testing.T) store.Store) {
 	t.Helper()
 	t.Run("RunStateRoundTrip", func(t *testing.T) { testRunStateRoundTrip(t, factory) })
-	t.Run("UpdateTeamStateSameTeamIsSerialized", func(t *testing.T) { testSameTeamUpdate(t, factory) })
-	t.Run("UpdateTeamStateDifferentTeamsAllLand", func(t *testing.T) { testDifferentTeamUpdates(t, factory) })
+	t.Run("UpdateAgentStateSameTeamIsSerialized", func(t *testing.T) { testSameTeamUpdate(t, factory) })
+	t.Run("UpdateAgentStateDifferentTeamsAllLand", func(t *testing.T) { testDifferentTeamUpdates(t, factory) })
 	t.Run("RunLockExclusiveBlocksExclusive", func(t *testing.T) { testRunLock(t, factory) })
 	t.Run("RunLockSharedSemantics", func(t *testing.T) { testRunLockShared(t, factory) })
 	t.Run("AgentRegistryCRUDAndSort", func(t *testing.T) { testAgentRegistry(t, factory) })
@@ -37,7 +37,7 @@ func testRunStateRoundTrip(t *testing.T, factory func(*testing.T) store.Store) {
 	if err != nil {
 		t.Fatalf("LoadRunState: %v", err)
 	}
-	if got.Project != state.Project || got.Teams["alpha"].Status != "pending" {
+	if got.Project != state.Project || got.Agents["alpha"].Status != "pending" {
 		t.Fatalf("unexpected state: %+v", got)
 	}
 }
@@ -50,19 +50,19 @@ func testSameTeamUpdate(t *testing.T, factory func(*testing.T) store.Store) {
 		t.Fatal(err)
 	}
 	runParallel(t, 25, func(_ int) {
-		err := s.UpdateTeamState(ctx, "alpha", func(ts *store.TeamState) {
+		err := s.UpdateAgentState(ctx, "alpha", func(ts *store.AgentState) {
 			ts.InputTokens++
 		})
 		if err != nil {
-			t.Errorf("UpdateTeamState: %v", err)
+			t.Errorf("UpdateAgentState: %v", err)
 		}
 	})
 	got, err := s.LoadRunState(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Teams["alpha"].InputTokens != 25 {
-		t.Fatalf("InputTokens=%d, want 25", got.Teams["alpha"].InputTokens)
+	if got.Agents["alpha"].InputTokens != 25 {
+		t.Fatalf("InputTokens=%d, want 25", got.Agents["alpha"].InputTokens)
 	}
 }
 
@@ -72,18 +72,18 @@ func testDifferentTeamUpdates(t *testing.T, factory func(*testing.T) store.Store
 	ctx := context.Background()
 	state := sampleState()
 	for i := 0; i < 10; i++ {
-		state.Teams[teamName(i)] = store.TeamState{Status: "pending"}
+		state.Agents[teamName(i)] = store.AgentState{Status: "pending"}
 	}
 	if err := s.SaveRunState(ctx, state); err != nil {
 		t.Fatal(err)
 	}
 	runParallel(t, 10, func(i int) {
 		team := teamName(i)
-		err := s.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+		err := s.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 			ts.Status = "done"
 		})
 		if err != nil {
-			t.Errorf("UpdateTeamState(%s): %v", team, err)
+			t.Errorf("UpdateAgentState(%s): %v", team, err)
 		}
 	})
 	assertTeamsDone(ctx, t, s, 10)
@@ -259,7 +259,7 @@ func sampleState() *store.RunState {
 		Backend:   "local",
 		RunID:     "run-1",
 		StartedAt: time.Unix(100, 0).UTC(),
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "pending"},
 			"beta":  {Status: "pending"},
 		},
@@ -287,8 +287,8 @@ func assertTeamsDone(ctx context.Context, t *testing.T, s store.Store, count int
 	}
 	for i := 0; i < count; i++ {
 		team := teamName(i)
-		if got.Teams[team].Status != "done" {
-			t.Fatalf("%s status=%q", team, got.Teams[team].Status)
+		if got.Agents[team].Status != "done" {
+			t.Fatalf("%s status=%q", team, got.Agents[team].Status)
 		}
 	}
 }

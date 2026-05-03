@@ -599,7 +599,7 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 		}
 		return false, nil
 	case SessionStatusRunningEvent:
-		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.TeamState) {
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
 			ts.Status = "running"
 			if ts.StartedAt.IsZero() {
 				ts.StartedAt = raw.ProcessedAt
@@ -613,7 +613,7 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 	case SessionStatusIdleEvent:
 		return s.applyIdle(ctx, &ev, raw)
 	case SessionStatusTerminatedEvent:
-		return true, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.TeamState) {
+		return true, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
 			ts.Status = "terminated"
 			ts.EndedAt = s.eventTime(raw.ProcessedAt)
 			ts.SessionID = s.id
@@ -622,12 +622,18 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 			ts.DurationMs = durationMillis(ts.StartedAt, ts.EndedAt)
 		})
 	case SessionErrorEvent:
-		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.TeamState) {
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
 			ts.LastError = firstNonEmpty(ev.Message, ev.Code, "session error")
 			ts.SessionID = s.id
 		})
+	case AgentToolUseEvent:
+		return false, s.applyToolUse(ctx, raw, ev.ToolUse.Name)
+	case AgentMCPToolUseEvent:
+		return false, s.applyToolUse(ctx, raw, ev.ToolUse.Name)
+	case AgentCustomToolUseEvent:
+		return false, s.applyToolUse(ctx, raw, ev.ToolUse.Name)
 	case SpanModelRequestEndEvent:
-		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.TeamState) {
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
 			ts.InputTokens += ev.Usage.InputTokens
 			ts.OutputTokens += ev.Usage.OutputTokens
 			ts.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
@@ -639,10 +645,21 @@ func (s *Session) apply(ctx context.Context, event Event, raw *maEvent) (bool, e
 		// Steering echoes advance LastEventID / LastEventAt only. Team
 		// status, tokens, and cost are unaffected — the human nudged the
 		// agent, but no orchestra-side lifecycle transition happened.
-		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.AgentState) {})
 	default:
 		return false, nil
 	}
+}
+
+// applyToolUse advances LastTool / LastEventAt on the agent's state when a
+// tool-use event lands. Empty tool names are ignored — the event still
+// advances the cursor via [Session.updateTeam].
+func (s *Session) applyToolUse(ctx context.Context, raw *maEvent, toolName string) error {
+	return s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
+		if toolName != "" {
+			ts.LastTool = toolName
+		}
+	})
 }
 
 func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw *maEvent) (bool, error) {
@@ -662,7 +679,7 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 			// remain steerable (SteerableSessionID requires Status ==
 			// "running"). Advance LastEventID/At so any follow-up event
 			// has a fresh cursor.
-			return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
+			return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.AgentState) {})
 		}
 		if s.summaryWriter != nil {
 			if err := s.summaryWriter(s.teamName, s.lastAgentText); err != nil {
@@ -673,7 +690,7 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 				return true, errors.New(msg)
 			}
 		}
-		return true, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.TeamState) {
+		return true, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(ts *store.AgentState) {
 			ts.Status = "done"
 			ts.EndedAt = s.eventTime(raw.ProcessedAt)
 			ts.SessionID = s.id
@@ -702,7 +719,7 @@ func (s *Session) applyIdle(ctx context.Context, ev *SessionStatusIdleEvent, raw
 		// the agent is genuinely stuck (no result ever arrives, no
 		// user.tool_confirmation lands), the per-team timeout in
 		// pkg/orchestra/runTeamMA fires and cancels the session.
-		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.TeamState) {})
+		return false, s.updateTeam(ctx, raw.ID, raw.ProcessedAt, func(*store.AgentState) {})
 	case "max_turns":
 		return true, s.failTeam(ctx, raw.ID, raw.ProcessedAt, "max turns reached")
 	case "retries_exhausted":
@@ -745,14 +762,14 @@ func (s *Session) teamIsBlocked(ctx context.Context) (bool, error) {
 	if state == nil {
 		return false, nil
 	}
-	ts, ok := state.Teams[s.teamName]
+	ts, ok := state.Agents[s.teamName]
 	if !ok {
 		return false, nil
 	}
 	return ts.SignalStatus == "blocked", nil
 }
 
-func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.Time, fn func(*store.TeamState)) error {
+func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.Time, fn func(*store.AgentState)) error {
 	if s.store == nil || s.teamName == "" {
 		return nil
 	}
@@ -762,7 +779,7 @@ func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.T
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
-		return s.store.UpdateTeamState(ctx, s.teamName, func(ts *store.TeamState) {
+		return s.store.UpdateAgentState(ctx, s.teamName, func(ts *store.AgentState) {
 			fn(ts)
 			if eventID != "" {
 				ts.LastEventID = eventID
@@ -783,7 +800,7 @@ func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.T
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
-		return s.store.UpdateTeamState(fallbackCtx, s.teamName, func(ts *store.TeamState) {
+		return s.store.UpdateAgentState(fallbackCtx, s.teamName, func(ts *store.AgentState) {
 			ts.Status = "failed"
 			ts.EndedAt = s.now()
 			ts.LastError = msg
@@ -796,7 +813,7 @@ func (s *Session) updateTeam(ctx context.Context, eventID string, eventAt time.T
 }
 
 func (s *Session) failTeam(ctx context.Context, eventID string, eventAt time.Time, message string) error {
-	return s.updateTeam(ctx, eventID, eventAt, func(ts *store.TeamState) {
+	return s.updateTeam(ctx, eventID, eventAt, func(ts *store.AgentState) {
 		ts.Status = "failed"
 		ts.EndedAt = s.eventTime(eventAt)
 		ts.LastError = message
