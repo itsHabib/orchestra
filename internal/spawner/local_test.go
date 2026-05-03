@@ -242,12 +242,64 @@ func TestSpawn_ProgressFunc(t *testing.T) {
 	}
 }
 
-// TestSpawn_OnToolUse_FiresEveryEvent confirms the spawner-level
-// callback receives every tool_use event verbatim — throttling is the
-// caller's responsibility (pkg/orchestra dedupes consecutive identical
-// tool names before persisting to state.json). Pinning the spawner
-// behavior here keeps the throttling decision visible at the boundary
-// rather than buried in the parser.
+func TestSpawn_EnvOverlayReachesChild(t *testing.T) {
+	// Mock claude reads GITHUB_TOKEN from its env and echoes the value on
+	// stdout via a result event. Verifies the overlay layered on top of
+	// the parent process env actually reaches the child.
+	dir := t.TempDir()
+	name := "mock-claude"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	binPath := filepath.Join(dir, name)
+	srcPath := filepath.Join(dir, "main.go")
+	src := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+func main() {
+	got := os.Getenv("GITHUB_TOKEN")
+	for _, line := range []map[string]any{
+		{"type": "system", "subtype": "init", "session_id": "sess-env"},
+		{"type": "result", "subtype": "success", "result": "GITHUB_TOKEN=" + got, "total_cost_usd": 0, "num_turns": 1, "duration_ms": 1, "session_id": "sess-env"},
+	} {
+		b, _ := json.Marshal(line)
+		fmt.Println(string(b))
+	}
+}
+`
+	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.CommandContext(context.Background(), goCommand(), "build", "-o", binPath, srcPath)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build mock: %v\n%s", err, out)
+	}
+
+	result, err := Spawn(context.Background(), &SpawnOpts{
+		TeamName: "env-team",
+		Prompt:   "go",
+		Command:  binPath,
+		Env:      map[string]string{"GITHUB_TOKEN": "ghp_from_overlay"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if result.Result != "GITHUB_TOKEN=ghp_from_overlay" {
+		t.Fatalf("child env did not see overlay: result=%q", result.Result)
+	}
+}
+
+// TestSpawn_OnToolUse confirms the spawner-level callback receives every
+// tool_use event verbatim — throttling is the caller's responsibility
+// (pkg/orchestra dedupes consecutive identical tool names before
+// persisting to state.json). Pinning the spawner behavior here keeps the
+// throttling decision visible at the boundary rather than buried in the
+// parser.
 func TestSpawn_OnToolUse(t *testing.T) {
 	script := writeMockCommand(t, []string{
 		`{"type":"system","subtype":"init","session_id":"sess-tool"}`,
