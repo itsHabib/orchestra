@@ -521,8 +521,25 @@ func resolveAgentCredentials(ctx context.Context, cfg *Config) (map[string]map[s
 			return nil, fmt.Errorf("agent %q: %w", a.Name, err)
 		}
 		envOverlay := make(map[string]string, len(resolved))
-		for credName, value := range resolved {
-			envOverlay[credentials.EnvNameFor(credName)] = value
+		// Track which credential name owns each env-var key so we can
+		// fail fast on collisions: `foo-bar` and `foo_bar` both
+		// normalize to `FOO_BAR`, and silently picking one produces
+		// nondeterministic injection (last writer wins on map
+		// iteration). Reviewer flagged both Codex P2 and Copilot.
+		keyOwner := make(map[string]string, len(resolved))
+		credNames := make([]string, 0, len(resolved))
+		for credName := range resolved {
+			credNames = append(credNames, credName)
+		}
+		sort.Strings(credNames)
+		for _, credName := range credNames {
+			envName := credentials.EnvNameFor(credName)
+			if prior, dup := keyOwner[envName]; dup {
+				return nil, fmt.Errorf("agent %q: credentials %q and %q both normalize to env var %q — pick one to avoid silent overwrites",
+					a.Name, prior, credName, envName)
+			}
+			keyOwner[envName] = credName
+			envOverlay[envName] = resolved[credName]
 		}
 		out[a.Name] = envOverlay
 	}

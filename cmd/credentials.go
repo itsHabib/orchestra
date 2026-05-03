@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -137,23 +138,64 @@ var credentialsDeleteCmd = &cobra.Command{
 // the credential is absent so shell pipelines / CI can branch on it.
 var errCredentialMissing = errors.New("credential not set")
 
-// readSecretFromStdin reads stdin to EOF (capped at 1 MiB so a runaway
-// pipe doesn't blow up RAM) and strips a single trailing CRLF / LF so a
-// pasted secret followed by Enter doesn't carry the newline through to
-// the store. The earlier single `os.Stdin.Read` was (a) truncated to
-// 64 KiB and (b) string-compared the error to detect EOF — both review-
-// flagged. [io.LimitReader] keeps the cap; [io.ReadAll] handles the
-// short-read case.
+// readSecretFromStdin reads a secret from stdin. Two modes, picked by
+// whether stdin is a TTY:
+//
+//   - Interactive (TTY): read one line. The user presses Enter to commit;
+//     no Ctrl-D required. The previous EOF-only path made the command
+//     appear hung after a normal terminal entry (Codex P2).
+//   - Piped (not a TTY): read everything up to EOF, capped at limit+1
+//     bytes so we can detect overflow. The previous [io.LimitReader]
+//     version silently truncated input larger than the cap (Copilot).
+//
+// In both modes a single trailing CR / LF is stripped so a pasted secret
+// followed by Enter doesn't carry the newline through to the store.
 func readSecretFromStdin() (string, error) {
 	const limit = 1 << 20 // 1 MiB
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, limit))
-	if err != nil {
-		return "", err
+	if isTerminal(os.Stdin) {
+		reader := bufio.NewReaderSize(os.Stdin, 4096)
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		out := strings.TrimSuffix(line, "\n")
+		out = strings.TrimSuffix(out, "\r")
+		return out, nil
 	}
-	out := string(data)
+	// Piped path: read up to limit+1 to distinguish "fits" from
+	// "overflowed cap" without buffering the whole input twice.
+	buf := make([]byte, 0, limit+1)
+	chunk := make([]byte, 4096)
+	for {
+		n, err := os.Stdin.Read(chunk)
+		if n > 0 {
+			if len(buf)+n > limit {
+				return "", fmt.Errorf("credentials: secret exceeds %d-byte cap", limit)
+			}
+			buf = append(buf, chunk[:n]...)
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	out := string(buf)
 	out = strings.TrimSuffix(out, "\n")
 	out = strings.TrimSuffix(out, "\r")
 	return out, nil
+}
+
+// isTerminal reports whether f refers to a TTY. Used by
+// [readSecretFromStdin] to switch between the line-buffered interactive
+// path and the EOF-bounded piped path.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 func init() {
