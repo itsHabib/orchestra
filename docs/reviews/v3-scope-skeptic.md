@@ -2,6 +2,18 @@
 
 Reviewer role: ruthless YAGNI. Every criticism has a section ref.
 
+> Status note: this critique reviewed an **earlier draft** of
+> `docs/DESIGN-v3-composable-workflows.md`. The published design adopted
+> several of these critiques — most prominently C1 (gh-auth credential
+> propagation is now a Phase A hard requirement, not a §12.1 open
+> question), C5 (the gate mini-DSL was cut in favor of hardcoded
+> `signal_status` predicates), C6 (the artifact storage layer became
+> signal-event payloads persisted host-side rather than a separate
+> filesystem layer), and C4 (sub-recipes were dropped from v3.0). The doc
+> is preserved unmodified so the design-revision audit trail stays intact;
+> sections that reference deferred items the design later promoted should
+> be read as the pre-revision shape, not the binding design.
+
 ---
 
 ## C1: gh-auth was THE blocker — v3 doesn't solve it first

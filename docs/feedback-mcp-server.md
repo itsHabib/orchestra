@@ -2,7 +2,7 @@
 
 Notes captured live while driving an MA-backed dogfood run from a Claude Code session via `mcp__orchestra__*`. Two parallel teams (`ma-dispatch`, `recipes-cleanup`), both clone the repo and ship a PR with CI green + reviews requested. Opinionated. Where I'm critical, I name what I'd actually change.
 
-Run under observation: `20260502T052411.419445000Z` (2026-05-02). Workspace `C:\Users\MichaelHabib\AppData\Local\orchestra\mcp-runs\<run_id>\`.
+Run under observation: `20260502T052411.419445000Z` (2026-05-02). Workspace `%LOCALAPPDATA%\orchestra\mcp-runs\<run_id>\` on Windows (`~/.local/share/orchestra/mcp-runs/<run_id>/` on Linux/macOS).
 
 ## TL;DR — what hurts
 

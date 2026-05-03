@@ -16,7 +16,7 @@ v3 turns Orchestra into a **substrate for composable, multi-stage workflows**, w
 
 - **MA is the default path; local is the dev-convenience path that happens to share filesystem.** Every primitive must work cleanly on MA first; local follows.
 - **There is no message bus.** Inter-agent communication is via DAG-shaped data flow, not free-form chat. The existing `send_message`/`read_messages` surface is replaced by two narrower primitives: agents emit `signal_completion(...)` (terminal output, captured host-side from session events); coordinators emit `steer(...)` (a one-way `user.message` into a running session).
-- **Artifacts are payloads of signal events, persisted host-side.** No separate filesystem storage layer. Both backends produce signal events; orchestra captures and stores them once, server-side, regardless of where the agent ran.
+- **Artifacts are payloads of signal events, persisted host-side.** Agents never write artifacts to a shared filesystem path; orchestra captures the signal payload from the backend's event stream and persists it once on the host that owns the run (under `<workspace>/.orchestra/artifacts/` — see §7.8). The point is "no agent-side filesystem dependency," not "no on-disk persistence at all" — both backends produce the same payloads, and the host is the single canonical store.
 - **Credentials (e.g., `GITHUB_TOKEN`) are a Phase A hard requirement, not a §12 open question.** The dogfood proved that any "ship a PR" recipe is gated on this. MA-first means we solve it in the first ship.
 - **Recipes are the language; agents are the runtime; the chat-side LLM is the author.** No GUI, no marketplace, no streaming.
 

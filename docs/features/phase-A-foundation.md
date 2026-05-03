@@ -1,7 +1,7 @@
 # Phase A kickoff: Orchestra v3.0 foundation
 
 Created: 2026-05-02
-Use: paste the **BEGIN PROMPT** section into a fresh Claude Code session at `C:\Users\MichaelHabib\pers\orchestra` to ship Phase A of the v3 design.
+Use: paste the **BEGIN PROMPT** section into a fresh Claude Code session at the orchestra repo root (`<repo_root>`) to ship Phase A of the v3 design.
 Reads from: `docs/DESIGN-v3-composable-workflows.md`, `docs/feedback-mcp-server.md`, `docs/reviews/v3-*.md`.
 
 Phase A goal in one line: **rip out the message bus, add the artifact + credential + observability substrate, rename `team` → `agent`** — so Phase B (recipes + templates) has a clean foundation.
@@ -11,8 +11,8 @@ Phase A goal in one line: **rip out the message bus, add the artifact + credenti
 ## BEGIN PROMPT
 
 ```
-I'm working on orchestra (Go CLI, multi-agent DAG runner) at
-C:\Users\MichaelHabib\pers\orchestra. We are shipping Phase A of v3, which
+I'm working on orchestra (Go CLI, multi-agent DAG runner) in the local
+clone at `<repo_root>`. We are shipping Phase A of v3, which
 is the foundation rewrite: bus removal, artifact substrate, observability
 fixes, credentials, agent rename. Phase B (recipes + templates) is OUT OF
 SCOPE; do not touch recipes/templates beyond what's listed below.
@@ -251,14 +251,17 @@ DO NOT start Phase B until self-dogfood is clean.
 ────────────────────────────────────────────────────────────────────────────
 HOUSEKEEPING:
 
-- API key location: ~/pers/.keys (JSON file, "claude" field). Note the
-  stored value is missing the leading `s` of `sk-ant-` — prepend it before
-  use. Orchestra reads the key from %APPDATA%\orchestra\config.json with
-  `api_key: "sk-ant-..."` as the source of truth; that file is already
-  populated.
-- GitHub auth: use gh CLI; the host machine has it configured. For the
-  self-dogfood at the end, you'll need to populate
-  ~/.config/orchestra/credentials.json with `{"github_token": "..."}`.
+- Anthropic API key: orchestra reads it from
+  `~/.config/orchestra/config.json` (`%APPDATA%\orchestra\config.json` on
+  Windows) with shape `{"api_key": "sk-ant-..."}`. Use whatever local
+  mechanism you already have to populate that file before starting Phase A;
+  if it is missing, every MA-backed test will fail at session start with a
+  clear "no Anthropic API key" error.
+- GitHub auth: use the gh CLI on the host (orchestra does not configure it
+  for you). For the self-dogfood at the end, populate
+  `~/.config/orchestra/credentials.json` with the credentials your recipes
+  declare in `requires_credentials:` — at minimum a `github_token` for any
+  PR-shipping flow.
 - Active branches that are subsumed by Phase A:
   - `feature/ma-dispatch-send-message` — superseded by PR 4 (steer replaces
     send_message). Close that branch / PR with a "subsumed by v3 Phase A"
