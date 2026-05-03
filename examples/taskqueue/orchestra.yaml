@@ -6,7 +6,7 @@ defaults:
   permission_mode: bypassPermissions
   timeout_minutes: 30
 
-teams:
+agents:
   - name: engine
     lead:
       role: "Engine Tech Lead — coordinates store, worker pool, and API development"

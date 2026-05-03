@@ -18,7 +18,7 @@ func TestHandleRun_RejectsBothInlineAndPath(t *testing.T) {
 	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
 
 	res, _, err := srv.handleRun(context.Background(), nil, RunArgs{
-		InlineDAG:  &InlineDAG{Teams: []InlineTeam{{Name: "a", Role: "r", Prompt: "p"}}},
+		InlineDAG:  &InlineDAG{Agents: []InlineAgent{{Name: "a", Role: "r", Prompt: "p"}}},
 		ConfigPath: "/tmp/foo.yaml",
 	})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestHandleRun_InlineDAG_HappyPath(t *testing.T) {
 		InlineDAG: &InlineDAG{
 			ProjectName: "demo",
 			Backend:     "local",
-			Teams: []InlineTeam{
+			Agents: []InlineAgent{
 				{Name: "design", Role: "designer", Prompt: "spec out X"},
 				{Name: "build", Role: "engineer", Prompt: "build X", Deps: []string{"design"}},
 			},
@@ -86,11 +86,11 @@ func TestHandleRun_InlineDAG_HappyPath(t *testing.T) {
 	if loaded.Name != "demo" {
 		t.Fatalf("name: got %q, want %q", loaded.Name, "demo")
 	}
-	if len(loaded.Teams) != 2 {
-		t.Fatalf("teams: %d", len(loaded.Teams))
+	if len(loaded.Agents) != 2 {
+		t.Fatalf("teams: %d", len(loaded.Agents))
 	}
-	if loaded.Teams[1].DependsOn[0] != "design" {
-		t.Fatalf("deps not preserved: %+v", loaded.Teams[1])
+	if loaded.Agents[1].DependsOn[0] != "design" {
+		t.Fatalf("deps not preserved: %+v", loaded.Agents[1])
 	}
 	all, err := srv.Registry().List(context.Background())
 	if err != nil {
@@ -122,17 +122,17 @@ func TestHandleRun_InlineDAG_MissingFieldRejected(t *testing.T) {
 
 	cases := []struct {
 		name string
-		team InlineTeam
+		team InlineAgent
 		want string
 	}{
-		{"missing name", InlineTeam{Role: "r", Prompt: "p"}, "name"},
-		{"missing role", InlineTeam{Name: "a", Prompt: "p"}, "role"},
-		{"missing prompt", InlineTeam{Name: "a", Role: "r"}, "prompt"},
+		{"missing name", InlineAgent{Role: "r", Prompt: "p"}, "name"},
+		{"missing role", InlineAgent{Name: "a", Prompt: "p"}, "role"},
+		{"missing prompt", InlineAgent{Name: "a", Role: "r"}, "prompt"},
 	}
 	for _, tc := range cases {
 		srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
 		res, _, err := srv.handleRun(context.Background(), nil, RunArgs{
-			InlineDAG: &InlineDAG{Teams: []InlineTeam{tc.team}},
+			InlineDAG: &InlineDAG{Agents: []InlineAgent{tc.team}},
 		})
 		if err != nil {
 			t.Fatalf("%s: handler error: %v", tc.name, err)
@@ -230,7 +230,7 @@ func TestHandleRun_ProjectNameOverridesInlineDAG(t *testing.T) {
 	_, _, err := srv.handleRun(context.Background(), nil, RunArgs{
 		InlineDAG: &InlineDAG{
 			ProjectName: "from-dag",
-			Teams:       []InlineTeam{{Name: "a", Role: "r", Prompt: "p"}},
+			Agents: []InlineAgent{{Name: "a", Role: "r", Prompt: "p"}},
 		},
 		ProjectName: "override",
 	})

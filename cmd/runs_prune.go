@@ -62,8 +62,8 @@ func collectRunAgentRefs(records []runRecord, now time.Time, olderThan time.Dura
 			started := record.startedAt()
 			protect = started.IsZero() || started.After(cutoff)
 		}
-		for name := range record.state.Teams {
-			agentID := record.state.Teams[name].AgentID
+		for name := range record.state.Agents {
+			agentID := record.state.Agents[name].AgentID
 			if agentID == "" {
 				continue
 			}

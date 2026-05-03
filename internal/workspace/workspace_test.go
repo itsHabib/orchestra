@@ -11,7 +11,7 @@ import (
 func testConfig() *config.Config {
 	return &config.Config{
 		Name: "test-project",
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{Name: "alpha", Lead: config.Lead{Role: "Lead A"}},
 			{Name: "beta", Lead: config.Lead{Role: "Lead B"}},
 		},
@@ -72,8 +72,8 @@ func TestSeedRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRegistry failed: %v", err)
 	}
-	if len(reg.Teams) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(reg.Teams))
+	if len(reg.Agents) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(reg.Agents))
 	}
 }
 
@@ -84,8 +84,8 @@ func TestResult_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &TeamResult{
-		Team:    "alpha",
+	r := &AgentResult{
+		Agent:   "alpha",
 		Status:  "success",
 		Result:  "done",
 		CostUSD: 2.5,
@@ -99,6 +99,52 @@ func TestResult_RoundTrip(t *testing.T) {
 	}
 	if got.CostUSD != 2.5 {
 		t.Fatalf("expected 2.5, got %f", got.CostUSD)
+	}
+}
+
+func TestResult_LegacyTeamFieldOnRead(t *testing.T) {
+	chdirTemp(t)
+
+	ws, err := Ensure(".orchestra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drop a v2-shaped results file directly so the parser sees the legacy
+	// `team` key without a corresponding `agent`.
+	legacy := []byte(`{"team":"legacy","status":"success","result":"ok"}`)
+	if err := os.MkdirAll(filepath.Join(ws.Path, "results"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Path, "results", "legacy.json"), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.ReadResult("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent != "legacy" {
+		t.Fatalf("Agent = %q, want legacy", got.Agent)
+	}
+}
+
+func TestRegistry_LegacyTeamsKeyOnRead(t *testing.T) {
+	chdirTemp(t)
+
+	ws, err := Ensure(".orchestra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v2-shaped registry.json with `teams` instead of `agents`.
+	legacy := []byte(`{"project":"p","teams":[{"name":"alpha","status":"pending"}]}`)
+	if err := os.WriteFile(filepath.Join(ws.Path, "registry.json"), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ws.ReadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Agents) != 1 || reg.Agents[0].Name != "alpha" {
+		t.Fatalf("Agents = %+v, want one entry named alpha", reg.Agents)
 	}
 }
 
@@ -125,7 +171,7 @@ func TestUpdateRegistryEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range reg.Teams {
+	for _, entry := range reg.Agents {
 		if entry.Name == "alpha" {
 			if entry.Status != "running" || entry.SessionID != "abc-123" {
 				t.Fatalf("unexpected entry: %+v", entry)
@@ -148,7 +194,7 @@ func TestUpdateRegistryEntry_NotFound(t *testing.T) {
 	}
 	err = ws.UpdateRegistryEntry("nonexistent", func(_ *RegistryEntry) {})
 	if err == nil {
-		t.Fatal("expected error for unknown team")
+		t.Fatal("expected error for unknown agent")
 	}
 }
 

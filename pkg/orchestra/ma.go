@@ -31,7 +31,7 @@ type managedSession interface {
 
 type startTeamMAFunc func(context.Context, *Team, *store.RunState, io.Writer) (managedSession, <-chan spawner.Event, error)
 
-func (r *orchestrationRun) runTeamMA(ctx context.Context, tierIdx int, team *Team, state *store.RunState) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) runTeamMA(ctx context.Context, tierIdx int, team *Team, state *store.RunState) (*workspace.AgentResult, error) {
 	logWriter, err := r.ws.NDJSONLogWriter(team.Name)
 	if err != nil {
 		return nil, err
@@ -196,7 +196,7 @@ func (r *orchestrationRun) startTeamMASession(ctx context.Context, team *Team, s
 	return r.startTeamMA(ctx, team, state, logWriter)
 }
 
-func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, team *Team, session managedSession) (*workspace.TeamResult, error) {
+func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, team *Team, session managedSession) (*workspace.AgentResult, error) {
 	cleanupCtx := context.WithoutCancel(parentCtx)
 	if errors.Is(teamCtx.Err(), context.DeadlineExceeded) {
 		return nil, r.handleMATimeout(cleanupCtx, team, session)
@@ -217,7 +217,7 @@ func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, te
 	if err != nil {
 		return nil, err
 	}
-	ts := snapshot.Teams[team.Name]
+	ts := snapshot.Agents[team.Name]
 	if ts.Status != "done" {
 		if ts.LastError != "" {
 			return nil, errors.New(ts.LastError)
@@ -228,8 +228,8 @@ func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, te
 	// though MA doesn't currently emit per-turn signals — leaving it off
 	// would let RecordTeamComplete zero out anything a future event
 	// counter manages to record.
-	return &workspace.TeamResult{
-		Team:         team.Name,
+	return &workspace.AgentResult{
+		Agent:        team.Name,
 		Status:       "success",
 		Result:       ts.ResultSummary,
 		CostUSD:      ts.CostUSD,
@@ -244,7 +244,7 @@ func (r *orchestrationRun) finalizeMATeam(parentCtx, teamCtx context.Context, te
 func (r *orchestrationRun) handleMATimeout(ctx context.Context, team *Team, session managedSession) error {
 	_ = session.Cancel(ctx)
 	msg := fmt.Sprintf("hard timeout after %d minutes", r.cfg.Defaults.TimeoutMinutes)
-	if err := r.runService.Store().UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+	if err := r.runService.Store().UpdateAgentState(ctx, team.Name, func(ts *store.AgentState) {
 		ts.Status = "failed"
 		ts.EndedAt = r.runService.Now().UTC()
 		ts.LastError = msg
@@ -378,7 +378,7 @@ func (r *orchestrationRun) artifactPublishSpec(team *Team, state *store.RunState
 		BranchName: branchName(team.Name, state.RunID),
 	}
 	for _, dep := range team.DependsOn {
-		ts, ok := state.Teams[dep]
+		ts, ok := state.Agents[dep]
 		if !ok || len(ts.RepositoryArtifacts) == 0 {
 			continue
 		}
@@ -434,7 +434,7 @@ func (r *orchestrationRun) buildSessionResources(team *Team, state *store.RunSta
 		return resources, nil
 	}
 	for _, dep := range team.DependsOn {
-		ts, ok := state.Teams[dep]
+		ts, ok := state.Agents[dep]
 		if !ok || len(ts.RepositoryArtifacts) == 0 {
 			continue
 		}
@@ -443,7 +443,7 @@ func (r *orchestrationRun) buildSessionResources(team *Team, state *store.RunSta
 		// Stored RepositoryArtifact.URL may be missing on legacy/manually
 		// edited state and must not silently route a downstream session to
 		// the wrong repo. Empty stored URL is also treated as unknown.
-		depTeam := r.cfg.TeamByName(dep)
+		depTeam := r.cfg.AgentByName(dep)
 		var depRepoURL string
 		if depTeam != nil {
 			if depRepo := depTeam.EffectiveRepository(r.cfg); depRepo != nil {
@@ -518,7 +518,7 @@ func (r *orchestrationRun) resolveTeamArtifact(ctx context.Context, team *Team) 
 
 	r.maybeOpenPullRequest(ctx, team, repo, owner, name, runID, &artifact)
 
-	return r.runService.Store().UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+	return r.runService.Store().UpdateAgentState(ctx, team.Name, func(ts *store.AgentState) {
 		ts.RepositoryArtifacts = append(ts.RepositoryArtifacts, artifact)
 	})
 }
@@ -536,7 +536,7 @@ func (r *orchestrationRun) currentRunID(ctx context.Context) (string, error) {
 
 func (r *orchestrationRun) markTeamMissingBranch(ctx context.Context, teamName, branch string) error {
 	msg := "no branch pushed: " + branch
-	if err := r.runService.Store().UpdateTeamState(ctx, teamName, func(ts *store.TeamState) {
+	if err := r.runService.Store().UpdateAgentState(ctx, teamName, func(ts *store.AgentState) {
 		ts.Status = "failed"
 		ts.LastError = msg
 	}); err != nil {
@@ -572,14 +572,14 @@ func (r *orchestrationRun) maybeOpenPullRequest(ctx context.Context, team *Team,
 }
 
 func (r *orchestrationRun) recordMAHandles(ctx context.Context, teamName string, agent *spawner.AgentHandle, _ *spawner.EnvHandle) error {
-	return r.runService.Store().UpdateTeamState(ctx, teamName, func(ts *store.TeamState) {
+	return r.runService.Store().UpdateAgentState(ctx, teamName, func(ts *store.AgentState) {
 		ts.AgentID = agent.ID
 		ts.AgentVersion = agent.Version
 	})
 }
 
 func (r *orchestrationRun) recordMASession(ctx context.Context, teamName, sessionID string) error {
-	return r.runService.Store().UpdateTeamState(ctx, teamName, func(ts *store.TeamState) {
+	return r.runService.Store().UpdateAgentState(ctx, teamName, func(ts *store.AgentState) {
 		ts.SessionID = sessionID
 	})
 }

@@ -32,10 +32,10 @@ var validateCmd = &cobra.Command{
 		}
 
 		cfg := res.Config
-		logger.Success("Config is valid: %d teams, project %q", len(cfg.Teams), cfg.Name)
+		logger.Success("Config is valid: %d teams, project %q", len(cfg.Agents), cfg.Name)
 
 		// Print team summary
-		for _, t := range cfg.Teams {
+		for _, t := range cfg.Agents {
 			kind := "solo"
 			if t.HasMembers() {
 				kind = fmt.Sprintf("team (%d members)", len(t.Members))

@@ -30,7 +30,7 @@ func TestArchiveRunMovesActiveFiles(t *testing.T) {
 	if err := s.SaveRunState(ctx, &store.RunState{
 		Project: "archive-test",
 		RunID:   "run-42",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "done"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "done"}},
 	}); err != nil {
 		t.Fatal(err)
 	}

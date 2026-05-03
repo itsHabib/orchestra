@@ -97,7 +97,7 @@ func TestRunMsg_HappyPath(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "running", SessionID: "sess_42"},
 		},
 	})
@@ -145,7 +145,7 @@ func TestRunMsg_TeamNotFound(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "running", SessionID: "sess_42"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_42"}},
 	})
 	swapSteeringFactory(t, func(context.Context) (spawner.SessionEventSender, error) {
 		t.Fatal("session client should not be constructed when team is missing")
@@ -167,7 +167,7 @@ func TestRunMsg_TeamNotRunning(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "done", SessionID: "sess_42"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "done", SessionID: "sess_42"}},
 	})
 	swapSteeringFactory(t, func(context.Context) (spawner.SessionEventSender, error) {
 		t.Fatal("session client should not be constructed for non-running team")
@@ -192,7 +192,7 @@ func TestRunMsg_NoSessionRecorded(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "running"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "running"}},
 	})
 	swapSteeringFactory(t, func(context.Context) (spawner.SessionEventSender, error) {
 		t.Fatal("session client should not be constructed without recorded session")
@@ -214,7 +214,7 @@ func TestRunMsg_LocalBackendBlocked(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "local",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "running", SessionID: "sess_42"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_42"}},
 	})
 	swapSteeringFactory(t, func(context.Context) (spawner.SessionEventSender, error) {
 		t.Fatal("session client should not be constructed for local backend")
@@ -236,7 +236,7 @@ func TestRunInterrupt_HappyPath(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "running", SessionID: "sess_42"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_42"}},
 	})
 	rec := &recordingEvents{}
 	swapSteeringFactory(t, func(context.Context) (spawner.SessionEventSender, error) { return rec, nil })
@@ -261,7 +261,7 @@ func TestRunSessionsLs_FiltersToSteerableByDefault(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha":   {Status: "running", SessionID: "sess_a", AgentID: "agent_a", LastEventID: "e1", LastEventAt: time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)},
 			"bravo":   {Status: "pending"},
 			"charlie": {Status: "done", SessionID: "sess_c"},
@@ -293,7 +293,7 @@ func TestRunSessionsLs_AllShowsEverything(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "running", SessionID: "sess_a"},
 			"bravo": {Status: "done", SessionID: "sess_b"},
 			"delta": {Status: "failed"},
@@ -335,7 +335,7 @@ func TestRunSessionsLs_LocalBackendBlocked(t *testing.T) {
 	writeStateJSON(t, ws, &store.RunState{
 		Project: "p",
 		Backend: "local",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "running", SessionID: "sess_a"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_a"}},
 	})
 	sessionsWorkspaceFlag = ws
 

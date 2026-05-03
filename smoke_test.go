@@ -129,7 +129,7 @@ func TestSmoke_RealClaude(t *testing.T) {
 		t.Errorf("project name: got %q, want %q", state.Project, "fortune-api")
 	}
 
-	for name, ts := range state.Teams {
+	for name, ts := range state.Agents {
 		if ts.Status != "done" {
 			t.Errorf("team %s: status=%q, want %q", name, ts.Status, "done")
 		}
@@ -155,7 +155,7 @@ func TestSmoke_RealClaude(t *testing.T) {
 		t.Fatalf("parsing registry.json: %v", err)
 	}
 
-	for _, entry := range reg.Teams {
+	for _, entry := range reg.Agents {
 		if entry.Name == "coordinator" {
 			continue
 		}
@@ -228,10 +228,10 @@ func TestSmoke_RealClaude(t *testing.T) {
 		Passed:      !t.Failed(),
 		Teams:       make(map[string]smokeTeam),
 	}
-	for name, ts := range state.Teams {
+	for name, ts := range state.Agents {
 		run.TotalIn += ts.InputTokens
 		run.TotalOut += ts.OutputTokens
-		run.Teams[name] = smokeTeam{
+		run.Agents[name] = smokeTeam{
 			DurationMs:   ts.DurationMs,
 			InputTokens:  ts.InputTokens,
 			OutputTokens: ts.OutputTokens,
@@ -252,7 +252,7 @@ func TestSmoke_RealClaude(t *testing.T) {
 
 	// Print this run
 	t.Logf("── This Run ──")
-	for name, ts := range state.Teams {
+	for name, ts := range state.Agents {
 		t.Logf("  %s: %dK in / %dK out, %d turns (%dms)", name, ts.InputTokens/1000, ts.OutputTokens/1000, teamTurns[name], ts.DurationMs)
 	}
 	t.Logf("  TOTAL: %dK in / %dK out, %d turns, %s wall", run.TotalIn/1000, run.TotalOut/1000, run.TotalTurns, elapsed.Round(time.Second))
@@ -317,7 +317,7 @@ func printSmokeStats(t *testing.T) {
 	for _, name := range teamNames {
 		vals := make([]float64, 0, len(runs))
 		for _, r := range runs {
-			if tm, ok := r.Teams[name]; ok {
+			if tm, ok := r.Agents[name]; ok {
 				vals = append(vals, float64(tm.DurationMs)/1000)
 			}
 		}

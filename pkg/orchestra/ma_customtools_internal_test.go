@@ -75,7 +75,7 @@ func runWithCustomToolEvents(t *testing.T, h customtools.Handler, eventsToEmit .
 		Project: "p",
 		RunID:   "run_test",
 		Backend: BackendManagedAgents,
-		Teams:   map[string]store.TeamState{"alpha": {Status: "pending"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "pending"}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -88,7 +88,7 @@ func runWithCustomToolEvents(t *testing.T, h customtools.Handler, eventsToEmit .
 		Name:     "p",
 		Backend:  Backend{Kind: BackendManagedAgents},
 		Defaults: Defaults{TimeoutMinutes: 5},
-		Teams: []Team{
+		Agents: []Team{
 			{Name: "alpha", Lead: Lead{Role: "Lead"}, Tasks: []Task{{Summary: "x"}}},
 		},
 	}
@@ -108,7 +108,7 @@ func runWithCustomToolEvents(t *testing.T, h customtools.Handler, eventsToEmit .
 		}
 		// Mark the team done so finalizeMATeam doesn't fail the run; the
 		// dispatch path is what we're exercising, not the lifecycle finisher.
-		if err := st.UpdateTeamState(ctx, "alpha", func(ts *store.TeamState) {
+		if err := st.UpdateAgentState(ctx, "alpha", func(ts *store.AgentState) {
 			ts.Status = "done"
 			ts.ResultSummary = "ok"
 		}); err != nil {
@@ -141,7 +141,7 @@ func TestDispatchCustomToolUseInvokesHandlerAndRelaysResult(t *testing.T) {
 			},
 		},
 	)
-	if _, err := r.runTeamMA(ctx, 0, &r.cfg.Teams[0], &store.RunState{RunID: "run_test"}); err != nil {
+	if _, err := r.runTeamMA(ctx, 0, &r.cfg.Agents[0], &store.RunState{RunID: "run_test"}); err != nil {
 		t.Fatalf("runTeamMA: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestDispatchCustomToolUseHandlerErrorBecomesIsErrorResult(t *testing.T) {
 			ToolUse:   spawner.ToolUse{ID: "evt_x", Name: "explode"},
 		},
 	)
-	if _, err := r.runTeamMA(ctx, 0, &r.cfg.Teams[0], &store.RunState{RunID: "run_test"}); err != nil {
+	if _, err := r.runTeamMA(ctx, 0, &r.cfg.Agents[0], &store.RunState{RunID: "run_test"}); err != nil {
 		t.Fatalf("runTeamMA: %v", err)
 	}
 
@@ -230,7 +230,7 @@ func TestDispatchUnknownToolRelaysIsError(t *testing.T) {
 			ToolUse:   spawner.ToolUse{ID: "evt_y", Name: "ghost"},
 		},
 	)
-	if _, err := r.runTeamMA(ctx, 0, &r.cfg.Teams[0], &store.RunState{RunID: "run_test"}); err != nil {
+	if _, err := r.runTeamMA(ctx, 0, &r.cfg.Agents[0], &store.RunState{RunID: "run_test"}); err != nil {
 		t.Fatalf("runTeamMA: %v", err)
 	}
 	sent := fake.sentEvents()
@@ -243,7 +243,7 @@ func TestDispatchUnknownToolRelaysIsError(t *testing.T) {
 }
 
 type endToEndFixture struct {
-	state         store.TeamState
+	state         store.AgentState
 	sent          []*spawner.UserEvent
 	notifications []notify.Notification
 	logPath       string
@@ -285,7 +285,7 @@ func runEndToEndSignal(t *testing.T) endToEndFixture {
 		notifier:   notify.Compose(nil, logSink, notify.NewLog(notifyPath)),
 	}
 	r.startTeamMAForTest = endToEndStarter(ctx, t, st, fake)
-	if _, err := r.runTeamMA(ctx, 0, &cfg.Teams[0], &store.RunState{RunID: "run_test"}); err != nil {
+	if _, err := r.runTeamMA(ctx, 0, &cfg.Agents[0], &store.RunState{RunID: "run_test"}); err != nil {
 		t.Fatalf("runTeamMA: %v", err)
 	}
 	state, err := st.LoadRunState(ctx)
@@ -293,7 +293,7 @@ func runEndToEndSignal(t *testing.T) endToEndFixture {
 		t.Fatalf("load state: %v", err)
 	}
 	return endToEndFixture{
-		state:         state.Teams["alpha"],
+		state:         state.Agents["alpha"],
 		sent:          fake.sentEvents(),
 		notifications: captured,
 		logPath:       notifyPath,
@@ -307,7 +307,7 @@ func seedAlphaRun(t *testing.T) *memstore.MemStore {
 		Project: "p",
 		RunID:   "run_test",
 		Backend: BackendManagedAgents,
-		Teams:   map[string]store.TeamState{"alpha": {Status: "pending"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "pending"}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -319,7 +319,7 @@ func alphaSingleTeamCfg() *Config {
 		Name:     "p",
 		Backend:  Backend{Kind: BackendManagedAgents},
 		Defaults: Defaults{TimeoutMinutes: 5},
-		Teams: []Team{
+		Agents: []Team{
 			{Name: "alpha", Lead: Lead{Role: "Lead"}, Tasks: []Task{{Summary: "x"}}},
 		},
 	}
@@ -344,7 +344,7 @@ func endToEndStarter(ctx context.Context, t *testing.T, st *memstore.MemStore, f
 				},
 			},
 		}
-		if err := st.UpdateTeamState(ctx, "alpha", func(ts *store.TeamState) {
+		if err := st.UpdateAgentState(ctx, "alpha", func(ts *store.AgentState) {
 			ts.Status = "done"
 			ts.ResultSummary = "ok"
 		}); err != nil {
@@ -413,7 +413,7 @@ func runWithCustomToolEventsRaw(t *testing.T, eventsToEmit ...spawner.Event) (*o
 		Project: "p",
 		RunID:   "run_test",
 		Backend: BackendManagedAgents,
-		Teams:   map[string]store.TeamState{"alpha": {Status: "pending"}},
+		Agents:   map[string]store.AgentState{"alpha": {Status: "pending"}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -425,7 +425,7 @@ func runWithCustomToolEventsRaw(t *testing.T, eventsToEmit ...spawner.Event) (*o
 		Name:     "p",
 		Backend:  Backend{Kind: BackendManagedAgents},
 		Defaults: Defaults{TimeoutMinutes: 5},
-		Teams: []Team{
+		Agents: []Team{
 			{Name: "alpha", Lead: Lead{Role: "Lead"}, Tasks: []Task{{Summary: "x"}}},
 		},
 	}
@@ -443,7 +443,7 @@ func runWithCustomToolEventsRaw(t *testing.T, eventsToEmit ...spawner.Event) (*o
 		for _, ev := range eventsToEmit {
 			ch <- ev
 		}
-		if err := st.UpdateTeamState(ctx, "alpha", func(ts *store.TeamState) {
+		if err := st.UpdateAgentState(ctx, "alpha", func(ts *store.AgentState) {
 			ts.Status = "done"
 			ts.ResultSummary = "ok"
 		}); err != nil {

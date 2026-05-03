@@ -14,8 +14,14 @@ import (
 	"github.com/itsHabib/orchestra/internal/workspace"
 )
 
-// TeamResult is the structured result recorded for a completed team.
-type TeamResult = workspace.TeamResult
+// AgentResult is the structured result recorded for a completed agent.
+type AgentResult = workspace.AgentResult
+
+// TeamResult is the v2 alias for [AgentResult], retained so internal callers
+// keep building during the v3 migration window.
+//
+// Deprecated: use [AgentResult].
+type TeamResult = workspace.AgentResult
 
 // Service owns run lifecycle choreography above the Store.
 type Service struct {
@@ -170,7 +176,7 @@ func (s *Service) Snapshot(ctx context.Context) (*store.RunState, error) {
 // RecordTeamStart transitions a team to running and stamps its start time.
 func (s *Service) RecordTeamStart(ctx context.Context, team string) error {
 	now := s.clock().UTC()
-	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	if err := s.store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		ts.Status = "running"
 		ts.StartedAt = now
 		ts.EndedAt = time.Time{}
@@ -188,19 +194,19 @@ func (s *Service) RecordTeamStart(ctx context.Context, team string) error {
 }
 
 // RecordTeamComplete transitions a team to done and records result counters.
-// The team name is taken from result.Team.
+// The team name is taken from result.Agent.
 func (s *Service) RecordTeamComplete(ctx context.Context, result *TeamResult) error {
 	if result == nil {
 		return fmt.Errorf("%w: nil team result", store.ErrInvalidArgument)
 	}
-	if result.Team == "" {
+	if result.Agent == "" {
 		return fmt.Errorf("%w: team result missing team name", store.ErrInvalidArgument)
 	}
 
 	now := s.clock().UTC()
-	team := result.Team
+	team := result.Agent
 	var endedAt time.Time
-	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	if err := s.store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		ts.Status = "done"
 		if ts.EndedAt.IsZero() {
 			ts.EndedAt = now
@@ -234,7 +240,7 @@ func (s *Service) RecordTeamFail(ctx context.Context, team string, cause error) 
 		causeText = cause.Error()
 	}
 
-	if err := s.store.UpdateTeamState(ctx, team, func(ts *store.TeamState) {
+	if err := s.store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
 		ts.Status = "failed"
 		ts.EndedAt = now
 		ts.LastError = causeText
@@ -311,21 +317,21 @@ func (s *Service) seedState(cfg *config.Config) (*store.RunState, error) {
 		Backend:   backend,
 		RunID:     now.Format("20060102T150405.000000000Z"),
 		StartedAt: now,
-		Teams:     make(map[string]store.TeamState, len(cfg.Teams)),
+		Agents:    make(map[string]store.AgentState, len(cfg.Agents)),
 	}
-	tiers, err := dag.BuildTiers(cfg.Teams)
+	tiers, err := dag.BuildTiers(cfg.Agents)
 	if err != nil {
 		return nil, err
 	}
-	tierByTeam := make(map[string]int, len(cfg.Teams))
+	tierByTeam := make(map[string]int, len(cfg.Agents))
 	for tierIdx, names := range tiers {
 		for _, name := range names {
 			tierByTeam[name] = tierIdx
 		}
 	}
-	for i := range cfg.Teams {
-		tier := tierByTeam[cfg.Teams[i].Name]
-		state.Teams[cfg.Teams[i].Name] = store.TeamState{
+	for i := range cfg.Agents {
+		tier := tierByTeam[cfg.Agents[i].Name]
+		state.Agents[cfg.Agents[i].Name] = store.AgentState{
 			Status: "pending",
 			Tier:   &tier,
 		}
@@ -344,9 +350,9 @@ func (s *Service) seedWorkspaceFiles(ws *workspace.Workspace, cfg *config.Config
 		return nil, nil
 	}
 
-	names := make([]string, len(cfg.Teams))
-	for i := range cfg.Teams {
-		names[i] = cfg.Teams[i].Name
+	names := make([]string, len(cfg.Agents))
+	for i := range cfg.Agents {
+		names[i] = cfg.Agents[i].Name
 	}
 	bus := messaging.NewBus(ws.MessagesPath())
 	if err := bus.InitInboxes(names); err != nil {

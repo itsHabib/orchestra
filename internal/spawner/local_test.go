@@ -86,8 +86,8 @@ func TestSpawn_SuccessResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Team != "test-team" {
-		t.Fatalf("expected test-team, got %s", result.Team)
+	if result.Agent != "test-team" {
+		t.Fatalf("expected test-team, got %s", result.Agent)
 	}
 	if result.Status != "success" {
 		t.Fatalf("expected success, got %s", result.Status)

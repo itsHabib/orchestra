@@ -106,7 +106,7 @@ func TestHandleListRuns_DerivesStatus(t *testing.T) {
 			dir: stateDir(wsDir),
 			state: &store.RunState{
 				Backend: "managed_agents",
-				Teams: map[string]store.TeamState{
+				Agents: map[string]store.AgentState{
 					"ship-foo": {Status: "running", SignalStatus: "done", SignalSummary: "shipped", SignalPRURL: "https://github.com/x/y/pull/1"},
 					"ship-bar": {Status: "running", SignalStatus: "blocked", SignalReason: "ambiguous"},
 				},
@@ -142,8 +142,8 @@ func TestHandleListRuns_DerivesStatus(t *testing.T) {
 	if got.Status != RunStatusBlocked {
 		t.Fatalf("status: got %q, want %q", got.Status, RunStatusBlocked)
 	}
-	if len(got.Teams) != 2 {
-		t.Fatalf("teams: %d", len(got.Teams))
+	if len(got.Agents) != 2 {
+		t.Fatalf("teams: %d", len(got.Agents))
 	}
 }
 
@@ -157,11 +157,11 @@ func TestHandleListRuns_ActiveOnlyFiltersDone(t *testing.T) {
 	stateReader := stateReaderFn([]stateRecord{
 		{dir: stateDir(wsDoneDir), state: &store.RunState{
 			Backend: "managed_agents",
-			Teams:   map[string]store.TeamState{"a": {Status: "running", SignalStatus: "done"}},
+			Agents:   map[string]store.AgentState{"a": {Status: "running", SignalStatus: "done"}},
 		}},
 		{dir: stateDir(wsRunningDir), state: &store.RunState{
 			Backend: "managed_agents",
-			Teams:   map[string]store.TeamState{"a": {Status: "running"}},
+			Agents:   map[string]store.AgentState{"a": {Status: "running"}},
 		}},
 	})
 	srv, err := New(&Options{
@@ -238,7 +238,7 @@ func TestHandleGetRun_HappyPath(t *testing.T) {
 			dir: stateDir(wsDir),
 			state: &store.RunState{
 				Backend: "managed_agents",
-				Teams: map[string]store.TeamState{
+				Agents: map[string]store.AgentState{
 					"ship-foo": {Status: "running", SignalStatus: "done"},
 				},
 			},

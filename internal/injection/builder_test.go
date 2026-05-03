@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildPrompt_SoloNoDeps(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:    "backend",
 		Lead:    config.Lead{Role: "Backend Lead"},
 		Context: "Go 1.22, Chi router\n",
@@ -46,14 +46,14 @@ func TestBuildPrompt_SoloNoDeps(t *testing.T) {
 }
 
 func TestBuildPrompt_SoloWithDeps(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:      "frontend",
 		Lead:      config.Lead{Role: "Frontend Lead"},
 		DependsOn: []string{"backend"},
 		Tasks:     []config.Task{{Summary: "Build UI", Details: "React", Verify: "npm build"}},
 	}
 	state := &workspace.State{
-		Teams: map[string]workspace.TeamState{
+		Agents: map[string]workspace.AgentState{
 			"backend": {
 				Status:        "done",
 				ResultSummary: "Built 12 REST endpoints",
@@ -62,7 +62,7 @@ func TestBuildPrompt_SoloWithDeps(t *testing.T) {
 		},
 	}
 	cfg := &config.Config{
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}},
 		},
 	}
@@ -80,7 +80,7 @@ func TestBuildPrompt_SoloWithDeps(t *testing.T) {
 }
 
 func TestBuildPrompt_TeamLeadWithMembers(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name: "backend",
 		Lead: config.Lead{Role: "Backend Lead"},
 		Members: []config.Member{
@@ -109,7 +109,7 @@ func TestBuildPrompt_TeamLeadWithMembers(t *testing.T) {
 }
 
 func TestBuildPrompt_TeamLeadWithDeps(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:      "frontend",
 		Lead:      config.Lead{Role: "Frontend Lead"},
 		DependsOn: []string{"backend"},
@@ -117,12 +117,12 @@ func TestBuildPrompt_TeamLeadWithDeps(t *testing.T) {
 		Tasks:     []config.Task{{Summary: "Build UI", Details: "React", Verify: "npm build"}},
 	}
 	state := &workspace.State{
-		Teams: map[string]workspace.TeamState{
+		Agents: map[string]workspace.AgentState{
 			"backend": {Status: "done", ResultSummary: "API done"},
 		},
 	}
 	cfg := &config.Config{
-		Teams: []config.Team{{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}}},
+		Agents: []config.Agent{{Name: "backend", Lead: config.Lead{Role: "Backend Lead"}}},
 	}
 	prompt := BuildPrompt(&team, "proj", state, cfg, nil, "", "", Capabilities{})
 
@@ -136,7 +136,7 @@ func TestBuildPrompt_TeamLeadWithDeps(t *testing.T) {
 
 func TestBuildPrompt_ContextInjectedVerbatim(t *testing.T) {
 	ctx := "Tech stack: Go 1.22, Chi router, sqlc for query generation.\nAuth: JWT."
-	team := config.Team{
+	team := config.Agent{
 		Name:    "backend",
 		Lead:    config.Lead{Role: "Lead"},
 		Context: ctx,
@@ -149,7 +149,7 @@ func TestBuildPrompt_ContextInjectedVerbatim(t *testing.T) {
 }
 
 func TestBuildPrompt_TaskFieldsPresent(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name: "t",
 		Lead: config.Lead{Role: "Lead"},
 		Tasks: []config.Task{{
@@ -169,7 +169,7 @@ func TestBuildPrompt_TaskFieldsPresent(t *testing.T) {
 
 func TestBuildPrompt_WithTierPeers(t *testing.T) {
 	cfg := &config.Config{
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{
 				Name: "frontend",
 				Lead: config.Lead{Role: "Frontend Lead"},
@@ -199,7 +199,7 @@ func TestBuildPrompt_WithTierPeers(t *testing.T) {
 	tierPeers := []string{"frontend", "backend", "devops"}
 
 	// Test from backend's perspective
-	team := *cfg.TeamByName("backend")
+	team := *cfg.AgentByName("backend")
 	prompt := BuildPrompt(&team, "proj", nil, cfg, tierPeers, "", "", Capabilities{})
 
 	// Should contain the section header
@@ -219,7 +219,7 @@ func TestBuildPrompt_WithTierPeers(t *testing.T) {
 }
 
 func TestBuildPrompt_NilTierPeers(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:  "solo",
 		Lead:  config.Lead{Role: "Solo Lead"},
 		Tasks: []config.Task{{Summary: "Do stuff", Verify: "true"}},
@@ -234,11 +234,11 @@ func TestBuildPrompt_NilTierPeers(t *testing.T) {
 func TestBuildPrompt_SingleTierPeer(t *testing.T) {
 	// When a team is alone in its tier, tierPeers has only itself — section should be skipped
 	cfg := &config.Config{
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{Name: "only", Lead: config.Lead{Role: "Lead"}, Tasks: []config.Task{{Summary: "Work"}}},
 		},
 	}
-	prompt := BuildPrompt(&cfg.Teams[0], "proj", nil, cfg, []string{"only"}, "", "", Capabilities{})
+	prompt := BuildPrompt(&cfg.Agents[0], "proj", nil, cfg, []string{"only"}, "", "", Capabilities{})
 
 	if strings.Contains(prompt, "Parallel Teams") {
 		t.Error("single-team tier should not produce parallel teams section")
@@ -246,7 +246,7 @@ func TestBuildPrompt_SingleTierPeer(t *testing.T) {
 }
 
 func TestBuildPrompt_LocalBackendByteIdenticalWhenNoArtifactPublish(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:  "backend",
 		Lead:  config.Lead{Role: "Backend Lead"},
 		Tasks: []config.Task{{Summary: "Build", Details: "d", Verify: "v"}},
@@ -262,14 +262,14 @@ func TestBuildPrompt_LocalBackendByteIdenticalWhenNoArtifactPublish(t *testing.T
 }
 
 func TestBuildPrompt_ArtifactPublishSection(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:      "team-b",
 		Lead:      config.Lead{Role: "B Lead"},
 		Tasks:     []config.Task{{Summary: "Edit README", Details: "d", Verify: "v"}},
 		DependsOn: []string{"team-a"},
 	}
 	state := &workspace.State{
-		Teams: map[string]workspace.TeamState{
+		Agents: map[string]workspace.AgentState{
 			"team-a": {
 				Status:        "done",
 				ResultSummary: "edited README",
@@ -280,7 +280,7 @@ func TestBuildPrompt_ArtifactPublishSection(t *testing.T) {
 		},
 	}
 	cfg := &config.Config{
-		Teams: []config.Team{{Name: "team-a", Lead: config.Lead{Role: "A Lead"}}},
+		Agents: []config.Agent{{Name: "team-a", Lead: config.Lead{Role: "A Lead"}}},
 	}
 	caps := Capabilities{ArtifactPublish: &ArtifactPublishSpec{
 		MountPath:  "/workspace/repo",
@@ -306,7 +306,7 @@ func TestBuildPrompt_ArtifactPublishSection(t *testing.T) {
 }
 
 func TestBuildPrompt_ArtifactPublishSectionTier0NoUpstreams(t *testing.T) {
-	team := config.Team{
+	team := config.Agent{
 		Name:  "team-a",
 		Lead:  config.Lead{Role: "A Lead"},
 		Tasks: []config.Task{{Summary: "Edit README", Details: "d", Verify: "v"}},

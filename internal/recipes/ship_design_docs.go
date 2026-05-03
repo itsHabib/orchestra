@@ -114,15 +114,15 @@ func ShipDesignDocs(p *ShipDesignDocsParams) (*config.Config, error) {
 	}
 	runName := orDefault(p.RunName, "ship-design-docs")
 
-	teams := make([]config.Team, 0, len(p.DocPaths))
+	agents := make([]config.Agent, 0, len(p.DocPaths))
 	used := make(map[string]bool, len(p.DocPaths))
 	for _, docPath := range p.DocPaths {
 		if strings.TrimSpace(docPath) == "" {
 			return nil, errors.New("recipes: ship-design-docs: empty doc path")
 		}
-		name := uniqueTeamName(teamNameForDoc(docPath), used)
+		name := uniqueAgentName(agentNameForDoc(docPath), used)
 		used[name] = true
-		teams = append(teams, buildShipTeam(name, docPath))
+		agents = append(agents, buildShipAgent(name, docPath))
 	}
 
 	cfg := &config.Config{
@@ -145,14 +145,14 @@ func ShipDesignDocs(p *ShipDesignDocsParams) (*config.Config, error) {
 			TimeoutMinutes:       timeoutMinutes,
 			MAConcurrentSessions: concurrency,
 		},
-		Teams: teams,
+		Agents: agents,
 	}
 	cfg.ResolveDefaults()
 	return cfg, nil
 }
 
-func buildShipTeam(name, docPath string) config.Team {
-	return config.Team{
+func buildShipAgent(name, docPath string) config.Agent {
+	return config.Agent{
 		Name: name,
 		Lead: config.Lead{Role: defaultLeadRole},
 		Tasks: []config.Task{
@@ -211,7 +211,7 @@ func orDefault(s, def string) string {
 	return s
 }
 
-// uniqueTeamName returns a team name that's not already in `used`. The first
+// uniqueAgentName returns a team name that's not already in `used`. The first
 // time `base` appears it's returned unchanged; subsequent collisions get a
 // `-2`, `-3`, … suffix, skipping any suffixed candidate that's *also* taken
 // (e.g. when DocPaths contains both `foo.md` and `foo-2.md` and a third
@@ -220,7 +220,7 @@ func orDefault(s, def string) string {
 //
 // Counter starts at 2 because the un-suffixed name covers the first
 // occurrence; the first collision lands at counter==2.
-func uniqueTeamName(base string, used map[string]bool) string {
+func uniqueAgentName(base string, used map[string]bool) string {
 	if !used[base] {
 		return base
 	}
@@ -251,12 +251,12 @@ func validateRepoURL(raw string) error {
 	return nil
 }
 
-// teamNameForDoc derives a stable team name from a doc path. The team name
+// agentNameForDoc derives a stable team name from a doc path. The team name
 // is "ship-<slug>" where <slug> is the doc's basename stripped of its
 // extension, lowercased, and with non-alphanumeric runs collapsed to "-".
 // E.g. "docs/feat-flag-quiet.md" → "ship-feat-flag-quiet"; "FOO BAR.md" →
 // "ship-foo-bar".
-func teamNameForDoc(docPath string) string {
+func agentNameForDoc(docPath string) string {
 	base := path.Base(filepath.ToSlash(docPath))
 	if dot := strings.LastIndex(base, "."); dot > 0 {
 		base = base[:dot]

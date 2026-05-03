@@ -265,14 +265,14 @@ func (h *Handle) Status() Status {
 	if err != nil || state == nil {
 		return status
 	}
-	teams := make(map[string]TeamSnapshot, len(state.Teams))
+	agents := make(map[string]AgentSnapshot, len(state.Agents))
 	var totalCost float64
-	for name := range state.Teams {
-		ts := state.Teams[name]
-		teams[name] = TeamSnapshot{TeamState: ts}
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		agents[name] = AgentSnapshot{AgentState: ts}
 		totalCost += ts.CostUSD
 	}
-	status.Teams = teams
+	status.Agents = agents
 	status.TotalCost = totalCost
 	return status
 }
@@ -423,7 +423,7 @@ func (h *Handle) Send(team, message string) error {
 	if err != nil {
 		return err
 	}
-	ts, ok := deps.state.Teams[team]
+	ts, ok := deps.state.Agents[team]
 	if !ok || ts.Status != "running" {
 		return ErrTeamNotRunning
 	}
@@ -485,7 +485,7 @@ func (h *Handle) Interrupt(team string) error {
 	if deps.backend != BackendManagedAgents {
 		return ErrInterruptNotSupported
 	}
-	ts, ok := deps.state.Teams[team]
+	ts, ok := deps.state.Agents[team]
 	if !ok || ts.Status != "running" {
 		return ErrTeamNotRunning
 	}
@@ -661,28 +661,34 @@ type Status struct {
 	// CurrentTier is the index of the tier currently executing, or -1
 	// before any tier has begun.
 	CurrentTier int
-	// Teams maps team name to a live snapshot of its TeamState. nil
+	// Agents maps agent name to a live snapshot of its [AgentState]. nil
 	// before the engine has constructed its run service or when the
 	// snapshot read fails.
-	Teams map[string]TeamSnapshot
+	Agents map[string]AgentSnapshot
 	// StartedAt is the wall-clock time at which Start returned the
 	// Handle.
 	StartedAt time.Time
 	// Elapsed is time.Since(StartedAt) at the moment Status was called.
 	Elapsed time.Duration
-	// TotalCost is the sum of CostUSD across all teams in the snapshot.
+	// TotalCost is the sum of CostUSD across all agents in the snapshot.
 	TotalCost float64
 }
 
-// TeamSnapshot is the live counterpart of [TeamResult] — same shape
+// AgentSnapshot is the live counterpart of [AgentResult] — same shape
 // (status, turns, cost, tokens) but populated mid-run. After
 // [Handle.Wait] returns, snapshots match the corresponding
-// [TeamResult] exactly.
+// [AgentResult] exactly.
 //
 // Experimental.
-type TeamSnapshot struct {
-	TeamState
+type AgentSnapshot struct {
+	AgentState
 }
+
+// TeamSnapshot is the v2 alias for [AgentSnapshot], retained so existing
+// SDK code keeps compiling during the v3 migration window.
+//
+// Deprecated: use [AgentSnapshot].
+type TeamSnapshot = AgentSnapshot
 
 // === Event ================================================================
 

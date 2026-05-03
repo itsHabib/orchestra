@@ -32,8 +32,8 @@ func TestBeginSeedsStateAndHoldsLock(t *testing.T) {
 	if active.State.Project != "test-project" {
 		t.Fatalf("Project=%q, want test-project", active.State.Project)
 	}
-	if active.State.Teams["alpha"].Status != "pending" {
-		t.Fatalf("alpha status=%q, want pending", active.State.Teams["alpha"].Status)
+	if active.State.Agents["alpha"].Status != "pending" {
+		t.Fatalf("alpha status=%q, want pending", active.State.Agents["alpha"].Status)
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
@@ -49,7 +49,7 @@ func TestBeginSeedsTeamTiers(t *testing.T) {
 	svc := New(memstore.New(), WithClock(fixedClock()))
 	cfg := &config.Config{
 		Name: "tiered",
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{Name: "api"},
 			{Name: "web", DependsOn: []string{"api"}},
 			{Name: "docs"},
@@ -66,9 +66,9 @@ func TestBeginSeedsTeamTiers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTeamTier(t, got.Teams["api"].Tier, 0)
-	assertTeamTier(t, got.Teams["docs"].Tier, 0)
-	assertTeamTier(t, got.Teams["web"].Tier, 1)
+	assertTeamTier(t, got.Agents["api"].Tier, 0)
+	assertTeamTier(t, got.Agents["docs"].Tier, 0)
+	assertTeamTier(t, got.Agents["web"].Tier, 1)
 }
 
 func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
@@ -77,7 +77,7 @@ func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 	if err := base.SaveRunState(ctx, &store.RunState{
 		Project: "old",
 		RunID:   "old-run",
-		Teams:   map[string]store.TeamState{"old": {Status: "done"}},
+		Agents:   map[string]store.AgentState{"old": {Status: "done"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +100,8 @@ func TestBeginArchivesPriorStateBeforeSeeding(t *testing.T) {
 	if got.Project != "test-project" {
 		t.Fatalf("Project=%q, want fresh state", got.Project)
 	}
-	if _, ok := got.Teams["old"]; ok {
-		t.Fatalf("fresh state retained old team: %+v", got.Teams)
+	if _, ok := got.Agents["old"]; ok {
+		t.Fatalf("fresh state retained old team: %+v", got.Agents)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestRecordTeamTransitions(t *testing.T) {
 		t.Fatalf("RecordTeamStart: %v", err)
 	}
 	if err := svc.RecordTeamComplete(ctx, &TeamResult{
-		Team:         "alpha",
+		Agent:        "alpha",
 		Status:       "success",
 		Result:       "built it",
 		CostUSD:      1.25,
@@ -156,7 +156,7 @@ func TestRecordTeamTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := got.Teams["alpha"]
+	alpha := got.Agents["alpha"]
 	if alpha.Status != "done" || alpha.ResultSummary != "built it" || alpha.SessionID != "sess-alpha" {
 		t.Fatalf("unexpected alpha state: %+v", alpha)
 	}
@@ -205,11 +205,11 @@ func TestRecordTeamFailKeepsOtherTeams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Teams["alpha"].Status != "failed" || got.Teams["alpha"].LastError != "boom" {
-		t.Fatalf("unexpected alpha state: %+v", got.Teams["alpha"])
+	if got.Agents["alpha"].Status != "failed" || got.Agents["alpha"].LastError != "boom" {
+		t.Fatalf("unexpected alpha state: %+v", got.Agents["alpha"])
 	}
-	if got.Teams["beta"].Status != "pending" {
-		t.Fatalf("beta status=%q, want pending", got.Teams["beta"].Status)
+	if got.Agents["beta"].Status != "pending" {
+		t.Fatalf("beta status=%q, want pending", got.Agents["beta"].Status)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestConcurrentTeamTransitions(t *testing.T) {
 	ctx := context.Background()
 	cfg := &config.Config{Name: "many"}
 	for i := 0; i < 10; i++ {
-		cfg.Teams = append(cfg.Teams, config.Team{Name: fmt.Sprintf("team-%d", i)})
+		cfg.Agents = append(cfg.Agents, config.Agent{Name: fmt.Sprintf("team-%d", i)})
 	}
 	svc := New(memstore.New())
 	active, err := svc.Begin(ctx, cfg)
@@ -248,7 +248,7 @@ func TestConcurrentTeamTransitions(t *testing.T) {
 	defer func() { _ = svc.End(active) }()
 
 	var wg sync.WaitGroup
-	for _, team := range cfg.Teams {
+	for _, team := range cfg.Agents {
 		teamName := team.Name
 		wg.Add(1)
 		go func() {
@@ -258,7 +258,7 @@ func TestConcurrentTeamTransitions(t *testing.T) {
 				return
 			}
 			if err := svc.RecordTeamComplete(ctx, &TeamResult{
-				Team:   teamName,
+				Agent:  teamName,
 				Status: "success",
 				Result: "ok",
 			}); err != nil {
@@ -272,9 +272,9 @@ func TestConcurrentTeamTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, team := range cfg.Teams {
-		if got.Teams[team.Name].Status != "done" {
-			t.Fatalf("%s status=%q, want done", team.Name, got.Teams[team.Name].Status)
+	for _, team := range cfg.Agents {
+		if got.Agents[team.Name].Status != "done" {
+			t.Fatalf("%s status=%q, want done", team.Name, got.Agents[team.Name].Status)
 		}
 	}
 }
@@ -366,7 +366,7 @@ func (s *archiveSpy) ArchiveRun(ctx context.Context, runID string) error {
 func testConfig() *config.Config {
 	return &config.Config{
 		Name: "test-project",
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{Name: "alpha", Lead: config.Lead{Role: "Lead A"}},
 			{Name: "beta", Lead: config.Lead{Role: "Lead B"}},
 		},

@@ -36,9 +36,9 @@ var statusCmd = &cobra.Command{
 		}
 
 		counts := map[string]int{}
-		names := make([]string, 0, len(state.Teams))
+		names := make([]string, 0, len(state.Agents))
 		statusMap := make(map[string]string)
-		for name, ts := range state.Teams {
+		for name, ts := range state.Agents {
 			names = append(names, name)
 			st := ts.Status
 			if st == "" {
@@ -77,7 +77,7 @@ var statusCmd = &cobra.Command{
 		now := time.Now()
 		var totalIn, totalOut int64
 		for _, name := range names {
-			ts := state.Teams[name]
+			ts := state.Agents[name]
 			st := statusMap[name]
 
 			tokens := ""

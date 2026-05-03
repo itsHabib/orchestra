@@ -10,7 +10,7 @@ import (
 func TestValidate_ValidConfig(t *testing.T) {
 	cfg := &Config{
 		Name: "test-project",
-		Teams: []Team{
+		Agents: []Agent{
 			{
 				Name: "backend",
 				Lead: Lead{Role: "Backend Lead"},
@@ -35,7 +35,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 
 func TestValidate_EmptyName(t *testing.T) {
 	cfg := &Config{
-		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+		Agents: []Agent{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
 	}
 	res := cfg.Validate()
 	if res.Valid() {
@@ -46,32 +46,32 @@ func TestValidate_EmptyName(t *testing.T) {
 	}
 }
 
-func TestValidate_EmptyTeams(t *testing.T) {
+func TestValidate_EmptyAgents(t *testing.T) {
 	cfg := &Config{Name: "p"}
 	res := cfg.Validate()
 	if res.Valid() {
-		t.Fatal("expected validation to fail for empty teams")
+		t.Fatal("expected validation to fail for empty agents")
 	}
 }
 
-func TestValidate_DuplicateTeamNames(t *testing.T) {
+func TestValidate_DuplicateAgentNames(t *testing.T) {
 	cfg := &Config{
 		Name: "p",
-		Teams: []Team{
+		Agents: []Agent{
 			{Name: "a", Tasks: []Task{{Summary: "x"}}},
 			{Name: "a", Tasks: []Task{{Summary: "y"}}},
 		},
 	}
 	res := cfg.Validate()
-	if res.Valid() || !errorsContain(res.Errors, "duplicate team name") {
-		t.Fatalf("expected duplicate team name error, got: %v", res.Errors)
+	if res.Valid() || !errorsContain(res.Errors, "duplicate agent name") {
+		t.Fatalf("expected duplicate agent name error, got: %v", res.Errors)
 	}
 }
 
 func TestValidate_SelfReference(t *testing.T) {
 	cfg := &Config{
 		Name: "p",
-		Teams: []Team{
+		Agents: []Agent{
 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"a"}},
 		},
 	}
@@ -84,20 +84,20 @@ func TestValidate_SelfReference(t *testing.T) {
 func TestValidate_UnknownDependency(t *testing.T) {
 	cfg := &Config{
 		Name: "p",
-		Teams: []Team{
+		Agents: []Agent{
 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"b"}},
 		},
 	}
 	res := cfg.Validate()
-	if res.Valid() || !errorsContain(res.Errors, "unknown team") {
-		t.Fatalf("expected unknown team error, got: %v", res.Errors)
+	if res.Valid() || !errorsContain(res.Errors, "unknown agent") {
+		t.Fatalf("expected unknown agent error, got: %v", res.Errors)
 	}
 }
 
 func TestValidate_Cycle(t *testing.T) {
 	cfg := &Config{
 		Name: "p",
-		Teams: []Team{
+		Agents: []Agent{
 			{Name: "a", Tasks: []Task{{Summary: "x"}}, DependsOn: []string{"b"}},
 			{Name: "b", Tasks: []Task{{Summary: "y"}}, DependsOn: []string{"a"}},
 		},
@@ -110,8 +110,8 @@ func TestValidate_Cycle(t *testing.T) {
 
 func TestValidate_EmptyTaskSummary(t *testing.T) {
 	cfg := &Config{
-		Name:  "p",
-		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: ""}}}},
+		Name:   "p",
+		Agents: []Agent{{Name: "a", Tasks: []Task{{Summary: ""}}}},
 	}
 	res := cfg.Validate()
 	if res.Valid() || !errorsContain(res.Errors, "empty summary") {
@@ -121,8 +121,8 @@ func TestValidate_EmptyTaskSummary(t *testing.T) {
 
 func TestValidate_NoTasks(t *testing.T) {
 	cfg := &Config{
-		Name:  "p",
-		Teams: []Team{{Name: "a"}},
+		Name:   "p",
+		Agents: []Agent{{Name: "a"}},
 	}
 	res := cfg.Validate()
 	if res.Valid() || !errorsContain(res.Errors, "at least one task") {
@@ -130,14 +130,14 @@ func TestValidate_NoTasks(t *testing.T) {
 	}
 }
 
-func TestValidate_TeamSizeWarning(t *testing.T) {
+func TestValidate_AgentSizeWarning(t *testing.T) {
 	members := make([]Member, 6)
 	for i := range members {
 		members[i] = Member{Role: "dev"}
 	}
 	cfg := &Config{
 		Name: "p",
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:    "a",
 			Members: members,
 			Tasks: []Task{
@@ -167,14 +167,14 @@ func TestValidate_TeamSizeWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected team size warning")
+		t.Fatal("expected agent size warning")
 	}
 }
 
 func TestValidate_TaskQualityWarning(t *testing.T) {
 	cfg := &Config{
 		Name: "p",
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:  "a",
 			Tasks: []Task{{Summary: "do stuff"}},
 		}},
@@ -216,7 +216,7 @@ func TestValidate_BackendKind(t *testing.T) {
 	cfg := &Config{
 		Name:    "p",
 		Backend: Backend{Kind: "bogus"},
-		Teams:   []Team{{Name: "a", Tasks: []Task{{Summary: "x"}}}},
+		Agents:  []Agent{{Name: "a", Tasks: []Task{{Summary: "x"}}}},
 	}
 	res := cfg.Validate()
 	if res.Valid() || !errorsContain(res.Errors, "backend.kind") {
@@ -229,7 +229,7 @@ func TestValidate_ManagedAgentsWarnings(t *testing.T) {
 		Name:        "p",
 		Backend:     Backend{Kind: "managed_agents"},
 		Coordinator: Coordinator{Enabled: true},
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:    "a",
 			Members: []Member{{Role: "dev"}},
 			Tasks:   []Task{{Summary: "x", Details: "d", Verify: "v"}},
@@ -251,7 +251,7 @@ func TestValidate_ManagedAgentsWarnings(t *testing.T) {
 
 func TestResolveDefaults(t *testing.T) {
 	cfg := &Config{
-		Teams: []Team{{Name: "a", Lead: Lead{Role: "dev"}}},
+		Agents: []Agent{{Name: "a", Lead: Lead{Role: "dev"}}},
 	}
 	cfg.ResolveDefaults()
 	if cfg.Backend.Kind != "local" {
@@ -266,15 +266,15 @@ func TestResolveDefaults(t *testing.T) {
 	if cfg.Defaults.MAConcurrentSessions != DefaultMAConcurrentSessions {
 		t.Fatalf("MAConcurrentSessions=%d, want %d", cfg.Defaults.MAConcurrentSessions, DefaultMAConcurrentSessions)
 	}
-	if cfg.Teams[0].Lead.Model != "sonnet" {
-		t.Fatalf("expected team model sonnet, got %s", cfg.Teams[0].Lead.Model)
+	if cfg.Agents[0].Lead.Model != "sonnet" {
+		t.Fatalf("expected agent model sonnet, got %s", cfg.Agents[0].Lead.Model)
 	}
 }
 
 func TestResolveDefaults_PreservesMAConcurrentSessionsOverride(t *testing.T) {
 	cfg := &Config{
 		Defaults: Defaults{MAConcurrentSessions: 5},
-		Teams:    []Team{{Name: "a", Lead: Lead{Role: "dev"}}},
+		Agents:   []Agent{{Name: "a", Lead: Lead{Role: "dev"}}},
 	}
 	cfg.ResolveDefaults()
 	if cfg.Defaults.MAConcurrentSessions != 5 {
@@ -286,7 +286,7 @@ func TestValidate_NegativeMAConcurrentSessions(t *testing.T) {
 	cfg := &Config{
 		Name:     "p",
 		Defaults: Defaults{MAConcurrentSessions: -1},
-		Teams:    []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+		Agents:   []Agent{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
 	}
 	res := cfg.Validate()
 	if res.Valid() || !errorsContain(res.Errors, "ma_concurrent_sessions") {
@@ -297,34 +297,116 @@ func TestValidate_NegativeMAConcurrentSessions(t *testing.T) {
 func TestResolveDefaults_PreservesOverrides(t *testing.T) {
 	cfg := &Config{
 		Defaults: Defaults{Model: "haiku"},
-		Teams:    []Team{{Name: "a", Lead: Lead{Role: "dev", Model: "opus"}}},
+		Agents:   []Agent{{Name: "a", Lead: Lead{Role: "dev", Model: "opus"}}},
 	}
 	cfg.ResolveDefaults()
-	if cfg.Teams[0].Lead.Model != "opus" {
-		t.Fatalf("expected opus override preserved, got %s", cfg.Teams[0].Lead.Model)
+	if cfg.Agents[0].Lead.Model != "opus" {
+		t.Fatalf("expected opus override preserved, got %s", cfg.Agents[0].Lead.Model)
 	}
 }
 
-func TestTeamByName(t *testing.T) {
+func TestAgentByName(t *testing.T) {
 	cfg := &Config{
-		Teams: []Team{{Name: "a"}, {Name: "b"}},
+		Agents: []Agent{{Name: "a"}, {Name: "b"}},
 	}
-	if cfg.TeamByName("a") == nil {
-		t.Fatal("expected to find team a")
+	if cfg.AgentByName("a") == nil {
+		t.Fatal("expected to find agent a")
 	}
-	if cfg.TeamByName("c") != nil {
-		t.Fatal("expected nil for unknown team")
+	if cfg.AgentByName("c") != nil {
+		t.Fatal("expected nil for unknown agent")
 	}
 }
 
 func TestHasMembers(t *testing.T) {
-	team := &Team{Name: "a"}
-	if team.HasMembers() {
+	a := &Agent{Name: "a"}
+	if a.HasMembers() {
 		t.Fatal("expected no members")
 	}
-	team.Members = []Member{{Role: "dev"}}
-	if !team.HasMembers() {
+	a.Members = []Member{{Role: "dev"}}
+	if !a.HasMembers() {
 		t.Fatal("expected members")
+	}
+}
+
+// TestUnmarshalYAML_AcceptsAgentsKey is the v3-spelling round-trip.
+func TestUnmarshalYAML_AcceptsAgentsKey(t *testing.T) {
+	src := `
+name: p
+agents:
+  - name: alpha
+    lead: {role: Lead}
+    tasks:
+      - {summary: do x, details: d, verify: v}
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	if cfg.LegacyTeamsKey {
+		t.Fatal("LegacyTeamsKey should be false when YAML used `agents:`")
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "alpha" {
+		t.Fatalf("Agents=%+v", cfg.Agents)
+	}
+}
+
+// TestUnmarshalYAML_AcceptsLegacyTeamsKey verifies v2 → v3 alias.
+func TestUnmarshalYAML_AcceptsLegacyTeamsKey(t *testing.T) {
+	src := `
+name: p
+teams:
+  - name: alpha
+    lead: {role: Lead}
+    tasks:
+      - {summary: do x, details: d, verify: v}
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	if !cfg.LegacyTeamsKey {
+		t.Fatal("LegacyTeamsKey should be true when YAML used `teams:`")
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "alpha" {
+		t.Fatalf("Agents=%+v", cfg.Agents)
+	}
+}
+
+// TestUnmarshalYAML_RejectsBothKeys guards against silent precedence.
+func TestUnmarshalYAML_RejectsBothKeys(t *testing.T) {
+	src := `
+name: p
+agents:
+  - {name: a, lead: {role: L}, tasks: [{summary: x}]}
+teams:
+  - {name: b, lead: {role: L}, tasks: [{summary: y}]}
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(src), &cfg); err == nil {
+		t.Fatal("expected error when both `agents:` and `teams:` are set")
+	}
+}
+
+// TestValidate_LegacyTeamsKeyEmitsWarning confirms the deprecation hint.
+func TestValidate_LegacyTeamsKeyEmitsWarning(t *testing.T) {
+	src := `
+name: p
+teams:
+  - name: alpha
+    lead: {role: L}
+    tasks: [{summary: x, details: d, verify: v}]
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	cfg.ResolveDefaults()
+	res := cfg.Validate()
+	if !res.Valid() {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if !warningsContain(res.Warnings, "`teams:` is deprecated") {
+		t.Fatalf("expected deprecation warning, got: %v", res.Warnings)
 	}
 }
 
@@ -351,7 +433,7 @@ func warningsContain(warnings []Warning, substr string) bool {
 	return false
 }
 
-func TestValidate_TeamSkillsRoundTrip(t *testing.T) {
+func TestValidate_AgentSkillsRoundTrip(t *testing.T) {
 	t.Parallel()
 	yamlSrc := `
 name: p
@@ -366,7 +448,7 @@ defaults:
   permission_mode: acceptEdits
   timeout_minutes: 90
   inbox_poll_interval: 5m
-teams:
+agents:
   - name: ship
     lead:
       role: Implementer
@@ -385,24 +467,24 @@ teams:
 	if err := yaml.Unmarshal([]byte(yamlSrc), &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(cfg.Teams) != 1 {
-		t.Fatalf("teams: %+v", cfg.Teams)
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("agents: %+v", cfg.Agents)
 	}
-	team := cfg.Teams[0]
-	if len(team.Skills) != 1 {
-		t.Fatalf("skills: %+v", team.Skills)
+	a := cfg.Agents[0]
+	if len(a.Skills) != 1 {
+		t.Fatalf("skills: %+v", a.Skills)
 	}
-	if team.Skills[0].Name != "ship-feature" || team.Skills[0].Type != "custom" || team.Skills[0].Version != "v1" {
-		t.Fatalf("skill 0: %+v", team.Skills[0])
+	if a.Skills[0].Name != "ship-feature" || a.Skills[0].Type != "custom" || a.Skills[0].Version != "v1" {
+		t.Fatalf("skill 0: %+v", a.Skills[0])
 	}
-	if len(team.CustomTools) != 1 || team.CustomTools[0].Name != "signal_completion" {
-		t.Fatalf("custom_tools: %+v", team.CustomTools)
+	if len(a.CustomTools) != 1 || a.CustomTools[0].Name != "signal_completion" {
+		t.Fatalf("custom_tools: %+v", a.CustomTools)
 	}
 }
 
 func TestValidate_SkillShape_EmptyName(t *testing.T) {
 	t.Parallel()
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:   "ship",
 		Lead:   Lead{Role: "Lead"},
 		Tasks:  []Task{{Summary: "ship"}},
@@ -416,7 +498,7 @@ func TestValidate_SkillShape_EmptyName(t *testing.T) {
 
 func TestValidate_SkillShape_InvalidType(t *testing.T) {
 	t.Parallel()
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:   "ship",
 		Lead:   Lead{Role: "Lead"},
 		Tasks:  []Task{{Summary: "ship"}},
@@ -434,7 +516,7 @@ func TestValidate_SkillShape_AnthropicTypeRejected(t *testing.T) {
 	// rejects it until orchestra has a way to populate the cache with
 	// Anthropic first-party skill_ids. This guards against the false
 	// affordance documented in the round-2 review.
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:   "ship",
 		Lead:   Lead{Role: "Lead"},
 		Tasks:  []Task{{Summary: "ship"}},
@@ -448,7 +530,7 @@ func TestValidate_SkillShape_AnthropicTypeRejected(t *testing.T) {
 
 func TestValidate_CustomToolShape_EmptyName(t *testing.T) {
 	t.Parallel()
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:        "ship",
 		Lead:        Lead{Role: "Lead"},
 		Tasks:       []Task{{Summary: "ship"}},
@@ -465,8 +547,8 @@ func TestValidate_LocalBackendWarnsOnSkills(t *testing.T) {
 	cfg := &Config{
 		Name:    "p",
 		Backend: Backend{Kind: "local"},
-		Teams: []Team{{
-			Name:        "team",
+		Agents: []Agent{{
+			Name:        "agent",
 			Lead:        Lead{Role: "Lead"},
 			Tasks:       []Task{{Summary: "task"}},
 			Skills:      []SkillRef{{Name: "ship-feature"}},
@@ -487,7 +569,7 @@ func TestValidate_LocalBackendWarnsOnSkills(t *testing.T) {
 
 func TestValidateResourceReferences_MAUnknownSkillIsError(t *testing.T) {
 	t.Parallel()
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:   "ship",
 		Lead:   Lead{Role: "Lead"},
 		Tasks:  []Task{{Summary: "ship"}},
@@ -504,7 +586,7 @@ func TestValidateResourceReferences_MAUnknownSkillIsError(t *testing.T) {
 
 func TestValidateResourceReferences_MAUnknownToolIsError(t *testing.T) {
 	t.Parallel()
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:        "ship",
 		Lead:        Lead{Role: "Lead"},
 		Tasks:       []Task{{Summary: "ship"}},
@@ -524,7 +606,7 @@ func TestValidateResourceReferences_LocalUnknownDowngradesToWarning(t *testing.T
 	cfg := &Config{
 		Name:    "p",
 		Backend: Backend{Kind: "local"},
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:        "ship",
 			Lead:        Lead{Role: "Lead"},
 			Tasks:       []Task{{Summary: "ship"}},
@@ -546,7 +628,7 @@ func TestValidateResourceReferences_LocalUnknownDowngradesToWarning(t *testing.T
 
 func TestValidateResourceReferences_AllKnownIsClean(t *testing.T) {
 	t.Parallel()
-	cfg := managedConfigWithTeam(&Team{
+	cfg := managedConfigWithAgent(&Agent{
 		Name:        "ship",
 		Lead:        Lead{Role: "Lead"},
 		Tasks:       []Task{{Summary: "ship"}},
@@ -565,7 +647,7 @@ func TestValidateResourceReferences_AllKnownIsClean(t *testing.T) {
 	}
 }
 
-func managedConfigWithTeam(team *Team) *Config {
+func managedConfigWithAgent(agent *Agent) *Config {
 	return &Config{
 		Name: "p",
 		Backend: Backend{
@@ -575,6 +657,6 @@ func managedConfigWithTeam(team *Team) *Config {
 			},
 		},
 		Defaults: Defaults{Model: "opus"},
-		Teams:    []Team{*team},
+		Agents:   []Agent{*agent},
 	}
 }

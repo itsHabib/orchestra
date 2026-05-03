@@ -150,13 +150,17 @@ func (s *Server) handleGetRun(ctx context.Context, _ *mcp.CallToolRequest, args 
 // buildRunView fuses one registry entry with its on-disk state.json. State-
 // read errors are reported via RunView.StateError rather than failing the
 // whole list — a freshly-spawned run that hasn't written state.json yet
-// should appear in the list with status="running" and an empty teams array,
+// should appear in the list with status="running" and an empty agents array,
 // not disappear entirely.
 //
-// Teams is initialized to an empty slice so it serializes to "teams": [] for
-// freshly-spawned runs whose state.json is still missing. A null serialization
-// would be indistinguishable from "no team data yet" vs. "the engine declared
-// zero teams" and forces clients into special-case handling.
+// Agents is initialized to an empty slice so it serializes to "agents": []
+// for freshly-spawned runs whose state.json is still missing. A null
+// serialization would be indistinguishable from "no agent data yet" vs. "the
+// engine declared zero agents" and forces clients into special-case handling.
+//
+// Teams is populated with the same slice as Agents to keep v2 clients
+// working through v3.0. The MCP server is the only mirror; consumers should
+// migrate to Agents.
 func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 	v := RunView{
 		RunID:        e.RunID,
@@ -166,29 +170,35 @@ func (s *Server) buildRunView(ctx context.Context, e *Entry) RunView {
 		DocPaths:     append([]string(nil), e.DocPaths...),
 		PID:          e.PID,
 		Status:       RunStatusRunning,
-		Teams:        []TeamView{},
+		Agents:       []AgentView{},
 	}
 	state, err := s.stateReader(ctx, stateDir(e.WorkspaceDir))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			v.Teams = v.Agents
 			return v
 		}
 		v.StateError = err.Error()
+		v.Teams = v.Agents
 		return v
 	}
-	v.Teams = teamViews(state)
-	v.Status = deriveStatus(v.Teams)
+	v.Agents = agentViews(state)
+	v.Status = deriveStatus(v.Agents)
+	v.Phase = state.Phase
+	v.PhaseIters = state.PhaseIters
+	v.LastError = state.LastError
+	v.Teams = v.Agents
 	return v
 }
 
-func teamViews(state *store.RunState) []TeamView {
+func agentViews(state *store.RunState) []AgentView {
 	if state == nil {
 		return nil
 	}
-	views := make([]TeamView, 0, len(state.Teams))
-	for name := range state.Teams {
-		ts := state.Teams[name]
-		views = append(views, TeamView{
+	views := make([]AgentView, 0, len(state.Agents))
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		views = append(views, AgentView{
 			Name:          name,
 			Status:        ts.Status,
 			SignalStatus:  ts.SignalStatus,
@@ -196,6 +206,17 @@ func teamViews(state *store.RunState) []TeamView {
 			SignalPRURL:   ts.SignalPRURL,
 			SignalReason:  ts.SignalReason,
 			CostUSD:       ts.CostUSD,
+			LastTool:      ts.LastTool,
+			LastEventAt:   ts.LastEventAt,
+			LastError:     ts.LastError,
+			ResultSummary: ts.ResultSummary,
+			Artifacts:     append([]string(nil), ts.Artifacts...),
+			Tokens: TokenView{
+				InputTokens:              ts.InputTokens,
+				OutputTokens:             ts.OutputTokens,
+				CacheCreationInputTokens: ts.CacheCreationInputTokens,
+				CacheReadInputTokens:     ts.CacheReadInputTokens,
+			},
 		})
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
@@ -217,20 +238,20 @@ func teamViews(state *store.RunState) []TeamView {
 // failed short-circuits because it always wins the priority fold; blocked is
 // tracked as a flag instead so a later-iterated failed team is not masked by
 // an earlier-iterated blocked one.
-func deriveStatus(teams []TeamView) string {
-	if len(teams) == 0 {
+func deriveStatus(agents []AgentView) string {
+	if len(agents) == 0 {
 		return RunStatusRunning
 	}
 	blocked := false
 	allDone := true
-	for _, t := range teams {
-		if t.Status == "failed" {
+	for _, a := range agents {
+		if a.Status == "failed" {
 			return RunStatusFailed
 		}
-		if t.SignalStatus == "blocked" {
+		if a.SignalStatus == "blocked" {
 			blocked = true
 		}
-		if t.SignalStatus != "done" {
+		if a.SignalStatus != "done" {
 			allDone = false
 		}
 	}

@@ -21,14 +21,14 @@ func TestBuildRunRecordForShow_ResolvesActiveAndArchive(t *testing.T) {
 	tierZero := 0
 	activeState := &store.RunState{
 		Project: "active-project", RunID: "active-run", StartedAt: now,
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"api": {Status: "running", Tier: &tierZero},
 		},
 	}
 	writeRunState(t, filepath.Join(workspace, "state.json"), activeState)
 	oldState := &store.RunState{
 		Project: "old-project", RunID: "old-run", StartedAt: now.Add(-2 * time.Hour),
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"worker": {Status: "done", Tier: &tierZero},
 		},
 	}
@@ -70,7 +70,7 @@ func TestLoadRunRecordsReadsActiveAndArchive(t *testing.T) {
 		Project:   "active-project",
 		RunID:     "active-run",
 		StartedAt: now,
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"api": {Status: "running", Tier: &activeTier, StartedAt: now.Add(-2 * time.Minute)},
 		},
 	})
@@ -80,7 +80,7 @@ func TestLoadRunRecordsReadsActiveAndArchive(t *testing.T) {
 		Project:   "old-project",
 		RunID:     "old-run",
 		StartedAt: now.Add(-2 * time.Hour),
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"worker": {
 				Status:     "done",
 				Tier:       &oldTier,
@@ -110,28 +110,28 @@ func TestLoadRunRecordsReadsActiveAndArchive(t *testing.T) {
 func TestAggregateRunStatus(t *testing.T) {
 	cases := []struct {
 		name  string
-		teams map[string]store.TeamState
+		teams map[string]store.AgentState
 		want  string
 	}{
 		{
 			name:  "all done",
-			teams: map[string]store.TeamState{"a": {Status: "done"}, "b": {Status: "done"}},
+			teams: map[string]store.AgentState{"a": {Status: "done"}, "b": {Status: "done"}},
 			want:  "done",
 		},
 		{
 			name:  "failed wins",
-			teams: map[string]store.TeamState{"a": {Status: "done"}, "b": {Status: "failed"}},
+			teams: map[string]store.AgentState{"a": {Status: "done"}, "b": {Status: "failed"}},
 			want:  "failed",
 		},
 		{
 			name:  "running wins over pending",
-			teams: map[string]store.TeamState{"a": {Status: "running"}, "b": {Status: "pending"}},
+			teams: map[string]store.AgentState{"a": {Status: "running"}, "b": {Status: "pending"}},
 			want:  "running",
 		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := aggregateRunStatus(&store.RunState{Teams: tt.teams})
+			got := aggregateRunStatus(&store.RunState{Agents: tt.teams})
 			if got != tt.want {
 				t.Fatalf("aggregateRunStatus=%q, want %q", got, tt.want)
 			}

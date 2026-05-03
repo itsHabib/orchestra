@@ -36,7 +36,7 @@ var spawnCmd = &cobra.Command{
 		}
 		cfg := res.Config
 
-		team := cfg.TeamByName(teamFlag)
+		team := cfg.AgentByName(teamFlag)
 		if team == nil {
 			logger.Error("Team %q not found in config", teamFlag)
 			os.Exit(1)

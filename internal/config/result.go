@@ -86,25 +86,25 @@ func (e *invalidConfigError) Unwrap() error { return ErrInvalidConfig }
 //revive:disable-next-line:exported
 type ConfigError struct {
 	// Field is the structured YAML path to the offending node, e.g.
-	// {"teams", "0", "tasks", "2", "verify"} for a missing verify on
-	// team 0's third task. Empty for project-level issues (missing
+	// {"agents", "0", "tasks", "2", "verify"} for a missing verify on
+	// agent 0's third task. Empty for project-level issues (missing
 	// project name, unknown backend.kind, etc.).
 	Field []string
-	// Team is the denormalized team name when Field points into a team
-	// subtree; empty otherwise. Exists for ergonomic display so
-	// String() can render `team "foo": message` without walking Field
+	// Agent is the denormalized agent name when Field points into an
+	// agent subtree; empty otherwise. Exists for ergonomic display so
+	// String() can render `agent "foo": message` without walking Field
 	// back into Config. Programmatic consumers should prefer Field.
-	Team string
+	Agent string
 	// Message is the human-readable description of the issue.
 	Message string
 }
 
-// String returns the human-readable form: `team "foo": message` when
-// Team is non-empty, else just Message. Matches [Warning.String]
+// String returns the human-readable form: `agent "foo": message` when
+// Agent is non-empty, else just Message. Matches [Warning.String]
 // exactly so CLI rendering is unchanged.
 func (e ConfigError) String() string {
-	if e.Team != "" {
-		return fmt.Sprintf("team %q: %s", e.Team, e.Message)
+	if e.Agent != "" {
+		return fmt.Sprintf("agent %q: %s", e.Agent, e.Message)
 	}
 	return e.Message
 }

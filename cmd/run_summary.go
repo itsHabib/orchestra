@@ -48,7 +48,7 @@ func printTeamRows(w io.Writer, result *orchestra.Result) tokenTotals {
 	var totals tokenTotals
 	for _, tier := range result.Tiers {
 		for _, name := range tier {
-			team, ok := result.Teams[name]
+			team, ok := result.Agents[name]
 			if !ok {
 				continue
 			}

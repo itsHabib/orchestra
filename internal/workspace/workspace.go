@@ -100,9 +100,9 @@ func (w *Workspace) WriteRegistry(r *Registry) error {
 // SeedRegistry creates a fresh pending registry from the config.
 func (w *Workspace) SeedRegistry(cfg *config.Config) error {
 	reg := &Registry{Project: cfg.Name}
-	for i := range cfg.Teams {
-		reg.Teams = append(reg.Teams, RegistryEntry{
-			Name:   cfg.Teams[i].Name,
+	for i := range cfg.Agents {
+		reg.Agents = append(reg.Agents, RegistryEntry{
+			Name:   cfg.Agents[i].Name,
 			Status: "pending",
 		})
 	}
@@ -118,54 +118,54 @@ func (w *Workspace) UpdateRegistryEntry(name string, fn func(*RegistryEntry)) er
 	if err != nil {
 		return err
 	}
-	for i := range reg.Teams {
-		if reg.Teams[i].Name == name {
-			fn(&reg.Teams[i])
+	for i := range reg.Agents {
+		if reg.Agents[i].Name == name {
+			fn(&reg.Agents[i])
 			return w.WriteRegistry(reg)
 		}
 	}
-	return fmt.Errorf("team %q not found in registry", name)
+	return fmt.Errorf("agent %q not found in registry", name)
 }
 
-// WriteResult writes a team result atomically.
-func (w *Workspace) WriteResult(r *TeamResult) error {
+// WriteResult writes an agent result atomically.
+func (w *Workspace) WriteResult(r *AgentResult) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicWrite(w.resultPath(r.Team), data)
+	return atomicWrite(w.resultPath(r.Agent), data)
 }
 
 // WriteSummary writes a text-only managed-agents deliverable atomically.
-func (w *Workspace) WriteSummary(teamName, text string) error {
-	path := w.summaryPath(teamName)
+func (w *Workspace) WriteSummary(agentName, text string) error {
+	path := w.summaryPath(agentName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return atomicWrite(path, []byte(text))
 }
 
-// ReadResult reads a team result by team name.
-func (w *Workspace) ReadResult(name string) (*TeamResult, error) {
+// ReadResult reads an agent result by agent name.
+func (w *Workspace) ReadResult(name string) (*AgentResult, error) {
 	data, err := os.ReadFile(w.resultPath(name))
 	if err != nil {
 		return nil, err
 	}
-	var r TeamResult
+	var r AgentResult
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
 }
 
-// LogWriter returns a writer for the team's log file.
-func (w *Workspace) LogWriter(teamName string) (io.WriteCloser, error) {
-	return os.Create(w.logPath(teamName))
+// LogWriter returns a writer for the agent's log file.
+func (w *Workspace) LogWriter(agentName string) (io.WriteCloser, error) {
+	return os.Create(w.logPath(agentName))
 }
 
 // NDJSONLogWriter returns a raw event log writer for managed-agents streams.
-func (w *Workspace) NDJSONLogWriter(teamName string) (io.WriteCloser, error) {
-	return os.Create(w.ndjsonLogPath(teamName))
+func (w *Workspace) NDJSONLogWriter(agentName string) (io.WriteCloser, error) {
+	return os.Create(w.ndjsonLogPath(agentName))
 }
 
 func safeWorkspacePathPart(s string) string {

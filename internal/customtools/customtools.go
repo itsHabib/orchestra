@@ -41,7 +41,7 @@ type Definition struct {
 // per-call freshness lets future handlers see updated run-level state.
 type RunContext struct {
 	// Store is the run state writer the handler may mutate via
-	// UpdateTeamState. Required for handlers that record outcomes.
+	// UpdateAgentState. Required for handlers that record outcomes.
 	Store store.Store
 
 	// Notifier is the host-side notification fan-out. Optional; nil disables

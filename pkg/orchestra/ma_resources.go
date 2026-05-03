@@ -39,7 +39,7 @@ func resolveTeamResources(ctx context.Context, cfg *Config, emitter event.Emitte
 		emitter.Emit(Event{
 			Kind:    EventWarn,
 			Tier:    -1,
-			Team:    w.Team,
+			Team:    w.Agent,
 			Message: w.String(),
 		})
 	}
@@ -51,8 +51,8 @@ func resolveTeamResources(ctx context.Context, cfg *Config, emitter event.Emitte
 		Skills:      make(map[string][]spawner.Skill),
 		CustomTools: make(map[string][]spawner.Tool),
 	}
-	for i := range cfg.Teams {
-		t := &cfg.Teams[i]
+	for i := range cfg.Agents {
+		t := &cfg.Agents[i]
 		if err := populateTeamResources(t, skillEntries, out); err != nil {
 			return nil, fmt.Errorf("team %q: %w", t.Name, err)
 		}

@@ -38,7 +38,7 @@ var planCmd = &cobra.Command{
 		}
 		cfg := res.Config
 
-		tiers, err := dag.BuildTiers(cfg.Teams)
+		tiers, err := dag.BuildTiers(cfg.Agents)
 		if err != nil {
 			logger.Error("DAG error: %s", err)
 			os.Exit(1)
@@ -70,7 +70,7 @@ var planCmd = &cobra.Command{
 			for tierIdx, tierNames := range tiers {
 				jt := jsonTier{Tier: tierIdx}
 				for _, name := range tierNames {
-					team := cfg.TeamByName(name)
+					team := cfg.AgentByName(name)
 					jt.Teams = append(jt.Teams, jsonTeam{
 						Name:      team.Name,
 						Lead:      team.Lead,
@@ -109,7 +109,7 @@ var planCmd = &cobra.Command{
 			_, _ = bold.Printf("  Tier %d:%s\n", tierIdx, parallel)
 
 			for _, name := range tierNames {
-				team := cfg.TeamByName(name)
+				team := cfg.AgentByName(name)
 				kind := "solo"
 				if team.HasMembers() {
 					kind = fmt.Sprintf("team, %d members", len(team.Members))
@@ -141,13 +141,13 @@ var planCmd = &cobra.Command{
 			fmt.Println()
 		}
 
-		fmt.Printf("  %d teams, %d tiers, %d tasks total\n\n", len(cfg.Teams), len(tiers), totalTasks)
+		fmt.Printf("  %d teams, %d tiers, %d tasks total\n\n", len(cfg.Agents), len(tiers), totalTasks)
 
 		if showPrompts {
 			// Build a mock state with all teams pending to show what prompts look like
 			state := &workspace.State{
 				Project: cfg.Name,
-				Teams:   make(map[string]workspace.TeamState),
+				Agents:  make(map[string]workspace.AgentState),
 			}
 
 			// Build a map from team name → tier peers for peer context
@@ -161,8 +161,8 @@ var planCmd = &cobra.Command{
 			}
 
 			_, _ = bold.Println("  ═══ Prompts ═══")
-			for i := range cfg.Teams {
-				team := &cfg.Teams[i]
+			for i := range cfg.Agents {
+				team := &cfg.Agents[i]
 				prompt := injection.BuildPrompt(team, cfg.Name, state, cfg, tierPeersMap[team.Name], "", "", injection.Capabilities{})
 				fmt.Println()
 				_, _ = bold.Printf("  ─── %s ───\n", team.Name)

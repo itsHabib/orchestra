@@ -75,8 +75,8 @@ func (s *FileStore) SaveRunState(ctx context.Context, state *store.RunState) err
 	return s.saveRunState(state)
 }
 
-// UpdateTeamState performs a serialized read-modify-write on one team entry.
-func (s *FileStore) UpdateTeamState(ctx context.Context, team string, fn func(*store.TeamState)) error {
+// UpdateAgentState performs a serialized read-modify-write on one team entry.
+func (s *FileStore) UpdateAgentState(ctx context.Context, team string, fn func(*store.AgentState)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -87,12 +87,12 @@ func (s *FileStore) UpdateTeamState(ctx context.Context, team string, fn func(*s
 	if err != nil {
 		return err
 	}
-	if state.Teams == nil {
-		state.Teams = make(map[string]store.TeamState)
+	if state.Agents == nil {
+		state.Agents = make(map[string]store.AgentState)
 	}
-	ts := state.Teams[team]
+	ts := state.Agents[team]
 	fn(&ts)
-	state.Teams[team] = ts
+	state.Agents[team] = ts
 	return s.saveRunState(state)
 }
 
@@ -301,8 +301,8 @@ func (s *FileStore) loadRunState() (*store.RunState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
-	if state.Teams == nil {
-		state.Teams = make(map[string]store.TeamState)
+	if state.Agents == nil {
+		state.Agents = make(map[string]store.AgentState)
 	}
 	return &state, nil
 }

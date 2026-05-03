@@ -55,8 +55,8 @@ func (m *MemStore) SaveRunState(ctx context.Context, s *store.RunState) error {
 	return nil
 }
 
-// UpdateTeamState performs a serialized read-modify-write on one team entry.
-func (m *MemStore) UpdateTeamState(ctx context.Context, team string, fn func(*store.TeamState)) error {
+// UpdateAgentState performs a serialized read-modify-write on one team entry.
+func (m *MemStore) UpdateAgentState(ctx context.Context, team string, fn func(*store.AgentState)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -65,12 +65,12 @@ func (m *MemStore) UpdateTeamState(ctx context.Context, team string, fn func(*st
 	if m.runState == nil {
 		return store.ErrNotFound
 	}
-	if m.runState.Teams == nil {
-		m.runState.Teams = make(map[string]store.TeamState)
+	if m.runState.Agents == nil {
+		m.runState.Agents = make(map[string]store.AgentState)
 	}
-	ts := m.runState.Teams[team]
+	ts := m.runState.Agents[team]
 	fn(&ts)
-	m.runState.Teams[team] = ts
+	m.runState.Agents[team] = ts
 	return nil
 }
 
@@ -305,13 +305,13 @@ func cloneRunState(s *store.RunState) *store.RunState {
 		return nil
 	}
 	out := *s
-	if s.Teams != nil {
-		out.Teams = make(map[string]store.TeamState, len(s.Teams))
-		for k := range s.Teams {
-			v := s.Teams[k]
+	if s.Agents != nil {
+		out.Agents = make(map[string]store.AgentState, len(s.Agents))
+		for k := range s.Agents {
+			v := s.Agents[k]
 			v.RepositoryArtifacts = append([]store.RepositoryArtifact(nil), v.RepositoryArtifacts...)
 			v.Artifacts = append([]string(nil), v.Artifacts...)
-			out.Teams[k] = v
+			out.Agents[k] = v
 		}
 	}
 	return &out

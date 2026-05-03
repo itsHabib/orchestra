@@ -39,16 +39,16 @@ func TestShipDesignDocsBuildsOneTeamPerDoc(t *testing.T) {
 		t.Fatalf("mount path: want /workspace/repo got %s", cfg.Backend.ManagedAgents.Repository.MountPath)
 	}
 
-	if len(cfg.Teams) != 2 {
-		t.Fatalf("teams: want 2 got %d", len(cfg.Teams))
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("teams: want 2 got %d", len(cfg.Agents))
 	}
 	wantNames := []string{"ship-feat-flag-quiet", "ship-feat-flag-version"}
 	for i, want := range wantNames {
-		assertShipTeamShape(t, &cfg.Teams[i], want)
+		assertShipTeamShape(t, &cfg.Agents[i], want)
 	}
 }
 
-func assertShipTeamShape(t *testing.T, team *config.Team, wantName string) {
+func assertShipTeamShape(t *testing.T, team *config.Agent, wantName string) {
 	t.Helper()
 	if team.Name != wantName {
 		t.Fatalf("team name: want %s got %s", wantName, team.Name)
@@ -173,8 +173,8 @@ func TestShipDesignDocsDisambiguatesDuplicateBasenames(t *testing.T) {
 	}
 	want := []string{"ship-foo", "ship-foo-2", "ship-foo-3"}
 	for i, w := range want {
-		if cfg.Teams[i].Name != w {
-			t.Fatalf("team %d: want %s got %s", i, w, cfg.Teams[i].Name)
+		if cfg.Agents[i].Name != w {
+			t.Fatalf("team %d: want %s got %s", i, w, cfg.Agents[i].Name)
 		}
 	}
 }
@@ -197,8 +197,8 @@ func TestShipDesignDocsDisambiguationSkipsClaimedSuffix(t *testing.T) {
 	// land at ship-foo-3, not produce a duplicate ship-foo-2.
 	want := []string{"ship-foo", "ship-foo-2", "ship-foo-3"}
 	for i, w := range want {
-		if cfg.Teams[i].Name != w {
-			t.Fatalf("team %d: want %s got %s", i, w, cfg.Teams[i].Name)
+		if cfg.Agents[i].Name != w {
+			t.Fatalf("team %d: want %s got %s", i, w, cfg.Agents[i].Name)
 		}
 	}
 	// And the resulting config must validate (no duplicate team names).
@@ -270,9 +270,9 @@ func TestTeamNameForDocSlugifies(t *testing.T) {
 		{"weird!!chars*.md", "ship-weird-chars"},
 	}
 	for _, c := range cases {
-		got := teamNameForDoc(c.in)
+		got := agentNameForDoc(c.in)
 		if got != c.want {
-			t.Fatalf("teamNameForDoc(%q): want %s got %s", c.in, c.want, got)
+			t.Fatalf("agentNameForDoc(%q): want %s got %s", c.in, c.want, got)
 		}
 	}
 }
