@@ -9,7 +9,7 @@ defaults:
   timeout_minutes: 30
   # ma_concurrent_sessions: 20  # default; cap on in-flight Beta.Sessions.New
 
-teams:
+agents:
   - name: planner
     lead:
       role: "Outline Planner"

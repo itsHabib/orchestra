@@ -81,7 +81,7 @@ func CloneConfig(cfg *Config) *Config {
 	}
 	clone := *cfg
 	clone.Backend = cloneBackend(cfg.Backend)
-	clone.Teams = cloneTeams(cfg.Teams)
+	clone.Agents = cloneAgents(cfg.Agents)
 	return &clone
 }
 
@@ -112,11 +112,11 @@ func cloneEnvironmentOverride(e config.EnvironmentOverride) config.EnvironmentOv
 	return out
 }
 
-func cloneTeams(in []Team) []Team {
+func cloneAgents(in []Agent) []Agent {
 	if in == nil {
 		return nil
 	}
-	out := make([]Team, len(in))
+	out := make([]Agent, len(in))
 	for i := range in {
 		out[i] = in[i]
 		out[i].Members = cloneSlice(in[i].Members)
@@ -190,7 +190,7 @@ type orchestrationRun struct {
 
 type tierResult struct {
 	name string
-	res  *workspace.TeamResult
+	res  *workspace.AgentResult
 	err  error
 }
 
@@ -351,14 +351,21 @@ func (r *orchestrationRun) buildResult(ctx context.Context, tiers [][]string, du
 	if state == nil {
 		return nil, errors.New("orchestra: snapshot returned nil state")
 	}
-	teams := make(map[string]TeamResult, len(state.Teams))
-	for name := range state.Teams {
-		ts := state.Teams[name]
-		teams[name] = TeamResult{TeamState: ts}
+	agents := make(map[string]AgentResult, len(state.Agents))
+	for name := range state.Agents {
+		ts := state.Agents[name]
+		agents[name] = AgentResult{AgentState: ts}
 	}
 	return &Result{
-		Project:    state.Project,
-		Teams:      teams,
+		Project: state.Project,
+		Agents:  agents,
+		// Teams aliases Agents (same map instance) so v2 SDK consumers
+		// reading `Run(...).Teams` keep compiling through the v3
+		// migration window. AgentResult and TeamResult are the same
+		// type (alias). Mutating Teams mutates Agents and vice versa
+		// — the deprecated mirror is removed in v3.x, so we don't pay
+		// to clone.
+		Teams:      agents,
 		Tiers:      tiers,
 		DurationMs: dur.Milliseconds(),
 	}, nil
@@ -396,7 +403,7 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		At:      time.Now(),
 	})
 
-	tiers, err := dag.BuildTiers(cfg.Teams)
+	tiers, err := dag.BuildTiers(cfg.Agents)
 	if err != nil {
 		return nil, nil, fmt.Errorf("building DAG: %w", err)
 	}
@@ -535,8 +542,8 @@ func cfgNeedsGitHub(cfg *Config) bool {
 	if cfg.Backend.ManagedAgents != nil && cfg.Backend.ManagedAgents.Repository != nil {
 		return true
 	}
-	for i := range cfg.Teams {
-		if cfg.Teams[i].EnvironmentOverride.Repository != nil {
+	for i := range cfg.Agents {
+		if cfg.Agents[i].EnvironmentOverride.Repository != nil {
 			return true
 		}
 	}
@@ -547,7 +554,7 @@ func initLocalBackend(cfg *Config, ws *workspace.Workspace, active *runsvc.Activ
 	if active.Bus == nil {
 		return nil, nil, errors.New("run began without message bus")
 	}
-	participants := messaging.BuildParticipants(teamNamesFromConfig(cfg.Teams))
+	participants := messaging.BuildParticipants(teamNamesFromConfig(cfg.Agents))
 	lookup := inboxLookupFromParticipants(participants)
 	emitter.Emit(Event{
 		Kind:    EventInfo,
@@ -618,10 +625,10 @@ func (r *orchestrationRun) spawnTeam(ctx context.Context, tierIdx int, teamName 
 	results <- tierResult{name: teamName, res: res, err: err}
 }
 
-func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState) (*workspace.TeamResult, error) {
-	team := r.cfg.TeamByName(teamName)
+func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName string, tierNames []string, state *store.RunState) (*workspace.AgentResult, error) {
+	team := r.cfg.AgentByName(teamName)
 	if team == nil {
-		return nil, fmt.Errorf("team %q not found in config", teamName)
+		return nil, fmt.Errorf("agent %q not found in config", teamName)
 	}
 	if err := r.runService.RecordTeamStart(ctx, teamName); err != nil {
 		return nil, err
@@ -658,6 +665,29 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		LogWriter:      logWriter,
 		ProgressFunc: func(team, msg string) {
 			r.emitTeamMessage(tierIdx, team, "%s", msg)
+		},
+		OnToolUse: func(toolName string, at time.Time) {
+			// Persist on every tool event. LastEventAt is the per-event
+			// liveness signal documented in the v3 design — a tight
+			// Edit/Edit/Edit loop must keep advancing it so chat-side
+			// observers can tell the agent is still progressing. We
+			// considered deduping consecutive same-tool writes to save
+			// I/O, but that froze LastEventAt during the most common
+			// loop shape and defeated the field's purpose. If real
+			// workloads later show state-file write contention, debounce
+			// the LastEventAt-only path instead of restoring the dedupe.
+			updateCtx := context.WithoutCancel(ctx)
+			err := r.runService.Store().UpdateAgentState(updateCtx, teamName, func(ts *store.AgentState) {
+				ts.LastTool = toolName
+				ts.LastEventAt = at
+			})
+			if err != nil {
+				// Persistence failures here are observability-only — the
+				// agent keeps running. Surface the failure so the
+				// chat-side coordinator (or human) sees that LastTool
+				// stopped advancing instead of silently ignoring the drift.
+				r.emitWarn("LastTool persist for agent %q failed: %v", teamName, err)
+			}
 		},
 	})
 }
@@ -711,7 +741,7 @@ func (r *orchestrationRun) markTeamFailed(ctx context.Context, tierIdx int, team
 	return nil
 }
 
-func (r *orchestrationRun) recordTeamResult(ctx context.Context, tierIdx int, teamName string, result *workspace.TeamResult) error {
+func (r *orchestrationRun) recordTeamResult(ctx context.Context, tierIdx int, teamName string, result *workspace.AgentResult) error {
 	var msg string
 	if result.NumTurns > 0 {
 		msg = fmt.Sprintf("Done (turns: %d, %s in / %s out)", result.NumTurns, fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens))

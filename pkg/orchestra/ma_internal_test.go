@@ -30,7 +30,7 @@ func TestTeamPromptMAIgnoresMembersAndMessageBus(t *testing.T) {
 		Tasks: []Task{{Summary: "Summarize input"}},
 	}
 
-	prompt := r.teamPromptMA(team, &store.RunState{Teams: map[string]store.TeamState{}})
+	prompt := r.teamPromptMA(team, &store.RunState{Agents: map[string]store.AgentState{}})
 	for _, forbidden := range []string{"## Your Team", "TeamCreate", "Message Bus", "/loop"} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("MA prompt contains %q:\n%s", forbidden, prompt)
@@ -47,7 +47,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: BackendManagedAgents,
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "running", InputTokens: 10},
 		},
 	}); err != nil {
@@ -85,7 +85,7 @@ func TestRunTeamMATimeoutMarksFailedAndCancels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := state.Teams["alpha"]
+	alpha := state.Agents["alpha"]
 	if alpha.Status != "failed" || alpha.SessionID != "sess_timeout" || !strings.Contains(alpha.LastError, "timeout") {
 		t.Fatalf("unexpected alpha state: %+v", alpha)
 	}
@@ -100,7 +100,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: BackendManagedAgents,
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"planner": {Status: "pending"},
 			"analyst": {Status: "pending"},
 		},
@@ -115,7 +115,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 		Name:     "p",
 		Backend:  Backend{Kind: BackendManagedAgents},
 		Defaults: Defaults{TimeoutMinutes: 5},
-		Teams: []Team{
+		Agents: []Team{
 			{Name: "planner", Lead: Lead{Role: "Planner"}, Tasks: []Task{{Summary: "plan"}}},
 			{Name: "analyst", Lead: Lead{Role: "Analyst"}, DependsOn: []string{"planner"}, Tasks: []Task{{Summary: "analyze"}}},
 		},
@@ -140,7 +140,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 			analystSawState = state
 			mu.Unlock()
 		}
-		if err := st.UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+		if err := st.UpdateAgentState(ctx, team.Name, func(ts *store.AgentState) {
 			ts.Status = "done"
 			ts.ResultSummary = team.Name + " summary"
 		}); err != nil {
@@ -160,7 +160,7 @@ func TestRunTiers_MAPropagatesUpstreamSummaryToDownstream(t *testing.T) {
 	if analystSawState == nil {
 		t.Fatal("analyst substitute never invoked")
 	}
-	plannerInState := analystSawState.Teams["planner"]
+	plannerInState := analystSawState.Agents["planner"]
 	if plannerInState.Status != "done" || plannerInState.ResultSummary != "planner summary" {
 		t.Fatalf("analyst saw planner state=%+v, want done+summary", plannerInState)
 	}
@@ -175,7 +175,7 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: BackendManagedAgents,
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"a": {Status: "pending"},
 			"b": {Status: "pending"},
 			"c": {Status: "pending"},
@@ -191,7 +191,7 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 		Name:     "p",
 		Backend:  Backend{Kind: BackendManagedAgents},
 		Defaults: Defaults{TimeoutMinutes: 5},
-		Teams: []Team{
+		Agents: []Team{
 			{Name: "a", Lead: Lead{Role: "A"}, Tasks: []Task{{Summary: "x"}}},
 			{Name: "b", Lead: Lead{Role: "B"}, Tasks: []Task{{Summary: "x"}}},
 			{Name: "c", Lead: Lead{Role: "C"}, Tasks: []Task{{Summary: "x"}}},
@@ -218,7 +218,7 @@ func TestRunTier_MAStartsTeamsInParallel(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			return nil, nil, errors.New("timed out waiting for sibling teams to start in parallel")
 		}
-		if err := st.UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) {
+		if err := st.UpdateAgentState(ctx, team.Name, func(ts *store.AgentState) {
 			ts.Status = "done"
 			ts.ResultSummary = team.Name
 		}); err != nil {
@@ -243,7 +243,7 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 	if err := st.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: BackendManagedAgents,
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"a": {Status: "pending"},
 			"b": {Status: "pending"},
 		},
@@ -258,7 +258,7 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 		Name:     "p",
 		Backend:  Backend{Kind: BackendManagedAgents},
 		Defaults: Defaults{TimeoutMinutes: 5},
-		Teams: []Team{
+		Agents: []Team{
 			{Name: "a", Lead: Lead{Role: "A"}, Tasks: []Task{{Summary: "x"}}},
 			{Name: "b", Lead: Lead{Role: "B"}, DependsOn: []string{"a"}, Tasks: []Task{{Summary: "x"}}},
 		},
@@ -282,7 +282,7 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 		if team.Name == "a" {
 			return nil, nil, errors.New("simulated failure")
 		}
-		if err := st.UpdateTeamState(ctx, team.Name, func(ts *store.TeamState) { ts.Status = "done" }); err != nil {
+		if err := st.UpdateAgentState(ctx, team.Name, func(ts *store.AgentState) { ts.Status = "done" }); err != nil {
 			return nil, nil, err
 		}
 		ch := make(chan spawner.Event)
@@ -307,11 +307,11 @@ func TestRunTiers_MATierFailureSkipsDownstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Teams["a"].Status != "failed" {
-		t.Fatalf("team a status=%q, want failed", state.Teams["a"].Status)
+	if state.Agents["a"].Status != "failed" {
+		t.Fatalf("team a status=%q, want failed", state.Agents["a"].Status)
 	}
-	if state.Teams["b"].Status != "pending" {
-		t.Fatalf("team b status=%q, want pending", state.Teams["b"].Status)
+	if state.Agents["b"].Status != "pending" {
+		t.Fatalf("team b status=%q, want pending", state.Agents["b"].Status)
 	}
 }
 

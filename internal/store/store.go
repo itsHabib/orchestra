@@ -10,8 +10,8 @@ type Store interface {
 	// SaveRunState replaces the active run state document atomically.
 	SaveRunState(ctx context.Context, s *RunState) error
 
-	// UpdateTeamState performs an atomic read-modify-write for a single team.
-	UpdateTeamState(ctx context.Context, team string, fn func(*TeamState)) error
+	// UpdateAgentState performs an atomic read-modify-write for a single agent.
+	UpdateAgentState(ctx context.Context, agent string, fn func(*AgentState)) error
 
 	// ArchiveRun retires the active run so a future load reports ErrNotFound.
 	ArchiveRun(ctx context.Context, runID string) error

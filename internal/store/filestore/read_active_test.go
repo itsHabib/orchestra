@@ -31,7 +31,7 @@ func TestReadActiveRunState_ReturnsAtomicSnapshotWhileLockHeldInProcess(t *testi
 	if err := holderStore.SaveRunState(ctx, &store.RunState{
 		Project: "p",
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "running", SessionID: "sess_1"},
 		},
 	}); err != nil {
@@ -78,7 +78,7 @@ func TestReadActiveRunState_ReadsWhileSeparateProcessHoldsLock(t *testing.T) {
 	want := &store.RunState{
 		Project: "cross-proc",
 		Backend: "managed_agents",
-		Teams:   map[string]store.TeamState{"alpha": {Status: "running", SessionID: "sess_x"}},
+		Agents:  map[string]store.AgentState{"alpha": {Status: "running", SessionID: "sess_x"}},
 	}
 	holderStore := filestore.New(ws)
 	if err := holderStore.SaveRunState(context.Background(), want); err != nil {
@@ -112,7 +112,7 @@ func TestReadActiveRunState_ReadsWhileSeparateProcessHoldsLock(t *testing.T) {
 	if got.Project != want.Project || got.Backend != want.Backend {
 		t.Fatalf("got=%+v, want %+v", got, want)
 	}
-	alpha, ok := got.Teams["alpha"]
+	alpha, ok := got.Agents["alpha"]
 	if !ok || alpha.SessionID != "sess_x" {
 		t.Fatalf("alpha=%+v, want sess_x", alpha)
 	}

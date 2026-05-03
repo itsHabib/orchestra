@@ -138,7 +138,7 @@ func TestSendUserInterrupt_NoRetryByDefault(t *testing.T) {
 
 func TestListTeamSessions_FlagsSteerableAndSortsByName(t *testing.T) {
 	state := &store.RunState{
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"charlie": {Status: "running", SessionID: "sess_c", AgentID: "agent_c", LastEventID: "e3", LastEventAt: time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)},
 			"alpha":   {Status: "pending"},
 			"bravo":   {Status: "running", SessionID: ""},
@@ -190,19 +190,19 @@ func TestSteerableSessionID_Sentinels(t *testing.T) {
 		},
 		{
 			name: "local backend",
-			st:   &store.RunState{Backend: "local", Teams: map[string]store.TeamState{}},
+			st:   &store.RunState{Backend: "local", Agents: map[string]store.AgentState{}},
 			team: "x",
 			want: ErrLocalBackend,
 		},
 		{
 			name: "team missing",
-			st:   &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{}},
+			st:   &store.RunState{Backend: "managed_agents", Agents: map[string]store.AgentState{}},
 			team: "x",
 			want: ErrTeamNotFound,
 		},
 		{
 			name: "team not running",
-			st: &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{
+			st: &store.RunState{Backend: "managed_agents", Agents: map[string]store.AgentState{
 				"x": {Status: "done"},
 			}},
 			team: "x",
@@ -210,7 +210,7 @@ func TestSteerableSessionID_Sentinels(t *testing.T) {
 		},
 		{
 			name: "no session",
-			st: &store.RunState{Backend: "managed_agents", Teams: map[string]store.TeamState{
+			st: &store.RunState{Backend: "managed_agents", Agents: map[string]store.AgentState{
 				"x": {Status: "running"},
 			}},
 			team: "x",
@@ -228,7 +228,7 @@ func TestSteerableSessionID_Sentinels(t *testing.T) {
 func TestSteerableSessionID_HappyPath(t *testing.T) {
 	state := &store.RunState{
 		Backend: "managed_agents",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "running", SessionID: "sess_xyz"},
 		},
 	}

@@ -52,8 +52,8 @@ func TestStart_Cancel_ReturnsPartialResult(t *testing.T) {
 	if res.Project != "minimal-sdk" {
 		t.Errorf("Project=%q, want minimal-sdk", res.Project)
 	}
-	if _, ok := res.Teams["solo"]; !ok {
-		t.Errorf("solo team missing from canceled-run Result.Teams: %+v", res.Teams)
+	if _, ok := res.Agents["solo"]; !ok {
+		t.Errorf("solo team missing from canceled-run Result.Agents: %+v", res.Agents)
 	}
 
 	// Wait again — the (*Result, error) tuple should be cached, not

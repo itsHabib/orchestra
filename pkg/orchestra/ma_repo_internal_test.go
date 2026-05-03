@@ -29,7 +29,7 @@ func newRepoCfg(t *testing.T) *config.Config {
 				Repository: &config.RepositorySpec{URL: repoURL},
 			},
 		},
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{Name: "alpha", Lead: config.Lead{Role: "A"}, Tasks: []config.Task{{Summary: "x", Details: "d", Verify: "v"}}},
 			{Name: "beta", Lead: config.Lead{Role: "B"}, DependsOn: []string{"alpha"}, Tasks: []config.Task{{Summary: "y", Details: "d", Verify: "v"}}},
 		},
@@ -40,7 +40,7 @@ func newRepoCfg(t *testing.T) *config.Config {
 
 func TestBuildSessionResources_TextOnlyTeamReturnsNil(t *testing.T) {
 	r := &orchestrationRun{cfg: &config.Config{Name: "p", Backend: config.Backend{Kind: "managed_agents"}}}
-	team := &config.Team{Name: "alpha"}
+	team := &config.Agent{Name: "alpha"}
 	got, err := r.buildSessionResources(team, &store.RunState{})
 	if err != nil || got != nil {
 		t.Fatalf("text-only team should return (nil, nil), got %v / %v", got, err)
@@ -51,7 +51,7 @@ func TestBuildSessionResources_Tier0SingleResource(t *testing.T) {
 	cfg := newRepoCfg(t)
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
 
-	got, err := r.buildSessionResources(&cfg.Teams[0], &store.RunState{})
+	got, err := r.buildSessionResources(&cfg.Agents[0], &store.RunState{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,21 +70,21 @@ func TestBuildSessionResources_Tier0SingleResource(t *testing.T) {
 func TestBuildSessionResources_TierNFanIn(t *testing.T) {
 	cfg := newRepoCfg(t)
 	// Add a third team that depends on both alpha and beta.
-	cfg.Teams = append(cfg.Teams, config.Team{
+	cfg.Agents = append(cfg.Agents, config.Agent{
 		Name:      "gamma",
 		Lead:      config.Lead{Role: "G"},
 		DependsOn: []string{"alpha", "beta"},
 		Tasks:     []config.Task{{Summary: "z", Details: "d", Verify: "v"}},
 	})
 	state := &store.RunState{
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {RepositoryArtifacts: []store.RepositoryArtifact{{URL: repoURL, Branch: "orchestra/alpha-r"}}},
 			"beta":  {RepositoryArtifacts: []store.RepositoryArtifact{{URL: repoURL, Branch: "orchestra/beta-r"}}},
 		},
 	}
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
 
-	got, err := r.buildSessionResources(&cfg.Teams[2], state)
+	got, err := r.buildSessionResources(&cfg.Agents[2], state)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,12 +102,12 @@ func TestBuildSessionResources_TierNFanIn(t *testing.T) {
 func TestBuildSessionResources_SkipsUpstreamWithoutArtifact(t *testing.T) {
 	cfg := newRepoCfg(t)
 	state := &store.RunState{
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {Status: "done"}, // no RepositoryArtifacts recorded — skip
 		},
 	}
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
-	got, err := r.buildSessionResources(&cfg.Teams[1], state)
+	got, err := r.buildSessionResources(&cfg.Agents[1], state)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBuildSessionResources_SkipsUpstreamWithoutArtifact(t *testing.T) {
 func TestBuildSessionResources_PATMissingErrors(t *testing.T) {
 	cfg := newRepoCfg(t)
 	r := &orchestrationRun{cfg: cfg} // ghPAT empty
-	if _, err := r.buildSessionResources(&cfg.Teams[0], &store.RunState{}); err == nil {
+	if _, err := r.buildSessionResources(&cfg.Agents[0], &store.RunState{}); err == nil {
 		t.Fatal("expected error when PAT is unavailable")
 	}
 }
@@ -128,12 +128,12 @@ func TestArtifactPublishSpec_BuildsBranchAndUpstreams(t *testing.T) {
 	cfg := newRepoCfg(t)
 	state := &store.RunState{
 		RunID: "run-42",
-		Teams: map[string]store.TeamState{
+		Agents: map[string]store.AgentState{
 			"alpha": {RepositoryArtifacts: []store.RepositoryArtifact{{Branch: "orchestra/alpha-run-42"}}},
 		},
 	}
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
-	spec := r.artifactPublishSpec(&cfg.Teams[1], state)
+	spec := r.artifactPublishSpec(&cfg.Agents[1], state)
 
 	if spec == nil {
 		t.Fatal("expected non-nil spec")
@@ -151,7 +151,7 @@ func TestArtifactPublishSpec_BuildsBranchAndUpstreams(t *testing.T) {
 
 func TestArtifactPublishSpec_NilWhenNoRepo(t *testing.T) {
 	r := &orchestrationRun{cfg: &config.Config{Name: "p", Backend: config.Backend{Kind: "managed_agents"}}}
-	spec := r.artifactPublishSpec(&config.Team{Name: "alpha"}, &store.RunState{RunID: "r"})
+	spec := r.artifactPublishSpec(&config.Agent{Name: "alpha"}, &store.RunState{RunID: "r"})
 	if spec != nil {
 		t.Fatalf("expected nil for text-only team, got %+v", spec)
 	}
@@ -169,14 +169,14 @@ func TestResolveTeamArtifact_RecordsBranch(t *testing.T) {
 	defer srv.Close()
 
 	r := newRepoTestRun(t, "run-x", srv)
-	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Teams[0]); err != nil {
+	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Agents[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	state, err := r.runService.Store().LoadRunState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	arts := state.Teams["alpha"].RepositoryArtifacts
+	arts := state.Agents["alpha"].RepositoryArtifacts
 	if len(arts) != 1 {
 		t.Fatalf("got %d artifacts, want 1", len(arts))
 	}
@@ -195,14 +195,14 @@ func TestResolveTeamArtifact_BranchNotFoundMarksFailed(t *testing.T) {
 	defer srv.Close()
 
 	r := newRepoTestRun(t, "run-x", srv)
-	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Teams[0]); err != nil {
+	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Agents[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	state, err := r.runService.Store().LoadRunState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := state.Teams["alpha"]
+	ts := state.Agents["alpha"]
 	if ts.Status != "failed" || !strings.Contains(ts.LastError, "no branch pushed") {
 		t.Fatalf("expected failed/no-branch state, got %+v", ts)
 	}
@@ -232,14 +232,14 @@ func TestResolveTeamArtifact_OpenPRPopulatesURL(t *testing.T) {
 
 	r := newRepoTestRun(t, "run-x", srv)
 	r.cfg.Backend.ManagedAgents.OpenPullRequests = true
-	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Teams[0]); err != nil {
+	if err := r.resolveTeamArtifact(context.Background(), &r.cfg.Agents[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	state, err := r.runService.Store().LoadRunState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	arts := state.Teams["alpha"].RepositoryArtifacts
+	arts := state.Agents["alpha"].RepositoryArtifacts
 	if len(arts) != 1 || arts[0].PullRequestURL != "https://github.com/octo/repo/pull/9" {
 		t.Fatalf("expected PR url recorded, got %+v", arts)
 	}
@@ -248,7 +248,7 @@ func TestResolveTeamArtifact_OpenPRPopulatesURL(t *testing.T) {
 func TestResolveTeamArtifact_SkipsWhenClientNil(t *testing.T) {
 	cfg := newRepoCfg(t)
 	st := memstore.New()
-	if err := st.SaveRunState(context.Background(), &store.RunState{RunID: "r", Teams: map[string]store.TeamState{"alpha": {}}}); err != nil {
+	if err := st.SaveRunState(context.Background(), &store.RunState{RunID: "r", Agents: map[string]store.AgentState{"alpha": {}}}); err != nil {
 		t.Fatal(err)
 	}
 	ws, err := workspace.Ensure(filepath.Join(t.TempDir(), ".orchestra"))
@@ -256,7 +256,7 @@ func TestResolveTeamArtifact_SkipsWhenClientNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &orchestrationRun{cfg: cfg, runService: runsvc.New(st), ws: ws, emitter: event.NoopEmitter{}}
-	if err := r.resolveTeamArtifact(context.Background(), &cfg.Teams[0]); err != nil {
+	if err := r.resolveTeamArtifact(context.Background(), &cfg.Agents[0]); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -280,11 +280,11 @@ func newRepoTestRun(t *testing.T, runID string, srv *httptest.Server) *orchestra
 	t.Helper()
 	cfg := newRepoCfg(t)
 	st := memstore.New()
-	teams := make(map[string]store.TeamState)
-	for i := range cfg.Teams {
-		teams[cfg.Teams[i].Name] = store.TeamState{}
+	teams := make(map[string]store.AgentState)
+	for i := range cfg.Agents {
+		teams[cfg.Agents[i].Name] = store.AgentState{}
 	}
-	if err := st.SaveRunState(context.Background(), &store.RunState{RunID: runID, Teams: teams}); err != nil {
+	if err := st.SaveRunState(context.Background(), &store.RunState{RunID: runID, Agents: teams}); err != nil {
 		t.Fatal(err)
 	}
 	ws, err := workspace.Ensure(filepath.Join(t.TempDir(), ".orchestra"))

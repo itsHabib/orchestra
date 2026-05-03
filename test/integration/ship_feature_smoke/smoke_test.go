@@ -102,7 +102,7 @@ func buildSmokeConfig() *config.Config {
 			PermissionMode:       "acceptEdits",
 			MAConcurrentSessions: 1,
 		},
-		Teams: []config.Team{
+		Agents: []config.Agent{
 			{
 				Name: smokeTeamName,
 				Lead: config.Lead{Role: "Smoke Probe"},
@@ -162,7 +162,7 @@ func assertSignalState(t *testing.T, runDir string) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatalf("parse state.json: %v", err)
 	}
-	team := state.Teams[smokeTeamName]
+	team := state.Agents[smokeTeamName]
 	if team.SignalStatus != "done" {
 		t.Fatalf("SignalStatus: want done got %q (full team state: %+v)", team.SignalStatus, team)
 	}

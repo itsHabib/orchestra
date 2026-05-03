@@ -1,13 +1,15 @@
 # Orchestra
 
-A multi-team autonomous DAG workflow engine for AI agents. Define teams, tasks, and dependencies in a single `orchestra.yaml` — Orchestra builds a dependency graph, executes teams tier-by-tier (parallel within a tier, sequential across tiers), and flows results forward so downstream teams get full context of what upstream teams built.
+A multi-agent autonomous DAG workflow engine for AI agents. Define agents, tasks, and dependencies in a single `orchestra.yaml` — Orchestra builds a dependency graph, executes agents tier-by-tier (parallel within a tier, sequential across tiers), and flows results forward so downstream agents get full context of what upstream agents built.
+
+> **v3 naming.** Agents replace the v2 noun "teams" in YAML, the MCP surface, and the SDK. The legacy `teams:` key still parses (with a one-shot deprecation warning); pkg/orchestra exposes `Team*` aliases for one minor version. New work should use `agents:` and the `Agent*` types. Removed in v3.x.
 
 What makes it interesting:
 
-- **Parallel team execution** — independent teams run concurrently as separate Claude subprocesses, each with their own role, context, and tasks.
-- **[Cross-team message bus](#message-bus)** — teams don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time.
-- **Flexible coordination** — run an autonomous coordinator agent that monitors all teams, relays messages, and resolves conflicts automatically. Or be the coordinator yourself — the message bus is just files on disk, so you can read inboxes and send messages from any Claude Code session (companion skills are included to streamline this).
-- **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later teams build on actual output rather than assumptions.
+- **Parallel agent execution** — independent agents run concurrently as separate Claude subprocesses or managed-agents sessions, each with their own role, context, and tasks.
+- **[Cross-agent message bus](#message-bus)** — agents don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time. (The bus is on track for replacement by `signal_completion` artifacts + `steer` in v3 phase A — see [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md).)
+- **Flexible coordination** — run an autonomous coordinator agent that monitors all agents, relays messages, and resolves conflicts automatically. Or be the coordinator yourself — the message bus is just files on disk, so you can read inboxes and send messages from any Claude Code session (companion skills are included to streamline this).
+- **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later agents build on actual output rather than assumptions.
 
 ```
 orchestra run project.yaml
@@ -170,7 +172,7 @@ defaults:
   timeout_minutes: 45
   inbox_poll_interval: 5m
 
-teams:
+agents:
   - name: backend
     lead:
       role: "Backend Lead"
@@ -203,6 +205,8 @@ teams:
           - "web/src/components/"
         verify: "npm run build"
 ```
+
+> The legacy `teams:` key parses with a deprecation warning; the v3 canonical key is `agents:`.
 
 **2. Validate:**
 

@@ -18,7 +18,7 @@ func TestHandleRun_RejectsBothInlineAndPath(t *testing.T) {
 	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
 
 	res, _, err := srv.handleRun(context.Background(), nil, RunArgs{
-		InlineDAG:  &InlineDAG{Teams: []InlineTeam{{Name: "a", Role: "r", Prompt: "p"}}},
+		InlineDAG:  &InlineDAG{Agents: []InlineAgent{{Name: "a", Role: "r", Prompt: "p"}}},
 		ConfigPath: "/tmp/foo.yaml",
 	})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestHandleRun_InlineDAG_HappyPath(t *testing.T) {
 		InlineDAG: &InlineDAG{
 			ProjectName: "demo",
 			Backend:     "local",
-			Teams: []InlineTeam{
+			Agents: []InlineAgent{
 				{Name: "design", Role: "designer", Prompt: "spec out X"},
 				{Name: "build", Role: "engineer", Prompt: "build X", Deps: []string{"design"}},
 			},
@@ -86,11 +86,11 @@ func TestHandleRun_InlineDAG_HappyPath(t *testing.T) {
 	if loaded.Name != "demo" {
 		t.Fatalf("name: got %q, want %q", loaded.Name, "demo")
 	}
-	if len(loaded.Teams) != 2 {
-		t.Fatalf("teams: %d", len(loaded.Teams))
+	if len(loaded.Agents) != 2 {
+		t.Fatalf("teams: %d", len(loaded.Agents))
 	}
-	if loaded.Teams[1].DependsOn[0] != "design" {
-		t.Fatalf("deps not preserved: %+v", loaded.Teams[1])
+	if loaded.Agents[1].DependsOn[0] != "design" {
+		t.Fatalf("deps not preserved: %+v", loaded.Agents[1])
 	}
 	all, err := srv.Registry().List(context.Background())
 	if err != nil {
@@ -122,17 +122,17 @@ func TestHandleRun_InlineDAG_MissingFieldRejected(t *testing.T) {
 
 	cases := []struct {
 		name string
-		team InlineTeam
+		team InlineAgent
 		want string
 	}{
-		{"missing name", InlineTeam{Role: "r", Prompt: "p"}, "name"},
-		{"missing role", InlineTeam{Name: "a", Prompt: "p"}, "role"},
-		{"missing prompt", InlineTeam{Name: "a", Role: "r"}, "prompt"},
+		{"missing name", InlineAgent{Role: "r", Prompt: "p"}, "name"},
+		{"missing role", InlineAgent{Name: "a", Prompt: "p"}, "role"},
+		{"missing prompt", InlineAgent{Name: "a", Role: "r"}, "prompt"},
 	}
 	for _, tc := range cases {
 		srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
 		res, _, err := srv.handleRun(context.Background(), nil, RunArgs{
-			InlineDAG: &InlineDAG{Teams: []InlineTeam{tc.team}},
+			InlineDAG: &InlineDAG{Agents: []InlineAgent{tc.team}},
 		})
 		if err != nil {
 			t.Fatalf("%s: handler error: %v", tc.name, err)
@@ -142,6 +142,37 @@ func TestHandleRun_InlineDAG_MissingFieldRejected(t *testing.T) {
 		}
 		if !strings.Contains(resultText(res), tc.want) {
 			t.Fatalf("%s: error text %q missing %q", tc.name, resultText(res), tc.want)
+		}
+	}
+}
+
+// TestInlineDAG_AcceptsLegacyTeamsKey verifies the v2 → v3 alias on the
+// MCP wire: clients on the legacy schema keep producing valid runs.
+func TestInlineDAG_AcceptsLegacyTeamsKey(t *testing.T) {
+	payload := []byte(`{"project_name":"demo","backend":"local","teams":[{"name":"a","role":"r","prompt":"p"}]}`)
+	var dag InlineDAG
+	if err := dag.UnmarshalJSON(payload); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if len(dag.Agents) != 1 || dag.Agents[0].Name != "a" {
+		t.Fatalf("Agents = %+v", dag.Agents)
+	}
+}
+
+// TestInlineDAG_RejectsBothKeysEvenWhenOneIsEmpty pins the strict dual-key
+// guard on the MCP `run` tool. The previous implementation silently
+// treated `agents: []` plus `teams: [...]` as legacy input — that masked
+// migration bugs in clients. After v3 the parser fails fast.
+func TestInlineDAG_RejectsBothKeysEvenWhenOneIsEmpty(t *testing.T) {
+	payloads := [][]byte{
+		[]byte(`{"agents":[],"teams":[{"name":"a","role":"r","prompt":"p"}]}`),
+		[]byte(`{"agents":[{"name":"a","role":"r","prompt":"p"}],"teams":[]}`),
+		[]byte(`{"agents":[],"teams":[]}`),
+	}
+	for i, p := range payloads {
+		var dag InlineDAG
+		if err := dag.UnmarshalJSON(p); err == nil {
+			t.Errorf("case %d: expected error for dual-key payload %s", i, p)
 		}
 	}
 }
@@ -230,7 +261,7 @@ func TestHandleRun_ProjectNameOverridesInlineDAG(t *testing.T) {
 	_, _, err := srv.handleRun(context.Background(), nil, RunArgs{
 		InlineDAG: &InlineDAG{
 			ProjectName: "from-dag",
-			Teams:       []InlineTeam{{Name: "a", Role: "r", Prompt: "p"}},
+			Agents:      []InlineAgent{{Name: "a", Role: "r", Prompt: "p"}},
 		},
 		ProjectName: "override",
 	})

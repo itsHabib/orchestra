@@ -33,7 +33,7 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	return b
 }
 
-func loadTeamState(t *testing.T, st store.Store) store.TeamState {
+func loadTeamState(t *testing.T, st store.Store) store.AgentState {
 	t.Helper()
 	state, err := st.LoadRunState(context.Background())
 	if err != nil {
@@ -42,7 +42,7 @@ func loadTeamState(t *testing.T, st store.Store) store.TeamState {
 	if state == nil {
 		t.Fatalf("run state is nil")
 	}
-	ts, ok := state.Teams[testTeam]
+	ts, ok := state.Agents[testTeam]
 	if !ok {
 		t.Fatalf("team %q missing from state", testTeam)
 	}
@@ -52,11 +52,11 @@ func loadTeamState(t *testing.T, st store.Store) store.TeamState {
 // signalDoneFixture seeds a fresh memstore with one team, attaches a notify
 // recorder, and runs Handle with a status=done payload. Returns the decoded
 // result, the team state after Handle, and the captured notifications.
-func signalDoneFixture(t *testing.T) (signalCompletionResult, store.TeamState, []notify.Notification, *RunContext) {
+func signalDoneFixture(t *testing.T) (signalCompletionResult, store.AgentState, []notify.Notification, *RunContext) {
 	t.Helper()
 	ctx := context.Background()
 	st := memstore.New()
-	if err := st.SaveRunState(ctx, &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+	if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestSignalCompletionBlockedRequiresReason(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := memstore.New()
-	if err := st.SaveRunState(ctx, &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+	if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	h := NewSignalCompletion()
@@ -165,7 +165,7 @@ func TestSignalCompletionBlockedWithReasonWritesState(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := memstore.New()
-	if err := st.SaveRunState(ctx, &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+	if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	h := NewSignalCompletion()
@@ -188,7 +188,7 @@ func TestSignalCompletionIdempotentOnDuplicate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := memstore.New()
-	if err := st.SaveRunState(ctx, &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+	if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	captured := make([]notify.Notification, 0, 2)
@@ -282,7 +282,7 @@ func TestSignalCompletionBlockedToDoneTransition(t *testing.T) {
 func blockedToDoneFixture(t *testing.T) (*memstore.MemStore, *[]notify.Notification) {
 	t.Helper()
 	st := memstore.New()
-	if err := st.SaveRunState(context.Background(), &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+	if err := st.SaveRunState(context.Background(), &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	captured := make([]notify.Notification, 0, 2)
@@ -343,7 +343,7 @@ func TestSignalCompletionRejectsBadInput(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			st := memstore.New()
-			if err := st.SaveRunState(ctx, &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+			if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 				t.Fatalf("seed: %v", err)
 			}
 			rc := newSignalRunContext(t, st)
@@ -364,7 +364,7 @@ func TestSignalCompletionToleratesNotifierFailure(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := memstore.New()
-	if err := st.SaveRunState(ctx, &store.RunState{Teams: map[string]store.TeamState{testTeam: {}}}); err != nil {
+	if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	rc := newSignalRunContext(t, st)

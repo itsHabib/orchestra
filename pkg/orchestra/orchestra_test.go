@@ -52,8 +52,8 @@ teams:
 	if cfg.Defaults.Model != "sonnet" {
 		t.Fatalf("Defaults.Model=%q, want sonnet", cfg.Defaults.Model)
 	}
-	if len(cfg.Teams) != 1 || cfg.Teams[0].Name != "solo" {
-		t.Fatalf("unexpected teams: %+v", cfg.Teams)
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "solo" {
+		t.Fatalf("unexpected teams: %+v", cfg.Agents)
 	}
 }
 
@@ -83,9 +83,9 @@ func TestRun_LocalBackend_PopulatesResult(t *testing.T) {
 	if res == nil {
 		t.Fatal("Run returned nil result")
 	}
-	team, ok := res.Teams["solo"]
+	team, ok := res.Agents["solo"]
 	if !ok {
-		t.Fatalf("solo team missing from Result.Teams: %+v", res.Teams)
+		t.Fatalf("solo team missing from Result.Agents: %+v", res.Agents)
 	}
 	if team.Status != "done" {
 		t.Errorf("Status=%q, want done", team.Status)
@@ -230,9 +230,9 @@ func TestRun_TierZeroFailureReturnsResultAndError(t *testing.T) {
 	if res == nil {
 		t.Fatal("Run: expected partial result on error, got nil")
 	}
-	team, ok := res.Teams["solo"]
+	team, ok := res.Agents["solo"]
 	if !ok {
-		t.Fatalf("solo team missing from Result.Teams: %+v", res.Teams)
+		t.Fatalf("solo team missing from Result.Agents: %+v", res.Agents)
 	}
 	if team.Status != "failed" {
 		t.Errorf("Status=%q, want failed", team.Status)
@@ -275,8 +275,8 @@ func TestRun_ContextCancellationReturnsPartialResult(t *testing.T) {
 	if res.Project != "minimal-sdk" {
 		t.Errorf("Project=%q, want minimal-sdk", res.Project)
 	}
-	if _, ok := res.Teams["solo"]; !ok {
-		t.Errorf("solo team missing from canceled-run Result.Teams: %+v", res.Teams)
+	if _, ok := res.Agents["solo"]; !ok {
+		t.Errorf("solo team missing from canceled-run Result.Agents: %+v", res.Agents)
 	}
 }
 
@@ -290,7 +290,7 @@ func TestRun_TakesOwnershipOfConfig(t *testing.T) {
 	workDir := t.TempDir()
 	cfg := &orchestra.Config{
 		Name: "ownership",
-		Teams: []orchestra.Team{
+		Agents: []orchestra.Team{
 			{
 				Name: "solo",
 				Lead: orchestra.Lead{Role: "Lead"},
@@ -367,11 +367,11 @@ func TestRun_EquivalentToStartPlusWait(t *testing.T) {
 	if runRes.Project != startRes.Project {
 		t.Errorf("Project differs: Run=%q Start=%q", runRes.Project, startRes.Project)
 	}
-	if len(runRes.Teams) != len(startRes.Teams) {
-		t.Errorf("Teams len differs: Run=%d Start=%d", len(runRes.Teams), len(startRes.Teams))
+	if len(runRes.Agents) != len(startRes.Agents) {
+		t.Errorf("Teams len differs: Run=%d Start=%d", len(runRes.Agents), len(startRes.Agents))
 	}
-	for name, runTeam := range runRes.Teams {
-		startTeam, ok := startRes.Teams[name]
+	for name, runTeam := range runRes.Agents {
+		startTeam, ok := startRes.Agents[name]
 		if !ok {
 			t.Errorf("team %q present in Run result but missing from Start+Wait result", name)
 			continue
@@ -391,7 +391,7 @@ func TestRun_EquivalentToStartPlusWait(t *testing.T) {
 func TestValidate_StandaloneCallerBuiltConfig(t *testing.T) {
 	cfg := &orchestra.Config{
 		Name: "programmatic",
-		Teams: []orchestra.Team{
+		Agents: []orchestra.Team{
 			{
 				Name: "solo",
 				Lead: orchestra.Lead{Role: "Lead"},
@@ -423,7 +423,7 @@ func TestCloneConfig_DeepCopy(t *testing.T) {
 				Repository: &orchestra.RepositorySpec{URL: "https://github.com/o/r1", DefaultBranch: "main"},
 			},
 		},
-		Teams: []orchestra.Team{
+		Agents: []orchestra.Team{
 			{
 				Name:      "a",
 				Tasks:     []orchestra.Task{{Summary: "s1", Deliverables: []string{"x"}}},
@@ -444,33 +444,33 @@ func TestCloneConfig_DeepCopy(t *testing.T) {
 	if clone.Backend.ManagedAgents.Repository == src.Backend.ManagedAgents.Repository {
 		t.Fatal("clone shares Backend.ManagedAgents.Repository pointer with src")
 	}
-	if clone.Teams[0].EnvironmentOverride.Repository == src.Teams[0].EnvironmentOverride.Repository {
+	if clone.Agents[0].EnvironmentOverride.Repository == src.Agents[0].EnvironmentOverride.Repository {
 		t.Fatal("clone shares team EnvironmentOverride.Repository pointer with src")
 	}
 
 	clone.Name = "clone"
-	clone.Teams[0].Name = "b"
-	clone.Teams[0].Tasks[0].Summary = "s2"
-	clone.Teams[0].Tasks[0].Deliverables[0] = "y"
-	clone.Teams[0].DependsOn[0] = "other"
+	clone.Agents[0].Name = "b"
+	clone.Agents[0].Tasks[0].Summary = "s2"
+	clone.Agents[0].Tasks[0].Deliverables[0] = "y"
+	clone.Agents[0].DependsOn[0] = "other"
 	clone.Backend.ManagedAgents.Repository.URL = "https://github.com/o/r2"
 	clone.Backend.ManagedAgents.OpenPullRequests = true
-	clone.Teams[0].EnvironmentOverride.Repository.URL = "https://github.com/o/team-mut"
+	clone.Agents[0].EnvironmentOverride.Repository.URL = "https://github.com/o/team-mut"
 
 	if src.Name != "src" {
 		t.Errorf("src.Name mutated: %q", src.Name)
 	}
-	if src.Teams[0].Name != "a" {
-		t.Errorf("src team name mutated: %q", src.Teams[0].Name)
+	if src.Agents[0].Name != "a" {
+		t.Errorf("src team name mutated: %q", src.Agents[0].Name)
 	}
-	if src.Teams[0].Tasks[0].Summary != "s1" {
-		t.Errorf("src task summary mutated: %q", src.Teams[0].Tasks[0].Summary)
+	if src.Agents[0].Tasks[0].Summary != "s1" {
+		t.Errorf("src task summary mutated: %q", src.Agents[0].Tasks[0].Summary)
 	}
-	if src.Teams[0].Tasks[0].Deliverables[0] != "x" {
-		t.Errorf("src deliverable mutated: %q", src.Teams[0].Tasks[0].Deliverables[0])
+	if src.Agents[0].Tasks[0].Deliverables[0] != "x" {
+		t.Errorf("src deliverable mutated: %q", src.Agents[0].Tasks[0].Deliverables[0])
 	}
-	if src.Teams[0].DependsOn[0] != "upstream" {
-		t.Errorf("src DependsOn mutated: %q", src.Teams[0].DependsOn[0])
+	if src.Agents[0].DependsOn[0] != "upstream" {
+		t.Errorf("src DependsOn mutated: %q", src.Agents[0].DependsOn[0])
 	}
 	if src.Backend.ManagedAgents.Repository.URL != "https://github.com/o/r1" {
 		t.Errorf("src Backend.ManagedAgents.Repository.URL mutated: %q", src.Backend.ManagedAgents.Repository.URL)
@@ -478,8 +478,8 @@ func TestCloneConfig_DeepCopy(t *testing.T) {
 	if src.Backend.ManagedAgents.OpenPullRequests {
 		t.Errorf("src Backend.ManagedAgents.OpenPullRequests mutated to true")
 	}
-	if src.Teams[0].EnvironmentOverride.Repository.URL != "https://github.com/o/team-a" {
-		t.Errorf("src team EnvironmentOverride.Repository.URL mutated: %q", src.Teams[0].EnvironmentOverride.Repository.URL)
+	if src.Agents[0].EnvironmentOverride.Repository.URL != "https://github.com/o/team-a" {
+		t.Errorf("src team EnvironmentOverride.Repository.URL mutated: %q", src.Agents[0].EnvironmentOverride.Repository.URL)
 	}
 }
 

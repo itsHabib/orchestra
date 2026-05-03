@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -28,19 +29,76 @@ type RunArgs struct {
 // InlineDAG is the simplified shape the chat-side LLM constructs. The handler
 // folds it into a real config.Config before validation; richer shapes (custom
 // tools, skills, members, etc.) are accessible via ConfigPath.
+//
+// `agents:` is the v3 canonical key; `teams:` is accepted as an alias by
+// [InlineDAG.UnmarshalJSON] so v2 clients keep working.
 type InlineDAG struct {
-	ProjectName string       `json:"project_name,omitempty"`
-	Backend     string       `json:"backend,omitempty" jsonschema:"\"local\" (default) or \"managed_agents\""`
-	Teams       []InlineTeam `json:"teams"`
+	ProjectName string        `json:"project_name,omitempty"`
+	Backend     string        `json:"backend,omitempty" jsonschema:"\"local\" (default) or \"managed_agents\""`
+	Agents      []InlineAgent `json:"agents,omitempty"`
 }
 
-// InlineTeam is one team in an InlineDAG. Each team becomes one
-// `orchestra run` agent with a single Task derived from Prompt.
-type InlineTeam struct {
-	Name   string   `json:"name" jsonschema:"unique team name"`
-	Role   string   `json:"role" jsonschema:"team lead role/persona, e.g. designer, engineer, reviewer"`
-	Prompt string   `json:"prompt" jsonschema:"free-form text describing what the team should accomplish; folded into a single Task.summary"`
-	Deps   []string `json:"deps,omitempty" jsonschema:"team names this team depends on"`
+// UnmarshalJSON accepts the legacy `teams:` key alongside `agents:` so v2
+// MCP clients keep working through the v3 transition. Setting both keys at
+// the same time is rejected — even when one is empty — so a migration
+// typo (`agents: []` plus `teams: [...]`) fails fast instead of silently
+// falling back to the legacy spelling.
+func (d *InlineDAG) UnmarshalJSON(data []byte) error {
+	keys, err := dagKeysPresent(data)
+	if err != nil {
+		return err
+	}
+	hasAgents, hasTeams := keys.Agents, keys.Teams
+	type rawInlineDAG struct {
+		ProjectName string        `json:"project_name,omitempty"`
+		Backend     string        `json:"backend,omitempty"`
+		Agents      []InlineAgent `json:"agents"`
+		Teams       []InlineAgent `json:"teams"`
+	}
+	var raw rawInlineDAG
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if hasAgents && hasTeams {
+		return errors.New("inline_dag: cannot set both `agents:` and `teams:` — use `agents:`")
+	}
+	d.ProjectName = raw.ProjectName
+	d.Backend = raw.Backend
+	d.Agents = raw.Agents
+	if hasTeams {
+		d.Agents = raw.Teams
+	}
+	return nil
+}
+
+// inlineDAGKeyPresence captures whether the JSON payload for the MCP
+// `run` tool's inline DAG explicitly set `agents` and `teams`. Same role
+// as [config.agentListKeyPresence] — the dual-key guard needs to
+// distinguish a missing key from an empty list.
+type inlineDAGKeyPresence struct {
+	Agents bool
+	Teams  bool
+}
+
+// dagKeysPresent reports whether the JSON object explicitly set `agents`
+// and `teams`.
+func dagKeysPresent(data []byte) (inlineDAGKeyPresence, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return inlineDAGKeyPresence{}, err
+	}
+	_, hasAgents := probe["agents"]
+	_, hasTeams := probe["teams"]
+	return inlineDAGKeyPresence{Agents: hasAgents, Teams: hasTeams}, nil
+}
+
+// InlineAgent is one agent in an InlineDAG. Each becomes one `orchestra run`
+// agent with a single Task derived from Prompt.
+type InlineAgent struct {
+	Name   string   `json:"name" jsonschema:"unique agent name"`
+	Role   string   `json:"role" jsonschema:"lead role/persona, e.g. designer, engineer, reviewer"`
+	Prompt string   `json:"prompt" jsonschema:"free-form text describing what the agent should accomplish; folded into a single Task.summary"`
+	Deps   []string `json:"deps,omitempty" jsonschema:"agent names this agent depends on"`
 }
 
 // RunResult is the run tool output.
@@ -117,14 +175,14 @@ func (a *RunArgs) resolveConfig() (*config.Config, error) {
 }
 
 // toConfig folds the simplified InlineDAG shape into a full config.Config.
-// The richer shape (custom tools, skills, member roster, multi-task teams) is
+// The richer shape (custom tools, skills, member roster, multi-task agents) is
 // reachable through ConfigPath and is intentionally out of reach inline.
 func (d *InlineDAG) toConfig(projectOverride string) (*config.Config, error) {
 	if d == nil {
 		return nil, errors.New("nil inline_dag")
 	}
-	if len(d.Teams) == 0 {
-		return nil, errors.New("inline_dag.teams must have at least one team")
+	if len(d.Agents) == 0 {
+		return nil, errors.New("inline_dag.agents must have at least one agent")
 	}
 	cfg := &config.Config{
 		Name:    d.ProjectName,
@@ -136,22 +194,22 @@ func (d *InlineDAG) toConfig(projectOverride string) (*config.Config, error) {
 	if cfg.Name == "" {
 		cfg.Name = "mcp-run"
 	}
-	cfg.Teams = make([]config.Team, len(d.Teams))
-	for i, t := range d.Teams {
-		if t.Name == "" {
-			return nil, fmt.Errorf("inline_dag.teams[%d].name is required", i)
+	cfg.Agents = make([]config.Agent, len(d.Agents))
+	for i, a := range d.Agents {
+		if a.Name == "" {
+			return nil, fmt.Errorf("inline_dag.agents[%d].name is required", i)
 		}
-		if t.Role == "" {
-			return nil, fmt.Errorf("inline_dag.teams[%d].role is required (got team %q)", i, t.Name)
+		if a.Role == "" {
+			return nil, fmt.Errorf("inline_dag.agents[%d].role is required (got agent %q)", i, a.Name)
 		}
-		if t.Prompt == "" {
-			return nil, fmt.Errorf("inline_dag.teams[%d].prompt is required (got team %q)", i, t.Name)
+		if a.Prompt == "" {
+			return nil, fmt.Errorf("inline_dag.agents[%d].prompt is required (got agent %q)", i, a.Name)
 		}
-		cfg.Teams[i] = config.Team{
-			Name:      t.Name,
-			Lead:      config.Lead{Role: t.Role},
-			DependsOn: append([]string(nil), t.Deps...),
-			Tasks:     []config.Task{{Summary: t.Prompt}},
+		cfg.Agents[i] = config.Agent{
+			Name:      a.Name,
+			Lead:      config.Lead{Role: a.Role},
+			DependsOn: append([]string(nil), a.Deps...),
+			Tasks:     []config.Task{{Summary: a.Prompt}},
 		}
 	}
 	return cfg, nil

@@ -11,12 +11,12 @@ import (
 
 // TestValidate_PopulatesFieldPath asserts that every validator emits
 // issues with a structured Field path. Table-driven across each
-// validator that emits issues; covers project-level, team-scoped,
+// validator that emits issues; covers project-level, agent-scoped,
 // nested, backend, and warning paths.
 func TestValidate_PopulatesFieldPath(t *testing.T) {
 	cases := []fieldPathCase{}
 	cases = append(cases, fieldPathProjectAndBackendCases()...)
-	cases = append(cases, fieldPathTeamCases()...)
+	cases = append(cases, fieldPathAgentCases()...)
 	cases = append(cases, fieldPathRepositoryCases()...)
 	cases = append(cases, fieldPathWarningCases()...)
 	for _, tc := range cases {
@@ -40,7 +40,7 @@ func fieldPathProjectAndBackendCases() []fieldPathCase {
 		{
 			name: "missing project name",
 			cfg: &Config{
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:  "a",
 					Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
 				}},
@@ -53,7 +53,7 @@ func fieldPathProjectAndBackendCases() []fieldPathCase {
 			cfg: &Config{
 				Name:    "p",
 				Backend: Backend{Kind: "bogus"},
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:  "a",
 					Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
 				}},
@@ -64,13 +64,13 @@ func fieldPathProjectAndBackendCases() []fieldPathCase {
 	}
 }
 
-func fieldPathTeamCases() []fieldPathCase {
+func fieldPathAgentCases() []fieldPathCase {
 	return []fieldPathCase{
 		{
 			name: "missing task summary",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name: "a",
 					Tasks: []Task{
 						{Summary: "ok", Details: "d", Verify: "v"},
@@ -80,45 +80,45 @@ func fieldPathTeamCases() []fieldPathCase {
 				}},
 			},
 			wantErr:   []string{"empty summary"},
-			wantField: []string{"teams", "0", "tasks", "2", "summary"},
+			wantField: []string{"agents", "0", "tasks", "2", "summary"},
 		},
 		{
 			name: "self-referencing dependency",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:      "a",
 					Tasks:     []Task{{Summary: "x", Details: "d", Verify: "v"}},
 					DependsOn: []string{"a"},
 				}},
 			},
 			wantErr:   []string{"cannot depend on itself"},
-			wantField: []string{"teams", "0", "depends_on"},
+			wantField: []string{"agents", "0", "depends_on"},
 		},
 		{
 			name: "unknown dependency",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:      "a",
 					Tasks:     []Task{{Summary: "x", Details: "d", Verify: "v"}},
 					DependsOn: []string{"ghost"},
 				}},
 			},
-			wantErr:   []string{"unknown team"},
-			wantField: []string{"teams", "0", "depends_on"},
+			wantErr:   []string{"unknown agent"},
+			wantField: []string{"agents", "0", "depends_on"},
 		},
 		{
 			name: "dependency cycle",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{
+				Agents: []Agent{
 					{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}, DependsOn: []string{"b"}},
 					{Name: "b", Tasks: []Task{{Summary: "y", Details: "d", Verify: "v"}}, DependsOn: []string{"a"}},
 				},
 			},
 			wantErr:   []string{"cycle"},
-			wantField: []string{"teams"},
+			wantField: []string{"agents"},
 		},
 	}
 }
@@ -135,7 +135,7 @@ func fieldPathRepositoryCases() []fieldPathCase {
 						Repository: &RepositorySpec{URL: ""},
 					},
 				},
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:  "a",
 					Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
 				}},
@@ -149,41 +149,41 @@ func fieldPathRepositoryCases() []fieldPathCase {
 func fieldPathWarningCases() []fieldPathCase {
 	return []fieldPathCase{
 		{
-			name: "team-size warning",
+			name: "agent-size warning",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:    "a",
 					Members: []Member{{Role: "1"}, {Role: "2"}, {Role: "3"}, {Role: "4"}, {Role: "5"}, {Role: "6"}},
 					Tasks:   manyTasks(12),
 				}},
 			},
 			wantWarn:      []string{"members"},
-			wantWarnField: []string{"teams", "0", "members"},
+			wantWarnField: []string{"agents", "0", "members"},
 		},
 		{
 			name: "task-quality warning (empty details)",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:  "a",
 					Tasks: []Task{{Summary: "do stuff"}},
 				}},
 			},
 			wantWarn:      []string{"empty details"},
-			wantWarnField: []string{"teams", "0", "tasks", "0", "details"},
+			wantWarnField: []string{"agents", "0", "tasks", "0", "details"},
 		},
 		{
 			name: "task-quality warning (empty verify)",
 			cfg: &Config{
 				Name: "p",
-				Teams: []Team{{
+				Agents: []Agent{{
 					Name:  "a",
 					Tasks: []Task{{Summary: "do stuff", Details: "d"}},
 				}},
 			},
 			wantWarn:      []string{"empty verify"},
-			wantWarnField: []string{"teams", "0", "tasks", "0", "verify"},
+			wantWarnField: []string{"agents", "0", "tasks", "0", "verify"},
 		},
 	}
 }
@@ -229,7 +229,7 @@ func TestValidate_WarningsAndErrorsCoexist(t *testing.T) {
 	cfg := &Config{
 		// project name missing → hard error
 		Backend: Backend{Kind: "managed_agents"},
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:    "a",
 			Members: []Member{{Role: "dev"}}, // members under managed_agents → warning
 			Tasks: []Task{
@@ -258,7 +258,7 @@ func TestValidate_WarningsAndErrorsCoexist(t *testing.T) {
 // valid configs.
 func TestValidationResult_ErrIsErrInvalidConfig(t *testing.T) {
 	bad := &Config{
-		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+		Agents: []Agent{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
 	}
 	res := bad.Validate()
 	if res.Err() == nil {
@@ -270,7 +270,7 @@ func TestValidationResult_ErrIsErrInvalidConfig(t *testing.T) {
 
 	good := &Config{
 		Name: "p",
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:  "a",
 			Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}},
 		}},
@@ -282,17 +282,14 @@ func TestValidationResult_ErrIsErrInvalidConfig(t *testing.T) {
 }
 
 // TestValidationResult_ErrFormatPreservesCLIByteOutput asserts that
-// res.Err().Error() produces the exact pre-P2.5 multi-line format the
-// CLI prints. The previous version of this test only checked that the
-// formatted string contained each error's own String() output — a
-// tautology that missed a doubled `team "x":` prefix regression flagged
-// in PR #21 review. Lock the format down byte-for-byte against a fixed
+// res.Err().Error() produces the exact post-rename multi-line format the
+// CLI prints. Locks the format down byte-for-byte against a fixed
 // fixture so any future drift trips the test.
 func TestValidationResult_ErrFormatPreservesCLIByteOutput(t *testing.T) {
 	cfg := &Config{
-		// project name missing → no-team error
+		// project name missing → no-agent error
 		Backend: Backend{Kind: "bogus"},
-		Teams: []Team{{
+		Agents: []Agent{{
 			Name:      "a",
 			DependsOn: []string{"ghost"},
 			// no tasks → "at least one task is required"
@@ -302,8 +299,8 @@ func TestValidationResult_ErrFormatPreservesCLIByteOutput(t *testing.T) {
 		"validation errors:",
 		`  - project name is required`,
 		`  - backend.kind must be one of: local, managed_agents (got "bogus")`,
-		`  - team "a": at least one task is required`,
-		`  - team "a": depends on unknown team "ghost"`,
+		`  - agent "a": at least one task is required`,
+		`  - agent "a": depends on unknown agent "ghost"`,
 	}, "\n")
 	got := cfg.Validate().Err().Error()
 	if got != want {
@@ -354,7 +351,7 @@ func TestValidate_NilConfigReturnsConfigError(t *testing.T) {
 // an invalid config to Run.
 func TestValidate_ConfigNilWhenInvalid(t *testing.T) {
 	cfg := &Config{
-		Teams: []Team{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
+		Agents: []Agent{{Name: "a", Tasks: []Task{{Summary: "x", Details: "d", Verify: "v"}}}},
 	}
 	res := cfg.Validate()
 	if res.Valid() {

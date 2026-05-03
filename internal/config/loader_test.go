@@ -56,7 +56,9 @@ teams:
 	if !res.Valid() {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if len(res.Warnings) != 0 {
+	// Legacy `teams:` key produces one deprecation warning; that's the
+	// only warning expected.
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0].Message, "deprecated") {
 		t.Fatalf("unexpected warnings: %v", res.Warnings)
 	}
 	cfg := res.Config
@@ -66,21 +68,24 @@ teams:
 	if cfg.Name != "test-project" {
 		t.Fatalf("expected test-project, got %s", cfg.Name)
 	}
-	if len(cfg.Teams) != 2 {
-		t.Fatalf("expected 2 teams, got %d", len(cfg.Teams))
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(cfg.Agents))
 	}
-	if cfg.Teams[0].Lead.Model != "sonnet" {
-		t.Fatalf("expected sonnet override, got %s", cfg.Teams[0].Lead.Model)
+	if !cfg.LegacyTeamsKey {
+		t.Fatal("YAML used `teams:`, expected LegacyTeamsKey=true")
+	}
+	if cfg.Agents[0].Lead.Model != "sonnet" {
+		t.Fatalf("expected sonnet override, got %s", cfg.Agents[0].Lead.Model)
 	}
 	// Frontend should have inherited the default model (opus)
-	if cfg.Teams[1].Lead.Model != "opus" {
-		t.Fatalf("expected opus default, got %s", cfg.Teams[1].Lead.Model)
+	if cfg.Agents[1].Lead.Model != "opus" {
+		t.Fatalf("expected opus default, got %s", cfg.Agents[1].Lead.Model)
 	}
-	if cfg.Teams[0].Tasks[0].Summary != "Build API" {
-		t.Fatalf("expected Build API, got %s", cfg.Teams[0].Tasks[0].Summary)
+	if cfg.Agents[0].Tasks[0].Summary != "Build API" {
+		t.Fatalf("expected Build API, got %s", cfg.Agents[0].Tasks[0].Summary)
 	}
-	if len(cfg.Teams[0].Tasks[0].Deliverables) != 1 {
-		t.Fatalf("expected 1 deliverable, got %d", len(cfg.Teams[0].Tasks[0].Deliverables))
+	if len(cfg.Agents[0].Tasks[0].Deliverables) != 1 {
+		t.Fatalf("expected 1 deliverable, got %d", len(cfg.Agents[0].Tasks[0].Deliverables))
 	}
 }
 
