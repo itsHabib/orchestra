@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/itsHabib/orchestra/internal/artifacts"
 	"github.com/itsHabib/orchestra/internal/notify"
 	"github.com/itsHabib/orchestra/internal/store"
 	"github.com/itsHabib/orchestra/internal/store/memstore"
@@ -399,6 +403,315 @@ func TestSignalCompletionRequiresStore(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nil store") {
 		t.Fatalf("want nil-store error, got %v", err)
 	}
+}
+
+// newSignalContextWithArtifacts seeds a memstore + a FileStore-backed
+// artifacts root under t.TempDir(). Returns the context, the store, and the
+// artifacts root path so tests can inspect on-disk files directly.
+func newSignalContextWithArtifacts(t *testing.T, phase string) (*RunContext, *memstore.MemStore, string) {
+	t.Helper()
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{
+		Agents: map[string]store.AgentState{testTeam: {}},
+		Phase:  phase,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	root := filepath.Join(t.TempDir(), "artifacts")
+	rc := newSignalRunContext(t, st)
+	rc.Artifacts = artifacts.NewFileStore(root)
+	rc.Phase = phase
+	return rc, st, root
+}
+
+func TestSignalCompletionPersistsArtifacts(t *testing.T) {
+	t.Parallel()
+	rc, st, root := newSignalContextWithArtifacts(t, "design")
+	ctx := context.Background()
+
+	if _, err := NewSignalCompletion().Handle(ctx, rc, testTeam, mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "shipped",
+		"pr_url":  "https://github.com/o/r/pull/1",
+		"artifacts": map[string]any{
+			"design_doc": map[string]any{"type": "text", "content": "draft body"},
+			"verdict":    map[string]any{"type": "json", "content": map[string]string{"decision": "proceed"}},
+		},
+	})); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ts := loadTeamState(t, st)
+	want := []string{"design_doc", "verdict"}
+	if !reflect.DeepEqual(ts.Artifacts, want) {
+		t.Fatalf("AgentState.Artifacts = %v, want %v", ts.Artifacts, want)
+	}
+
+	gotText, metaText, err := rc.Artifacts.Get(ctx, rc.RunID, testTeam, "design_doc")
+	if err != nil {
+		t.Fatalf("Get text artifact: %v", err)
+	}
+	if metaText.Type != artifacts.TypeText {
+		t.Errorf("text type = %q, want %q", metaText.Type, artifacts.TypeText)
+	}
+	if metaText.Phase != "design" {
+		t.Errorf("text phase = %q, want design", metaText.Phase)
+	}
+	if string(gotText.Content) != `"draft body"` {
+		t.Errorf("text content = %s, want %q", gotText.Content, `"draft body"`)
+	}
+
+	gotJSON, _, err := rc.Artifacts.Get(ctx, rc.RunID, testTeam, "verdict")
+	if err != nil {
+		t.Fatalf("Get json artifact: %v", err)
+	}
+	if !json.Valid(gotJSON.Content) {
+		t.Errorf("json content not valid JSON: %s", gotJSON.Content)
+	}
+
+	// On-disk path lives under <root>/<agent>/<key>.json
+	wantPath := filepath.Join(root, testTeam, "design_doc.json")
+	if _, statErr := os.Stat(wantPath); statErr != nil {
+		t.Errorf("expected file at %s: %v", wantPath, statErr)
+	}
+}
+
+func TestSignalCompletionRejectsBadArtifacts(t *testing.T) {
+	t.Parallel()
+
+	bigText := strings.Repeat("x", 300*1024) // > 256KB cap
+	bigJSON := json.RawMessage(`{"data":"` + strings.Repeat("y", 300*1024) + `"}`)
+
+	cases := []struct {
+		name      string
+		artifacts map[string]any
+		want      string
+	}{
+		{
+			name:      "bad type",
+			artifacts: map[string]any{"k": map[string]any{"type": "xml", "content": "v"}},
+			want:      `type must be "text" or "json"`,
+		},
+		{
+			name:      "text content not a string",
+			artifacts: map[string]any{"k": map[string]any{"type": "text", "content": 42}},
+			want:      "type=text requires a JSON string content",
+		},
+		{
+			name:      "per-key cap exceeded — text",
+			artifacts: map[string]any{"big": map[string]any{"type": "text", "content": bigText}},
+			want:      "size",
+		},
+		{
+			name:      "per-key cap exceeded — json",
+			artifacts: rawArtifacts(map[string]artifactInput{"big": {Type: "json", Content: bigJSON}}),
+			want:      "size",
+		},
+		{
+			name:      "empty content",
+			artifacts: map[string]any{"k": map[string]any{"type": "text"}},
+			want:      "content is empty",
+		},
+		{
+			name:      "empty key",
+			artifacts: map[string]any{"": map[string]any{"type": "text", "content": "v"}},
+			want:      "artifact key is empty",
+		},
+		{
+			name:      "key path traversal",
+			artifacts: map[string]any{"../etc/passwd": map[string]any{"type": "text", "content": "v"}},
+			want:      "invalid characters",
+		},
+		{
+			name:      "key reserved",
+			artifacts: map[string]any{".": map[string]any{"type": "text", "content": "v"}},
+			want:      "reserved",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rc, st, _ := newSignalContextWithArtifacts(t, "")
+			payload := map[string]any{
+				"status":    "done",
+				"summary":   "x",
+				"pr_url":    "https://example.com/pr/1",
+				"artifacts": tc.artifacts,
+			}
+			_, err := NewSignalCompletion().Handle(context.Background(), rc, testTeam, mustJSON(t, payload))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+			// Rejected calls must NOT mutate state.
+			ts := loadTeamState(t, st)
+			if ts.SignalStatus != "" {
+				t.Fatalf("rejected call wrote state: %+v", ts)
+			}
+			if len(ts.Artifacts) != 0 {
+				t.Fatalf("rejected call appended artifacts: %v", ts.Artifacts)
+			}
+		})
+	}
+}
+
+func TestSignalCompletionRejectsAggregateCap(t *testing.T) {
+	t.Parallel()
+
+	// Three artifacts at 200KB each = 600KB; aggregate is well under the
+	// 4MB cap. Build something that pushes total over while keeping each
+	// well under the per-key 256KB cap. Eight artifacts of ~600KB exceeds
+	// the per-key cap, so we use 24 artifacts of ~200KB to total ~4.8MB.
+	const perKey = 200 * 1024
+	const count = 24
+	arts := make(map[string]any, count)
+	for i := 0; i < count; i++ {
+		arts[strings.Repeat("k", i+1)] = map[string]any{ // unique keys "k", "kk", "kkk"...
+			"type":    "text",
+			"content": strings.Repeat("p", perKey-2), // accounting for the JSON quotes
+		}
+	}
+
+	rc, _, _ := newSignalContextWithArtifacts(t, "")
+	_, err := NewSignalCompletion().Handle(context.Background(), rc, testTeam, mustJSON(t, map[string]any{
+		"status":    "done",
+		"summary":   "x",
+		"pr_url":    "https://example.com/pr/1",
+		"artifacts": arts,
+	}))
+	if err == nil {
+		t.Fatalf("expected aggregate-cap error")
+	}
+	if !strings.Contains(err.Error(), "total size") {
+		t.Fatalf("expected aggregate cap error, got %v", err)
+	}
+}
+
+func TestSignalCompletionDuplicateSignalDropsArtifacts(t *testing.T) {
+	t.Parallel()
+	rc, st, root := newSignalContextWithArtifacts(t, "")
+	ctx := context.Background()
+
+	first := mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "first",
+		"pr_url":  "https://example.com/pr/1",
+		"artifacts": map[string]any{
+			"first_only": map[string]any{"type": "text", "content": "from first"},
+		},
+	})
+	if _, err := NewSignalCompletion().Handle(ctx, rc, testTeam, first); err != nil {
+		t.Fatalf("first Handle: %v", err)
+	}
+
+	// Second signal carries different artifact set. Duplicate detection
+	// short-circuits before persistence; second call's artifacts are dropped.
+	second := mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "second",
+		"pr_url":  "https://example.com/pr/2",
+		"artifacts": map[string]any{
+			"second_only": map[string]any{"type": "text", "content": "from second"},
+		},
+	})
+	if _, err := NewSignalCompletion().Handle(ctx, rc, testTeam, second); err != nil {
+		t.Fatalf("second Handle: %v", err)
+	}
+
+	ts := loadTeamState(t, st)
+	if !reflect.DeepEqual(ts.Artifacts, []string{"first_only"}) {
+		t.Fatalf("AgentState.Artifacts = %v, want [first_only]", ts.Artifacts)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, testTeam, "second_only.json")); statErr == nil {
+		t.Errorf("second-call artifact should NOT be persisted")
+	}
+}
+
+// TestSignalCompletionBlockedToDoneArtifacts confirms the §7.2 recovery
+// transition still persists the recovery signal's artifacts. Without this,
+// the recipe runtime would see the agent reach status=done with no artifacts
+// even though the agent attached them.
+func TestSignalCompletionBlockedToDoneArtifacts(t *testing.T) {
+	t.Parallel()
+	rc, st, _ := newSignalContextWithArtifacts(t, "")
+	ctx := context.Background()
+	h := NewSignalCompletion()
+
+	first := mustJSON(t, map[string]string{
+		"status": "blocked", "summary": "stuck", "reason": "needs human",
+	})
+	if _, err := h.Handle(ctx, rc, testTeam, first); err != nil {
+		t.Fatalf("blocked Handle: %v", err)
+	}
+
+	second := mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "shipped after steer",
+		"pr_url":  "https://example.com/pr/9",
+		"artifacts": map[string]any{
+			"final_doc": map[string]any{"type": "text", "content": "the doc"},
+		},
+	})
+	if _, err := h.Handle(ctx, rc, testTeam, second); err != nil {
+		t.Fatalf("recovery Handle: %v", err)
+	}
+
+	ts := loadTeamState(t, st)
+	if ts.SignalStatus != "done" {
+		t.Fatalf("status = %q, want done", ts.SignalStatus)
+	}
+	if !reflect.DeepEqual(ts.Artifacts, []string{"final_doc"}) {
+		t.Fatalf("AgentState.Artifacts = %v, want [final_doc]", ts.Artifacts)
+	}
+	if _, _, err := rc.Artifacts.Get(ctx, rc.RunID, testTeam, "final_doc"); err != nil {
+		t.Fatalf("recovery artifact should be on disk: %v", err)
+	}
+}
+
+// TestSignalCompletionNilArtifactsStoreSafely covers the local-backend / unit-
+// test code path: when run.Artifacts is nil, the handler must drop artifacts
+// silently rather than panic. The signal status itself still lands.
+func TestSignalCompletionNilArtifactsStoreSafely(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := memstore.New()
+	if err := st.SaveRunState(ctx, &store.RunState{Agents: map[string]store.AgentState{testTeam: {}}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rc := newSignalRunContext(t, st) // no Artifacts wired
+
+	if _, err := NewSignalCompletion().Handle(ctx, rc, testTeam, mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "x",
+		"pr_url":  "https://example.com/pr/1",
+		"artifacts": map[string]any{
+			"foo": map[string]any{"type": "text", "content": "v"},
+		},
+	})); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	ts := loadTeamState(t, st)
+	if ts.SignalStatus != "done" {
+		t.Fatalf("signal not recorded: %+v", ts)
+	}
+	if len(ts.Artifacts) != 0 {
+		t.Fatalf("Artifacts should be empty when no store wired: %v", ts.Artifacts)
+	}
+}
+
+// rawArtifacts builds a payload-shaped map[string]any from typed inputs so the
+// per-key cap test can submit a raw JSON RawMessage directly without
+// re-encoding it through json.Marshal (which would re-escape the inner JSON).
+func rawArtifacts(in map[string]artifactInput) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = map[string]any{
+			"type":    v.Type,
+			"content": v.Content,
+		}
+	}
+	return out
 }
 
 func TestSignalCompletionToolDefinitionStable(t *testing.T) {

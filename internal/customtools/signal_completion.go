@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/itsHabib/orchestra/internal/artifacts"
 	"github.com/itsHabib/orchestra/internal/notify"
 	"github.com/itsHabib/orchestra/internal/store"
 )
@@ -24,6 +26,15 @@ const signalDone = "done"
 // block (genuine ambiguity, unresolvable review conflict, CI failure outside
 // scope) and is waiting for human steering via orchestra msg.
 const signalBlocked = "blocked"
+
+// artifactSoftCapPerKey caps a single artifact's content size. The cap is
+// reported back to the agent on violation so it can shrink and retry.
+const artifactSoftCapPerKey = 256 * 1024
+
+// artifactHardCapTotal caps the aggregate size of all artifacts attached to
+// one signal_completion call. Per-key caps run first so the error message
+// names the offending artifact when only one is oversized.
+const artifactHardCapTotal = 4 * 1024 * 1024
 
 // SignalCompletionHandler implements the sentinel tool from §7 of
 // DESIGN-ship-feature-workflow. It is stateless — every Handle call gets a
@@ -65,6 +76,24 @@ func (SignalCompletionHandler) Tool() Definition {
 					"type":        "string",
 					"description": "Required when status=blocked. A sentence the human can act on.",
 				},
+				"artifacts": map[string]any{
+					"type":        "object",
+					"description": "Optional structured outputs persisted host-side. Each entry becomes an artifact retrievable via mcp__orchestra__get_artifacts / read_artifact. Caps: 256KB per artifact, 4MB total.",
+					"additionalProperties": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"type": map[string]any{
+								"type":        "string",
+								"enum":        []string{string(artifacts.TypeText), string(artifacts.TypeJSON)},
+								"description": "Payload type. text → content is a string; json → content is any JSON value.",
+							},
+							"content": map[string]any{
+								"description": "The artifact payload. A JSON string for type=text; any JSON value for type=json.",
+							},
+						},
+						"required": []string{"type", "content"},
+					},
+				},
 			},
 			"required": []string{"status", "summary"},
 		},
@@ -73,10 +102,19 @@ func (SignalCompletionHandler) Tool() Definition {
 
 // signalCompletionInput is the host-side decoded shape of a tool call.
 type signalCompletionInput struct {
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
-	PRURL   string `json:"pr_url,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Status    string                   `json:"status"`
+	Summary   string                   `json:"summary"`
+	PRURL     string                   `json:"pr_url,omitempty"`
+	Reason    string                   `json:"reason,omitempty"`
+	Artifacts map[string]artifactInput `json:"artifacts,omitempty"`
+}
+
+// artifactInput is one entry under the input's artifacts map. Content is
+// decoded lazily — the parser validates type + size + JSON-shape before
+// promoting to an [artifacts.Artifact] for persistence.
+type artifactInput struct {
+	Type    string          `json:"type"`
+	Content json.RawMessage `json:"content"`
 }
 
 // signalCompletionResult is the JSON we hand back to the agent. duplicate is
@@ -119,6 +157,19 @@ func (SignalCompletionHandler) Handle(ctx context.Context, run *RunContext, team
 	write, err := writeSignalState(ctx, run.Store, team, &in, now)
 	if err != nil {
 		return nil, err
+	}
+
+	// Artifact persistence runs only on a fresh write (first signal OR the
+	// blocked → done recovery transition). Duplicate signals are dropped on
+	// the floor — the first signal's artifacts (if any) are already on disk
+	// and listed in state.json, and a confused agent's second call with a
+	// different artifact set would either silently overwrite or hit
+	// ErrAlreadyExists; both shapes are worse than the documented "first
+	// signal wins, including its artifacts" rule.
+	if !write.duplicate && len(in.Artifacts) > 0 && run.Artifacts != nil {
+		if err := persistArtifacts(ctx, run, team, in.Artifacts); err != nil {
+			return nil, err
+		}
 	}
 
 	if !write.duplicate && run.Notifier != nil {
@@ -178,7 +229,86 @@ func parseSignalCompletionInput(raw json.RawMessage) (signalCompletionInput, err
 	if in.Status == signalBlocked && in.Reason == "" {
 		return in, errors.New("signal_completion: reason is required when status=blocked")
 	}
+	if err := validateArtifacts(in.Artifacts); err != nil {
+		return in, err
+	}
 	return in, nil
+}
+
+// validateArtifacts enforces type, size, and shape rules on the optional
+// artifacts map. Per-key checks fire first so the agent gets an actionable
+// error naming the offending key when only one artifact is wrong; the
+// aggregate cap fires only after every artifact passes its individual check.
+func validateArtifacts(arts map[string]artifactInput) error {
+	if len(arts) == 0 {
+		return nil
+	}
+	keys := sortedArtifactKeys(arts)
+	var total int
+	for _, k := range keys {
+		art := arts[k]
+		if err := validateArtifactKey(k); err != nil {
+			return err
+		}
+		switch art.Type {
+		case string(artifacts.TypeText), string(artifacts.TypeJSON):
+		default:
+			return fmt.Errorf("signal_completion: artifact %q: type must be %q or %q, got %q",
+				k, artifacts.TypeText, artifacts.TypeJSON, art.Type)
+		}
+		if len(art.Content) == 0 {
+			return fmt.Errorf("signal_completion: artifact %q: content is empty", k)
+		}
+		if !json.Valid(art.Content) {
+			return fmt.Errorf("signal_completion: artifact %q: content is not valid JSON", k)
+		}
+		if size := len(art.Content); size > artifactSoftCapPerKey {
+			return fmt.Errorf("signal_completion: artifact %q: content size %d > cap %d",
+				k, size, artifactSoftCapPerKey)
+		}
+		if art.Type == string(artifacts.TypeText) {
+			var s string
+			if err := json.Unmarshal(art.Content, &s); err != nil {
+				return fmt.Errorf("signal_completion: artifact %q: type=text requires a JSON string content", k)
+			}
+		}
+		total += len(art.Content)
+	}
+	if total > artifactHardCapTotal {
+		return fmt.Errorf("signal_completion: artifacts total size %d > cap %d", total, artifactHardCapTotal)
+	}
+	return nil
+}
+
+// validateArtifactKey rejects empty keys and obvious path-traversal shapes.
+// The artifacts package enforces the same rules at write time as defense in
+// depth; surfacing them here gives the agent a clearer error path.
+func validateArtifactKey(key string) error {
+	if key == "" {
+		return errors.New("signal_completion: artifact key is empty")
+	}
+	if key == "." || key == ".." {
+		return fmt.Errorf("signal_completion: artifact key %q is reserved", key)
+	}
+	for _, r := range key {
+		switch r {
+		case '/', '\\', 0:
+			return fmt.Errorf("signal_completion: artifact key %q contains invalid characters", key)
+		}
+	}
+	if key[0] == '.' {
+		return fmt.Errorf("signal_completion: artifact key %q must not start with a dot", key)
+	}
+	return nil
+}
+
+func sortedArtifactKeys(arts map[string]artifactInput) []string {
+	keys := make([]string, 0, len(arts))
+	for k := range arts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // signalWrite is the result of applying a signal_completion input to the
@@ -192,6 +322,48 @@ type signalWrite struct {
 	// duplicate is true when the team had already signaled before this call.
 	// Callers use it to skip notification.
 	duplicate bool
+}
+
+// persistArtifacts writes each artifact's content to the store, then issues a
+// single UpdateAgentState that appends every successfully-written key to the
+// agent's Artifacts list. Sequencing matters: files first, state last. The
+// state.json artifact key list is the canonical "successfully signaled" set,
+// so an orphan file (write succeeded, state-append failed) is safer than an
+// orphan key (state lists a key whose file never landed). Sorted-key
+// iteration keeps state.json output stable.
+func persistArtifacts(ctx context.Context, run *RunContext, team string, arts map[string]artifactInput) error {
+	keys := sortedArtifactKeys(arts)
+	written := make([]string, 0, len(keys))
+	for _, k := range keys {
+		art := artifacts.Artifact{
+			Type:    artifacts.Type(arts[k].Type),
+			Content: append(json.RawMessage(nil), arts[k].Content...),
+		}
+		if _, err := run.Artifacts.Put(ctx, run.RunID, team, k, run.Phase, art); err != nil {
+			return fmt.Errorf("signal_completion: persist artifact %q: %w", k, err)
+		}
+		written = append(written, k)
+	}
+	if len(written) == 0 {
+		return nil
+	}
+	if err := run.Store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
+		existing := make(map[string]struct{}, len(ts.Artifacts))
+		for _, k := range ts.Artifacts {
+			existing[k] = struct{}{}
+		}
+		for _, k := range written {
+			if _, ok := existing[k]; ok {
+				continue
+			}
+			ts.Artifacts = append(ts.Artifacts, k)
+			existing[k] = struct{}{}
+		}
+		sort.Strings(ts.Artifacts)
+	}); err != nil {
+		return fmt.Errorf("signal_completion: append artifacts to state: %w", err)
+	}
+	return nil
 }
 
 // writeSignalState applies the input to the team state under the existing

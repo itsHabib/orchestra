@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/itsHabib/orchestra/internal/artifacts"
 )
 
 // ServerName and ServerVersion advertise the MCP server identity to clients
@@ -16,7 +18,7 @@ import (
 // landed.
 const (
 	ServerName    = "orchestra"
-	ServerVersion = "0.3.0"
+	ServerVersion = "0.4.0"
 )
 
 // shutdownGrace caps how long ServeHTTP waits for in-flight requests to drain
@@ -32,7 +34,20 @@ type Server struct {
 	registry      *Registry
 	spawner       Spawner
 	stateReader   StateReader
+	artifactStore ArtifactStoreFactory
 	workspaceRoot string
+}
+
+// ArtifactStoreFactory returns an artifacts.Store rooted at artifactsDir.
+// Production callers wire DefaultArtifactStore (a thin wrapper around
+// artifacts.NewFileStore); tests pass a stub that returns an in-memory or
+// pre-seeded store.
+type ArtifactStoreFactory func(artifactsDir string) artifacts.Store
+
+// DefaultArtifactStore is the production [ArtifactStoreFactory]. It returns
+// a [artifacts.FileStore] rooted at artifactsDir.
+func DefaultArtifactStore(artifactsDir string) artifacts.Store {
+	return artifacts.NewFileStore(artifactsDir)
 }
 
 // Options configures a Server. Zero-value fields fall back to the production
@@ -46,6 +61,7 @@ type Options struct {
 	WorkspaceRoot string
 	Spawner       Spawner
 	StateReader   StateReader
+	ArtifactStore ArtifactStoreFactory
 }
 
 // New returns a Server with the v1 generic tool surface registered against
@@ -71,12 +87,17 @@ func New(opts *Options) (*Server, error) {
 	if read == nil {
 		read = DefaultStateReader
 	}
+	artStore := opts.ArtifactStore
+	if artStore == nil {
+		artStore = DefaultArtifactStore
+	}
 
 	s := &Server{
 		mcp:           mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, nil),
 		registry:      registry,
 		spawner:       spawn,
 		stateReader:   read,
+		artifactStore: artStore,
 		workspaceRoot: root,
 	}
 	s.registerTools()

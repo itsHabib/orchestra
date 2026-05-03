@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/itsHabib/orchestra/internal/artifacts"
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/customtools"
 	"github.com/itsHabib/orchestra/internal/ghhost"
@@ -131,12 +133,19 @@ func (r *orchestrationRun) sendCustomToolResult(ctx context.Context, tierIdx int
 // customToolRunContext bundles the engine state custom-tool handlers need.
 // Constructed per dispatch so handlers see the live store and notifier even
 // if either is swapped mid-run (none are today, but this keeps the contract
-// honest).
+// honest). Phase is snapshot at construction time — UpdateAgentState
+// serializes per-team writes so a phase change between this snapshot and
+// Handle's signal-state write is impossible in practice; a static value is
+// simpler than a closure.
 func (r *orchestrationRun) customToolRunContext(ctx context.Context) *customtools.RunContext {
-	runID := ""
+	var (
+		runID string
+		phase string
+	)
 	if r.runService != nil {
 		if snapshot, err := r.runService.Snapshot(ctx); err == nil && snapshot != nil {
 			runID = snapshot.RunID
+			phase = snapshot.Phase
 		}
 	}
 	var st store.Store
@@ -144,11 +153,25 @@ func (r *orchestrationRun) customToolRunContext(ctx context.Context) *customtool
 		st = r.runService.Store()
 	}
 	return &customtools.RunContext{
-		Store:    st,
-		Notifier: r.notifier,
-		RunID:    runID,
-		Now:      r.runServiceNow,
+		Store:     st,
+		Notifier:  r.notifier,
+		RunID:     runID,
+		Now:       r.runServiceNow,
+		Artifacts: r.artifactStore(),
+		Phase:     phase,
 	}
+}
+
+// artifactStore returns the run's artifact persistence store rooted under
+// the workspace's .orchestra directory. r.ws.Path IS the .orchestra dir
+// (see internal/workspace.Ensure), so the artifact root is one level deeper.
+// Returns nil when the workspace isn't wired — handlers tolerate that and
+// drop artifacts silently rather than erroring.
+func (r *orchestrationRun) artifactStore() artifacts.Store {
+	if r.ws == nil || r.ws.Path == "" {
+		return nil
+	}
+	return artifacts.NewFileStore(filepath.Join(r.ws.Path, "artifacts"))
 }
 
 // runServiceNow returns the engine's clock when wired through the run
