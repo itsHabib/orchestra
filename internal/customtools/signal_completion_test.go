@@ -669,6 +669,116 @@ func TestSignalCompletionBlockedToDoneArtifacts(t *testing.T) {
 	}
 }
 
+// TestSignalCompletionRetriesAfterOrphanedFiles locks in the codex/copilot/
+// claude review fix for PR #35: when a previous attempt persisted artifact
+// files but its state write failed, a retry with the same payload must
+// complete cleanly — files-already-on-disk is treated as success, the state
+// commit lands, and the agent is no longer permanently blocked by the
+// "duplicate signal" guard.
+func TestSignalCompletionRetriesAfterOrphanedFiles(t *testing.T) {
+	t.Parallel()
+	rc, st, root := newSignalContextWithArtifacts(t, "")
+	ctx := context.Background()
+
+	// Pre-write the file at the same path Handle will write — simulates a
+	// prior attempt that crashed between persistArtifactFiles and
+	// writeSignalState.
+	if _, err := rc.Artifacts.Put(ctx, rc.RunID, testTeam, "design_doc", "", artifacts.Artifact{
+		Type:    artifacts.TypeText,
+		Content: json.RawMessage(`"orphan from prior attempt"`),
+	}); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	res, err := NewSignalCompletion().Handle(ctx, rc, testTeam, mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "retry",
+		"pr_url":  "https://example.com/pr/1",
+		"artifacts": map[string]any{
+			"design_doc": map[string]any{"type": "text", "content": "the doc"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("retry Handle: %v", err)
+	}
+	var decoded signalCompletionResult
+	if err := json.Unmarshal(res, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Duplicate {
+		t.Fatalf("retry should NOT be a duplicate (state was empty), got %+v", decoded)
+	}
+
+	// State.Artifacts populated, signal recorded — retry succeeded.
+	ts := loadTeamState(t, st)
+	if ts.SignalStatus != "done" {
+		t.Errorf("SignalStatus = %q, want done", ts.SignalStatus)
+	}
+	if !reflect.DeepEqual(ts.Artifacts, []string{"design_doc"}) {
+		t.Errorf("Artifacts = %v, want [design_doc]", ts.Artifacts)
+	}
+
+	// On-disk content is from the prior attempt (first-write wins on the same
+	// key). The retry's content is silently ignored. This is the documented
+	// trade-off — agents should not rely on retries replacing content.
+	got, _, err := rc.Artifacts.Get(ctx, rc.RunID, testTeam, "design_doc")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got.Content) != `"orphan from prior attempt"` {
+		t.Errorf("content = %s, want orphan content (first-write wins)", got.Content)
+	}
+
+	_ = filepath.Join(root, testTeam, "design_doc.json") // root referenced for clarity
+}
+
+// TestSignalCompletionSnapshotPreCheckBlocksOrphans confirms that the
+// snapshot pre-check skips file writes when state.json already records a
+// non-recovery duplicate signal. Prevents leaking orphan files when an
+// agent re-emits signal_completion with a different artifact set after a
+// successful first signal.
+func TestSignalCompletionSnapshotPreCheckBlocksOrphans(t *testing.T) {
+	t.Parallel()
+	rc, st, root := newSignalContextWithArtifacts(t, "")
+	ctx := context.Background()
+
+	// First signal — succeeds with one artifact.
+	first := mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "first",
+		"pr_url":  "https://example.com/pr/1",
+		"artifacts": map[string]any{
+			"first_only": map[string]any{"type": "text", "content": "v1"},
+		},
+	})
+	if _, err := NewSignalCompletion().Handle(ctx, rc, testTeam, first); err != nil {
+		t.Fatalf("first Handle: %v", err)
+	}
+
+	// Second signal with a different key — would leak as an orphan if the
+	// snapshot pre-check were absent.
+	second := mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "second",
+		"pr_url":  "https://example.com/pr/2",
+		"artifacts": map[string]any{
+			"second_only": map[string]any{"type": "text", "content": "v2"},
+		},
+	})
+	if _, err := NewSignalCompletion().Handle(ctx, rc, testTeam, second); err != nil {
+		t.Fatalf("second Handle: %v", err)
+	}
+
+	ts := loadTeamState(t, st)
+	if !reflect.DeepEqual(ts.Artifacts, []string{"first_only"}) {
+		t.Fatalf("Artifacts = %v, want [first_only]", ts.Artifacts)
+	}
+	// No orphan on disk for second_only.
+	if _, err := os.Stat(filepath.Join(root, testTeam, "second_only.json")); err == nil {
+		t.Errorf("second_only.json should NOT exist on disk; snapshot pre-check failed to block it")
+	}
+}
+
 // TestSignalCompletionNilArtifactsStoreSafely covers the local-backend / unit-
 // test code path: when run.Artifacts is nil, the handler must drop artifacts
 // silently rather than panic. The signal status itself still lands.

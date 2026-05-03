@@ -138,6 +138,18 @@ type signalCompletionResult struct {
 // without it the run-status derivation in §11.2 never sees the team
 // reach done. All other repeated combinations (done→blocked, done→done,
 // blocked→blocked) stay idempotent — those are confused-agent shapes.
+//
+// Persistence ordering when artifacts are attached: artifact FILES are
+// written first, then a single UpdateAgentState commits Signal* fields and
+// appends the artifact keys atomically. Reasoning (codex/copilot/claude
+// review on PR #35): if the state write committed before the file writes
+// and the file write then failed, the agent would see is_error and a
+// retry would be a duplicate — its artifacts permanently lost. Files-first
+// flips that — a state-write failure leaves orphan files but the retry
+// works because Put treats ErrAlreadyExists from a prior attempt as
+// idempotent (first-write content wins on the same key). The TOCTOU
+// snapshot pre-check guards against orphans when an agent (incorrectly)
+// re-emits with a different artifact set after a successful first signal.
 func (SignalCompletionHandler) Handle(ctx context.Context, run *RunContext, team string, raw json.RawMessage) (json.RawMessage, error) {
 	if run == nil {
 		return nil, errors.New("signal_completion: nil run context")
@@ -154,22 +166,33 @@ func (SignalCompletionHandler) Handle(ctx context.Context, run *RunContext, team
 		return nil, errors.New("signal_completion: nil store")
 	}
 	now := run.Time()
-	write, err := writeSignalState(ctx, run.Store, team, &in, now)
-	if err != nil {
-		return nil, err
+
+	// Pre-check duplicate via a snapshot so a confused agent re-signaling
+	// with a *different* artifact set does not leak orphan files. The
+	// authoritative duplicate check still happens inside writeSignalState's
+	// UpdateAgentState closure; this is a best-effort guard. The TOCTOU
+	// window is bounded by the engine's per-team serial dispatch — only a
+	// rogue concurrent caller could exploit it.
+	likelyDuplicate := snapshotIsDuplicate(ctx, run.Store, team, in.Status)
+
+	// Persist artifact files first. Put is idempotent on retry — if a prior
+	// attempt at the same signal landed the file but the subsequent state
+	// write failed, the retry sees ErrAlreadyExists and treats it as success
+	// (the on-disk content from the first attempt is preserved; second-call
+	// content for the same key is silently ignored). Documented as a
+	// best-effort retry guarantee.
+	var writtenKeys []string
+	if !likelyDuplicate && len(in.Artifacts) > 0 && run.Artifacts != nil {
+		keys, perr := persistArtifactFiles(ctx, run, team, in.Artifacts)
+		if perr != nil {
+			return nil, perr
+		}
+		writtenKeys = keys
 	}
 
-	// Artifact persistence runs only on a fresh write (first signal OR the
-	// blocked → done recovery transition). Duplicate signals are dropped on
-	// the floor — the first signal's artifacts (if any) are already on disk
-	// and listed in state.json, and a confused agent's second call with a
-	// different artifact set would either silently overwrite or hit
-	// ErrAlreadyExists; both shapes are worse than the documented "first
-	// signal wins, including its artifacts" rule.
-	if !write.duplicate && len(in.Artifacts) > 0 && run.Artifacts != nil {
-		if err := persistArtifacts(ctx, run, team, in.Artifacts); err != nil {
-			return nil, err
-		}
+	write, err := writeSignalState(ctx, run.Store, team, &in, writtenKeys, now)
+	if err != nil {
+		return nil, err
 	}
 
 	if !write.duplicate && run.Notifier != nil {
@@ -324,14 +347,20 @@ type signalWrite struct {
 	duplicate bool
 }
 
-// persistArtifacts writes each artifact's content to the store, then issues a
-// single UpdateAgentState that appends every successfully-written key to the
-// agent's Artifacts list. Sequencing matters: files first, state last. The
-// state.json artifact key list is the canonical "successfully signaled" set,
-// so an orphan file (write succeeded, state-append failed) is safer than an
-// orphan key (state lists a key whose file never landed). Sorted-key
-// iteration keeps state.json output stable.
-func persistArtifacts(ctx context.Context, run *RunContext, team string, arts map[string]artifactInput) error {
+// persistArtifactFiles writes each artifact's content to the store and
+// returns the sorted list of keys that landed on disk. Idempotent on retry:
+// when Put returns ErrAlreadyExists (a file from a prior attempt at this
+// same signal_completion exists), the key is treated as written and the
+// existing on-disk content is preserved. This lets a state-write failure
+// after the file write retry cleanly without losing the signal — at the
+// cost of dropping a second-call content update for the same key (first-
+// write wins). The trade-off is documented on Handle.
+//
+// File writes happen BEFORE the state commit; the state.json artifact key
+// list is appended atomically by writeSignalState as part of the same
+// closure that commits the Signal* fields. See Handle's doc comment for
+// the rationale.
+func persistArtifactFiles(ctx context.Context, run *RunContext, team string, arts map[string]artifactInput) ([]string, error) {
 	keys := sortedArtifactKeys(arts)
 	written := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -340,45 +369,59 @@ func persistArtifacts(ctx context.Context, run *RunContext, team string, arts ma
 			Content: append(json.RawMessage(nil), arts[k].Content...),
 		}
 		if _, err := run.Artifacts.Put(ctx, run.RunID, team, k, run.Phase, art); err != nil {
-			return fmt.Errorf("signal_completion: persist artifact %q: %w", k, err)
+			if !errors.Is(err, artifacts.ErrAlreadyExists) {
+				return nil, fmt.Errorf("signal_completion: persist artifact %q: %w", k, err)
+			}
+			// Idempotent retry: a prior attempt at this same signal already
+			// wrote this key. Keep the prior content (first-write wins).
 		}
 		written = append(written, k)
 	}
-	if len(written) == 0 {
-		return nil
+	return written, nil
+}
+
+// snapshotIsDuplicate returns true when state.json indicates a prior
+// signal_completion call has already won. Best-effort guard against orphan
+// artifact files when a confused agent re-emits with a different payload —
+// the authoritative duplicate check still runs inside writeSignalState's
+// UpdateAgentState closure under the per-team mutex. Returns false on any
+// load error so the engine errs toward writing rather than silently dropping
+// artifacts.
+func snapshotIsDuplicate(ctx context.Context, st store.Store, team, newStatus string) bool {
+	state, err := st.LoadRunState(ctx)
+	if err != nil || state == nil {
+		return false
 	}
-	if err := run.Store.UpdateAgentState(ctx, team, func(ts *store.AgentState) {
-		existing := make(map[string]struct{}, len(ts.Artifacts))
-		for _, k := range ts.Artifacts {
-			existing[k] = struct{}{}
-		}
-		for _, k := range written {
-			if _, ok := existing[k]; ok {
-				continue
-			}
-			ts.Artifacts = append(ts.Artifacts, k)
-			existing[k] = struct{}{}
-		}
-		sort.Strings(ts.Artifacts)
-	}); err != nil {
-		return fmt.Errorf("signal_completion: append artifacts to state: %w", err)
+	ts, ok := state.Agents[team]
+	if !ok || ts.SignalStatus == "" {
+		return false
 	}
-	return nil
+	// Recovery transition is NOT a duplicate.
+	if ts.SignalStatus == signalBlocked && newStatus == signalDone {
+		return false
+	}
+	return true
 }
 
 // writeSignalState applies the input to the team state under the existing
-// UpdateAgentState funnel.
+// UpdateAgentState funnel and atomically appends artifactKeys to the agent's
+// Artifacts list when the write is fresh. Combining the two state updates
+// in one closure is the only way to keep the Signal* commit and the
+// artifact-key registration consistent: a separate state write for the keys
+// would re-introduce the failure-mid-sequence gap the codex/copilot/claude
+// review on PR #35 flagged.
 //
 // Transition rules (§7.2 + §14 Q10 reconciliation):
 //   - SignalStatus == "" → any input wins. First call after a fresh team.
 //   - SignalStatus == "blocked" + input "done" → ALLOWED. Legitimate
 //     recovery: team blocked, was unblocked via steering, now signals
-//     completion. Overwrites all Signal* fields with the new outcome.
+//     completion. Overwrites all Signal* fields with the new outcome and
+//     appends recovery-call artifact keys.
 //   - All other repeated combinations (done→done, done→blocked,
-//     blocked→blocked) → idempotent no-op, returns duplicate=true.
-//     These are confused-agent shapes where preserving the first signal
-//     is safer than letting the second clobber it.
-func writeSignalState(ctx context.Context, st store.Store, team string, in *signalCompletionInput, now time.Time) (signalWrite, error) {
+//     blocked→blocked) → idempotent no-op, returns duplicate=true. Artifact
+//     keys passed in are NOT appended (the caller already short-circuited
+//     file writes via the snapshot pre-check).
+func writeSignalState(ctx context.Context, st store.Store, team string, in *signalCompletionInput, artifactKeys []string, now time.Time) (signalWrite, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -395,10 +438,33 @@ func writeSignalState(ctx context.Context, st store.Store, team string, in *sign
 		ts.SignalPRURL = in.PRURL
 		ts.SignalReason = in.Reason
 		ts.SignalAt = now
+		appendArtifactKeysLocked(ts, artifactKeys)
 		out.recordedStatus = in.Status
 	})
 	if err != nil {
 		return signalWrite{}, fmt.Errorf("signal_completion: update state: %w", err)
 	}
 	return out, nil
+}
+
+// appendArtifactKeysLocked merges sorted artifact keys into ts.Artifacts,
+// deduping defensively. Caller must hold the per-team state mutex (i.e.
+// run inside an UpdateAgentState closure). State.json output stays stable
+// because the merged list is re-sorted lexicographically.
+func appendArtifactKeysLocked(ts *store.AgentState, keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	existing := make(map[string]struct{}, len(ts.Artifacts))
+	for _, k := range ts.Artifacts {
+		existing[k] = struct{}{}
+	}
+	for _, k := range keys {
+		if _, ok := existing[k]; ok {
+			continue
+		}
+		ts.Artifacts = append(ts.Artifacts, k)
+		existing[k] = struct{}{}
+	}
+	sort.Strings(ts.Artifacts)
 }

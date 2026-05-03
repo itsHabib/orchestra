@@ -233,9 +233,15 @@ func TestHandleReadArtifact_HappyPath(t *testing.T) {
 		t.Errorf("Content = %s, want %q", out.Content, `"the doc"`)
 	}
 
-	_, out2, _ := fx.srv.handleReadArtifact(ctx, nil, ReadArtifactArgs{
+	res2, out2, err := fx.srv.handleReadArtifact(ctx, nil, ReadArtifactArgs{
 		RunID: fx.runID, Agent: "alpha", Key: "verdict",
 	})
+	if err != nil {
+		t.Fatalf("read verdict: %v", err)
+	}
+	if res2.IsError {
+		t.Fatalf("read verdict IsError: %s", resultText(res2))
+	}
 	if out2.Type != "json" {
 		t.Errorf("Type = %q, want json", out2.Type)
 	}

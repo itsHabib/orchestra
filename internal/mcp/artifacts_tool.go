@@ -41,10 +41,15 @@ type GetArtifactsResult struct {
 // Mirrors [artifacts.Meta] but flattens the run_id (always == args.RunID for
 // this call) and renames Type to a string so the schema reads naturally.
 type ArtifactMetaView struct {
-	Agent   string    `json:"agent"`
-	Phase   string    `json:"phase,omitempty"`
-	Key     string    `json:"key"`
-	Type    string    `json:"type"`
+	Agent string `json:"agent"`
+	Phase string `json:"phase,omitempty"`
+	Key   string `json:"key"`
+	Type  string `json:"type"`
+	// Size is the byte length of the artifact's raw JSON content as the
+	// agent emitted it. For type=text this includes the surrounding JSON
+	// string quotes (so "hello" reports size 7, not 5). For type=json this
+	// is the byte length of the JSON value the agent passed. Soft-capped at
+	// 256KB per artifact and 4MB aggregate at write time.
 	Size    int64     `json:"size"`
 	Written time.Time `json:"written"`
 }

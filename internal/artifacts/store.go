@@ -58,9 +58,20 @@ type Meta struct {
 // persistence — handlers must tolerate that for the local-backend and unit-
 // test paths.
 type Store interface {
-	// Put writes one artifact. Returns ErrAlreadyExists when a key collision
-	// is detected. The returned Meta carries the values actually persisted —
-	// callers should prefer it over reconstructing from inputs.
+	// Put writes one artifact. Returns ErrAlreadyExists when a file already
+	// exists at the (agent, key) coordinate; callers may treat that as
+	// idempotent success on retry. The returned Meta carries the values
+	// actually persisted — callers should prefer it over reconstructing
+	// from inputs.
+	//
+	// Concurrency: implementations need not be safe for concurrent Put
+	// calls to the same (agent, key) coordinate. The host's only writer
+	// today is the signal_completion handler, dispatched serially per team
+	// by pkg/orchestra/ma.go's customtools dispatcher, so the pre-check
+	// for ErrAlreadyExists is not racy in practice. Future callers that
+	// want concurrent writes against the same key should add a Store
+	// implementation with O_EXCL semantics rather than relying on the
+	// stat-then-rename in [FileStore].
 	Put(ctx context.Context, runID, agent, key, phase string, art Artifact) (Meta, error)
 
 	// Get returns the content + metadata for one artifact. Returns
