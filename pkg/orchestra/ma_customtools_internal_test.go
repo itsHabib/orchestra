@@ -388,6 +388,81 @@ func TestDispatchEndToEndRelaysResultEcho(t *testing.T) {
 	}
 }
 
+// TestDispatchEndToEndPersistsArtifacts covers the full PR 3 dispatch path:
+// an MA stub emits signal_completion(artifacts={...}), the engine routes the
+// event to the registered customtools handler, the handler persists the
+// artifact to <ws.Path>/artifacts/<agent>/<key>.json, and the agent's state
+// gets the key appended.
+func TestDispatchEndToEndPersistsArtifacts(t *testing.T) {
+	customtools.Reset()
+	t.Cleanup(customtools.Reset)
+	customtools.MustRegister(customtools.NewSignalCompletion())
+
+	ctx := context.Background()
+	st := seedAlphaRun(t)
+	ws, err := workspace.Ensure(filepath.Join(t.TempDir(), ".orchestra"))
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	cfg := alphaSingleTeamCfg()
+
+	fake := &fakeManagedSession{id: "sess_alpha"}
+	r := &orchestrationRun{
+		cfg:        cfg,
+		emitter:    event.NoopEmitter{},
+		runService: runsvc.New(st),
+		ws:         ws,
+	}
+	r.startTeamMAForTest = func(_ context.Context, _ *Team, _ *store.RunState, _ io.Writer) (managedSession, <-chan spawner.Event, error) {
+		ch := make(chan spawner.Event, 1)
+		ch <- spawner.AgentCustomToolUseEvent{
+			BaseEvent: spawner.BaseEvent{ID: "evt_signal", Type: spawner.EventTypeAgentCustomToolUse, ProcessedAt: time.Now()},
+			ToolUse: spawner.ToolUse{
+				ID:   "evt_signal",
+				Name: customtools.SignalCompletionTool,
+				Input: map[string]any{
+					"status":  "done",
+					"summary": "with artifacts",
+					"pr_url":  "https://github.com/o/r/pull/2",
+					"artifacts": map[string]any{
+						"design_doc": map[string]any{"type": "text", "content": "## the doc"},
+						"verdict":    map[string]any{"type": "json", "content": map[string]string{"k": "v"}},
+					},
+				},
+			},
+		}
+		if err := st.UpdateAgentState(ctx, "alpha", func(ts *store.AgentState) {
+			ts.Status = "done"
+			ts.ResultSummary = "ok"
+		}); err != nil {
+			t.Fatalf("seed done: %v", err)
+		}
+		close(ch)
+		return fake, ch, nil
+	}
+
+	if _, err := r.runTeamMA(ctx, 0, &cfg.Agents[0], &store.RunState{RunID: "run_test"}); err != nil {
+		t.Fatalf("runTeamMA: %v", err)
+	}
+
+	state, err := st.LoadRunState(ctx)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	got := state.Agents["alpha"].Artifacts
+	want := []string{"design_doc", "verdict"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("AgentState.Artifacts = %v, want %v", got, want)
+	}
+
+	for _, key := range want {
+		path := filepath.Join(ws.Path, "artifacts", "alpha", key+".json")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected artifact file at %s: %v", path, err)
+		}
+	}
+}
+
 func TestDispatchEndToEndFiresNotifications(t *testing.T) {
 	fx := runEndToEndSignal(t)
 	if len(fx.notifications) != 1 {

@@ -97,6 +97,22 @@ func (s *Server) registerTools() {
 			"surfaces SignalError on the result when state.json was updated but " +
 			"the signal did not deliver (stale PID, permission issue).",
 	}, recoverHandler(s.handleCancelRun))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolGetArtifacts,
+		Description: "List artifacts an agent emitted via signal_completion(artifacts={...}). " +
+			"Returns metadata only (agent, phase, key, type, size, written) — call " +
+			"read_artifact for the content. Optional agent filter narrows to one " +
+			"agent's namespace; optional phase filter matches the recipe phase the " +
+			"artifact was emitted in.",
+	}, recoverHandler(s.handleGetArtifacts))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolReadArtifact,
+		Description: "Read one artifact's content. Returns {type, phase?, content}; content is " +
+			"a JSON string for type=text and any JSON value for type=json. Discover " +
+			"valid (agent, key) pairs via get_artifacts or RunView.Agents[].Artifacts.",
+	}, recoverHandler(s.handleReadArtifact))
 }
 
 // recoverHandler wraps a typed tool handler with a deferred recover so a

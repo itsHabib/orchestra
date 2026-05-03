@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/itsHabib/orchestra/internal/artifacts"
 	"github.com/itsHabib/orchestra/internal/notify"
 	"github.com/itsHabib/orchestra/internal/store"
 )
@@ -55,6 +56,20 @@ type RunContext struct {
 
 	// Now is the engine clock. Defaults to time.Now().UTC() when nil.
 	Now func() time.Time
+
+	// Artifacts persists structured outputs the agent attaches to its
+	// signal_completion call. Nil disables artifact persistence — the
+	// signal_completion handler then ignores any artifacts payload rather
+	// than erroring, so unit tests and the local backend (which doesn't
+	// dispatch through customtools yet) keep working.
+	Artifacts artifacts.Store
+
+	// Phase is the recipe-runtime phase the agent is executing in. Snapshot
+	// at RunContext construction time — UpdateAgentState's mutex serializes
+	// per-team writes so a phase change mid-Handle is impossible. Empty for
+	// non-recipe runs (the only shape that exists today; the recipe runtime
+	// lands with Phase B).
+	Phase string
 }
 
 // Time returns Now() in UTC, falling back to time.Now().UTC() when Now is
