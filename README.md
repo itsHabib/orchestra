@@ -7,7 +7,7 @@ A multi-agent autonomous DAG workflow engine for AI agents. Define agents, tasks
 What makes it interesting:
 
 - **Parallel agent execution** — independent agents run concurrently as separate Claude subprocesses or managed-agents sessions, each with their own role, context, and tasks.
-- **[Cross-agent message bus](#message-bus)** — agents don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time. (The bus is on track for replacement by `signal_completion` artifacts + `steer` in v3 phase A — see [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md).)
+- **[Cross-agent message bus](#message-bus)** — agents don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time. (The bus is on track for replacement by `signal_completion` artifacts + `steer` in v3 phase A — see [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md). Artifacts have shipped: agents can attach structured outputs to `signal_completion(artifacts={...})` and the chat-side LLM reads them via `mcp__orchestra__get_artifacts` / `read_artifact`.)
 - **Flexible coordination** — run an autonomous coordinator agent that monitors all agents, relays messages, and resolves conflicts automatically. Or be the coordinator yourself — the message bus is just files on disk, so you can read inboxes and send messages from any Claude Code session (companion skills are included to streamline this).
 - **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later agents build on actual output rather than assumptions.
 
