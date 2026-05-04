@@ -21,8 +21,9 @@ Requires Go 1.22+.
 - `internal/spawner/` — Spawns `Codex -p --output-format stream-json` subprocesses
 - `internal/injection/` — Prompt construction (role + context + tasks + dependency results)
 - `internal/agents/` — Managed Agents service (MA client, agent cache, prune/reconcile)
+- `internal/artifacts/` — Host-side artifact persistence for `signal_completion(artifacts={...})`
+- `internal/files/` — Anthropic Files API uploader for agent-declared file mounts
 - `internal/run/` — Run lifecycle service (lock, archive, seed state, team transitions)
-- `internal/messaging/` — File-based cross-team message bus
 - `internal/workspace/` — Atomic file I/O helpers for registry, results, logs
 - `internal/store/` — Persistence layer: run state, agent/env registries, run locks (memstore + filestore)
 - `internal/fsutil/` — Atomic file operations (write .tmp → os.Rename)
@@ -34,7 +35,7 @@ Requires Go 1.22+.
 - All file writes use atomic pattern: write `.tmp` then `os.Rename`
 - Tests use real binary + mock Codex script (no mocks/interfaces for spawner)
 - Config validation has hard errors (block execution) and soft warnings (print only)
-- Teams communicate via file-based message bus under `.orchestra/messages/`
+- Inter-agent data flows via `signal_completion(artifacts={...})` (captured host-side under `<workspace>/.orchestra/artifacts/`); coordinator → agent steering uses `mcp__orchestra__steer`. The v2 file message bus was removed in v3 phase A.
 - Do not force-push unless the human explicitly approves it; prefer follow-up commits on PR branches
 
 ## Companion Skills
@@ -43,6 +44,6 @@ This project includes Codex skills in `.Codex/skills/`:
 
 - `/orchestra-coord` — Bootstrap a coordinator session for an active run
 - `/orchestra-init` — Interactively generate an orchestra.yaml
-- `/orchestra-monitor` — Status dashboard (team progress, costs, activity, messages)
-- `/orchestra-inbox` — Read messages from any team/coordinator inbox
-- `/orchestra-msg` — Send messages to teams or broadcast to all
+- `/orchestra-monitor` — Status dashboard (team progress, costs, activity)
+
+Older skills `/orchestra-msg` and `/orchestra-inbox` target the v2 file message bus and no longer function in v3; use `mcp__orchestra__steer` and `mcp__orchestra__read_artifact` instead.

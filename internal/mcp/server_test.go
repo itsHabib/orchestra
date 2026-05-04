@@ -194,8 +194,10 @@ func assertToolsRegistered(ctx context.Context, t *testing.T, c *mcp.ClientSessi
 		ToolListRuns:     false,
 		ToolGetRun:       false,
 		ToolRun:          false,
-		ToolSendMessage:  false,
-		ToolReadMessages: false,
+		ToolCancelRun:    false,
+		ToolSteer:        false,
+		ToolGetArtifacts: false,
+		ToolReadArtifact: false,
 	}
 	for _, tool := range tools.Tools {
 		if _, ok := want[tool.Name]; ok {

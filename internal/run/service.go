@@ -9,7 +9,6 @@ import (
 
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/dag"
-	"github.com/itsHabib/orchestra/internal/messaging"
 	"github.com/itsHabib/orchestra/internal/store"
 	"github.com/itsHabib/orchestra/internal/workspace"
 )
@@ -35,7 +34,6 @@ type Service struct {
 type Active struct {
 	RunID string
 	State *store.RunState
-	Bus   *messaging.Bus
 
 	release func()
 	once    sync.Once
@@ -132,14 +130,12 @@ func (s *Service) Begin(ctx context.Context, cfg *config.Config) (*Active, error
 		return nil, fmt.Errorf("run.Begin save state: %w", err)
 	}
 
-	bus, err := s.seedWorkspaceFiles(ws, cfg)
-	if err != nil {
+	if err := s.seedWorkspaceFiles(ws, cfg); err != nil {
 		return nil, err
 	}
 
 	active.RunID = state.RunID
 	active.State = state
-	active.Bus = bus
 	ok = true
 	return active, nil
 }
@@ -429,24 +425,15 @@ func (s *Service) seedState(cfg *config.Config) (*store.RunState, error) {
 	return state, nil
 }
 
-func (s *Service) seedWorkspaceFiles(ws *workspace.Workspace, cfg *config.Config) (*messaging.Bus, error) {
+func (s *Service) seedWorkspaceFiles(ws *workspace.Workspace, cfg *config.Config) error {
 	if ws == nil {
-		return nil, nil
+		return nil
 	}
+	// Workspace seeding now boils down to the registry mirror. The file
+	// message bus was removed in v3 phase A — see DESIGN-v3 §6 for the
+	// `steer` + `signal_completion(artifacts={...})` replacement story.
 	if err := ws.SeedRegistry(cfg); err != nil {
-		return nil, fmt.Errorf("run.Begin seed registry: %w", err)
+		return fmt.Errorf("run.Begin seed registry: %w", err)
 	}
-	if cfg.Backend.Kind == "managed_agents" {
-		return nil, nil
-	}
-
-	names := make([]string, len(cfg.Agents))
-	for i := range cfg.Agents {
-		names[i] = cfg.Agents[i].Name
-	}
-	bus := messaging.NewBus(ws.MessagesPath())
-	if err := bus.InitInboxes(names); err != nil {
-		return nil, fmt.Errorf("run.Begin init message bus: %w", err)
-	}
-	return bus, nil
+	return nil
 }
