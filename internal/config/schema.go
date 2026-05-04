@@ -704,6 +704,7 @@ func (c *Config) validateResourceShape() validationResult {
 		agentPrefix := []string{"agents", strconv.Itoa(i)}
 		out.errs = append(out.errs, validateSkillRefs(a, agentPrefix)...)
 		out.errs = append(out.errs, validateCustomToolRefs(a, agentPrefix)...)
+		out.errs = append(out.errs, validateFileMounts(a, agentPrefix)...)
 		if localBackend {
 			out.warnings = append(out.warnings, localBackendResourceWarnings(a, agentPrefix)...)
 		}
@@ -771,6 +772,37 @@ func validateCustomToolRefs(a *Agent, agentPrefix []string) []ConfigError {
 	return errs
 }
 
+// validateFileMounts catches the obvious shape issues at `orchestra
+// validate` time so a misconfigured `files:` entry surfaces alongside the
+// equivalent skills/custom_tools checks rather than only at run time. The
+// path-existence check still happens at upload time inside
+// internal/files/files.go — validation here is purely structural.
+func validateFileMounts(a *Agent, agentPrefix []string) []ConfigError {
+	var errs []ConfigError
+	for j, fm := range a.Files {
+		fieldPrefix := append(append([]string{}, agentPrefix...), "files", strconv.Itoa(j))
+		if fm.Path == "" {
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, fieldPrefix...), "path"),
+				Agent:   a.Name,
+				Message: fmt.Sprintf("file mount %d has empty path", j+1),
+			})
+		}
+		// MountPath is the *container-side* path; the MA container is
+		// Linux, so the absolute check is "starts with /", not
+		// filepath.IsAbs (which on Windows requires a drive letter and
+		// would reject /workspace/...).
+		if fm.MountPath != "" && !strings.HasPrefix(fm.MountPath, "/") {
+			errs = append(errs, ConfigError{
+				Field:   append(append([]string{}, fieldPrefix...), "mount"),
+				Agent:   a.Name,
+				Message: fmt.Sprintf("file mount %d: mount %q must be an absolute container path (e.g. /workspace/spec.md)", j+1, fm.MountPath),
+			})
+		}
+	}
+	return errs
+}
+
 // localBackendResourceWarnings surfaces a once-per-agent warning when Skills
 // or CustomTools are set under backend.kind=local — parity with the
 // members/coordinator-under-MA pattern in validateBackendWarnings.
@@ -788,6 +820,13 @@ func localBackendResourceWarnings(a *Agent, agentPrefix []string) []Warning {
 			Field:   append(append([]string{}, agentPrefix...), "custom_tools"),
 			Agent:   a.Name,
 			Message: "custom_tools are not supported under backend.kind=local",
+		})
+	}
+	if len(a.Files) > 0 {
+		warnings = append(warnings, Warning{
+			Field:   append(append([]string{}, agentPrefix...), "files"),
+			Agent:   a.Name,
+			Message: "files are not supported under backend.kind=local; agents on local already have direct host filesystem access",
 		})
 	}
 	return warnings

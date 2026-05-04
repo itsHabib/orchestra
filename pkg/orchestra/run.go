@@ -132,6 +132,8 @@ func cloneAgents(in []Agent) []Agent {
 		// silently alias.
 		out[i].Skills = cloneSlice(in[i].Skills)
 		out[i].CustomTools = cloneSlice(in[i].CustomTools)
+		out[i].RequiresCredentials = cloneSlice(in[i].RequiresCredentials)
+		out[i].Files = cloneSlice(in[i].Files)
 		out[i].EnvironmentOverride = cloneEnvironmentOverride(in[i].EnvironmentOverride)
 	}
 	return out
@@ -464,7 +466,6 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 		return buildMAOrchestrationRun(ctx, cfg, emitter, runService, ws, handle, agentEnv, tiers)
 	}
 
-	emitLocalFileMountWarning(emitter, cfg)
 	return &orchestrationRun{
 		cfg:        cfg,
 		emitter:    emitter,
@@ -670,25 +671,6 @@ func cfgNeedsFileService(cfg *Config) bool {
 		}
 	}
 	return false
-}
-
-// emitLocalFileMountWarning surfaces a one-shot warning when a local-backend
-// run declares file mounts. The local backend has no equivalent of MA's
-// container-mounted file resources — agents on local already have direct
-// host filesystem access, so file mounts are silently ignored. The warning
-// keeps a misconfigured run from seeming to "work" while files never load.
-func emitLocalFileMountWarning(emitter event.Emitter, cfg *Config) {
-	for i := range cfg.Agents {
-		if len(cfg.Agents[i].Files) == 0 {
-			continue
-		}
-		emitter.Emit(Event{
-			Kind:    EventWarn,
-			Tier:    -1,
-			Message: "agent " + cfg.Agents[i].Name + ` declares files: but backend is "local" — file mounts are managed-agents only and will be ignored`,
-			At:      time.Now(),
-		})
-	}
 }
 
 func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, emitter event.Emitter) (*spawner.ManagedAgentsSpawner, error) {

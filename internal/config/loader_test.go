@@ -190,6 +190,101 @@ agents:
 	}
 }
 
+// TestLoad_FilesValidation exercises the structural file-mount checks
+// added to validateResourceShape — empty path, non-absolute container
+// mount, and the local-backend warning. Mirrors how skills /
+// custom_tools are validated.
+func TestLoad_FilesValidation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	t.Run("empty path → error", func(t *testing.T) {
+		assertFilesValidationErr(t, dir, "empty-path.yaml", filesYAMLEmptyPath, "empty path")
+	})
+	t.Run("non-absolute mount → error", func(t *testing.T) {
+		assertFilesValidationErr(t, dir, "rel-mount.yaml", filesYAMLRelMount, "absolute container path")
+	})
+	t.Run("local backend → warning", func(t *testing.T) { assertFilesValidationWarn(t, dir, "local-warn.yaml", filesYAMLLocal) })
+}
+
+const filesYAMLEmptyPath = `
+name: t
+backend:
+  kind: managed_agents
+agents:
+  - name: a
+    lead: {role: A}
+    tasks:
+      - {summary: x, details: d, verify: v}
+    files:
+      - mount: /workspace/x
+`
+
+const filesYAMLRelMount = `
+name: t
+backend:
+  kind: managed_agents
+agents:
+  - name: a
+    lead: {role: A}
+    tasks:
+      - {summary: x, details: d, verify: v}
+    files:
+      - {path: ./spec.md, mount: workspace/spec.md}
+`
+
+const filesYAMLLocal = `
+name: t
+backend:
+  kind: local
+agents:
+  - name: a
+    lead: {role: A}
+    tasks:
+      - {summary: x, details: d, verify: v}
+    files:
+      - {path: ./spec.md}
+`
+
+func assertFilesValidationErr(t *testing.T, dir, name, yaml, wantSubstr string) {
+	t.Helper()
+	res, err := Load(writeYAML(t, dir, name, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if res.Valid() {
+		t.Fatalf("expected validation error containing %q", wantSubstr)
+	}
+	if !strings.Contains(res.Err().Error(), wantSubstr) {
+		t.Fatalf("err = %v, want %q", res.Err(), wantSubstr)
+	}
+}
+
+func assertFilesValidationWarn(t *testing.T, dir, name, yaml string) {
+	t.Helper()
+	res, err := Load(writeYAML(t, dir, name, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !res.Valid() {
+		t.Fatalf("local-backend file mounts should warn, not error: %v", res.Errors)
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w.Message, "files are not supported under backend.kind=local") {
+			return
+		}
+	}
+	t.Fatalf("expected local-backend file warning; got %+v", res.Warnings)
+}
+
+func writeYAML(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	return p
+}
+
 func TestLoad_ValidationError(t *testing.T) {
 	yaml := `
 name: ""

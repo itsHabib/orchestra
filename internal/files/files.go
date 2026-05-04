@@ -16,13 +16,13 @@
 package files
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -128,10 +128,18 @@ func (s *Service) resolveOne(ctx context.Context, fr *FileResource) (ResolvedFil
 	if !filepath.IsAbs(fr.Path) {
 		return ResolvedFile{}, fmt.Errorf("files: path %q must be absolute (config.Load canonicalizes relative paths against the YAML's directory)", fr.Path)
 	}
-	hash, err := hashFile(fr.Path)
+	// Read the file once and hash from memory: hashing then re-opening for
+	// upload was a TOCTOU window where a mid-write modification produced a
+	// cache entry mapping hash(v1) → file_id(v2). On the next run with v1
+	// content the cache would hit but return a file id pointing at v2.
+	// File-mount sizes are bounded by MA's per-file limit; reading into
+	// memory is acceptable.
+	data, err := os.ReadFile(fr.Path) //nolint:gosec // path is operator-controlled YAML; not a tainted input
 	if err != nil {
-		return ResolvedFile{}, err
+		return ResolvedFile{}, fmt.Errorf("files: read %s: %w", fr.Path, err)
 	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
 	mount := fr.MountPath
 	if mount == "" {
 		mount = defaultMount(fr.Path)
@@ -141,13 +149,7 @@ func (s *Service) resolveOne(ctx context.Context, fr *FileResource) (ResolvedFil
 		return ResolvedFile{FileID: cached, MountPath: mount}, nil
 	}
 
-	f, err := os.Open(fr.Path) //nolint:gosec // path is operator-controlled YAML; not a tainted input
-	if err != nil {
-		return ResolvedFile{}, fmt.Errorf("files: open %s: %w", fr.Path, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	uploaded, err := s.uploader.Upload(ctx, anthropic.BetaFileUploadParams{File: f})
+	uploaded, err := s.uploader.Upload(ctx, anthropic.BetaFileUploadParams{File: bytes.NewReader(data)})
 	if err != nil {
 		return ResolvedFile{}, fmt.Errorf("files: upload %s: %w", fr.Path, err)
 	}
@@ -169,22 +171,6 @@ func (s *Service) resolveOne(ctx context.Context, fr *FileResource) (ResolvedFil
 // use in their examples.
 func defaultMount(path string) string {
 	return "/workspace/" + filepath.Base(path)
-}
-
-// hashFile returns the SHA-256 of the file's content as a hex string.
-// Stable across runs and OSes — the cache key.
-func hashFile(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // path is operator-controlled YAML
-	if err != nil {
-		return "", fmt.Errorf("files: open %s: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("files: hash %s: %w", path, err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Cache maps content-hash → file-id so re-runs with unchanged files do not
@@ -209,12 +195,15 @@ func (c *Cache) Path() string { return c.path }
 
 // Get returns the cached file id for hash, if any. ok is false on miss
 // or any I/O error (including a missing file) — the resolver treats either
-// as "upload again", which is always safe.
+// as "upload again", which is always safe. A read error (corrupt JSON, fs
+// outage) gets a stderr breadcrumb so a silently-broken cache still
+// surfaces; the run itself proceeds because re-uploading is harmless.
 func (c *Cache) Get(hash string) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entries, err := c.readLocked()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "files: cache read skipped: %v\n", err)
 		return "", false
 	}
 	e, ok := entries[hash]
