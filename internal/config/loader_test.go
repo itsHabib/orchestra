@@ -114,6 +114,82 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
+// TestLoad_RelativeFilePathsResolveAgainstConfigDir locks in the codex/copilot
+// PR #36 fix: relative `files.path` entries must canonicalize against the
+// directory containing the YAML file, not the process CWD. Without this, an
+// `orchestra run /path/to/orchestra.yaml` invocation from a different working
+// directory either uploads the wrong file or fails with "no such file".
+func TestLoad_RelativeFilePathsResolveAgainstConfigDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// A real file the relative path will resolve to. We don't actually
+	// open it during Load — Load just rewrites the path string — but
+	// having it on disk asserts the resolved path is meaningful.
+	specPath := filepath.Join(dir, "spec.md")
+	if err := os.WriteFile(specPath, []byte("the spec"), 0o600); err != nil {
+		t.Fatalf("seed spec: %v", err)
+	}
+
+	yaml := `
+name: test
+agents:
+  - name: designer
+    lead:
+      role: "Designer"
+    tasks:
+      - summary: "Design"
+        details: "from spec"
+        verify: "true"
+    files:
+      - path: ./spec.md
+        mount: /workspace/spec.md
+      - path: nested/data.csv
+      - path: ` + filepath.ToSlash(filepath.Join(dir, "absolute.json")) + `
+`
+	path := filepath.Join(dir, "orchestra.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load from a different CWD to make sure config-dir resolution is what
+	// matters, not the process's working directory.
+	otherDir := t.TempDir()
+	prevCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prevCWD) })
+
+	res, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if res.Config == nil {
+		t.Fatalf("Config nil; errors: %+v", res.Errors)
+	}
+
+	got := res.Config.Agents[0].Files
+	if len(got) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(got))
+	}
+
+	wantSpec := filepath.Join(dir, "spec.md")
+	if got[0].Path != wantSpec {
+		t.Errorf("relative ./spec.md: got %q, want %q", got[0].Path, wantSpec)
+	}
+	wantNested := filepath.Join(dir, "nested", "data.csv")
+	if got[1].Path != wantNested {
+		t.Errorf("relative nested/data.csv: got %q, want %q", got[1].Path, wantNested)
+	}
+	wantAbs := filepath.Join(dir, "absolute.json")
+	if got[2].Path != wantAbs {
+		t.Errorf("absolute path should round-trip unchanged: got %q, want %q", got[2].Path, wantAbs)
+	}
+}
+
 func TestLoad_ValidationError(t *testing.T) {
 	yaml := `
 name: ""

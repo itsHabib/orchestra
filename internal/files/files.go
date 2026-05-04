@@ -120,35 +120,39 @@ func (s *Service) resolveOne(ctx context.Context, fr *FileResource) (ResolvedFil
 	if fr.Path == "" {
 		return ResolvedFile{}, errors.New("files: path is required")
 	}
-	abs, err := filepath.Abs(fr.Path)
-	if err != nil {
-		return ResolvedFile{}, fmt.Errorf("files: resolve path %s: %w", fr.Path, err)
+	// Paths reach the file service already absolute — config.Load resolves
+	// relative `files.path` entries against the YAML file's directory at
+	// load time, and inline_dag callers are responsible for passing
+	// absolute paths. Reject relative paths defensively so a bypass of the
+	// loader does not silently upload a CWD-relative file.
+	if !filepath.IsAbs(fr.Path) {
+		return ResolvedFile{}, fmt.Errorf("files: path %q must be absolute (config.Load canonicalizes relative paths against the YAML's directory)", fr.Path)
 	}
-	hash, err := hashFile(abs)
+	hash, err := hashFile(fr.Path)
 	if err != nil {
 		return ResolvedFile{}, err
 	}
 	mount := fr.MountPath
 	if mount == "" {
-		mount = defaultMount(abs)
+		mount = defaultMount(fr.Path)
 	}
 
 	if cached, ok := s.cache.Get(hash); ok {
 		return ResolvedFile{FileID: cached, MountPath: mount}, nil
 	}
 
-	f, err := os.Open(abs) //nolint:gosec // path is operator-controlled YAML; not a tainted input
+	f, err := os.Open(fr.Path) //nolint:gosec // path is operator-controlled YAML; not a tainted input
 	if err != nil {
-		return ResolvedFile{}, fmt.Errorf("files: open %s: %w", abs, err)
+		return ResolvedFile{}, fmt.Errorf("files: open %s: %w", fr.Path, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	uploaded, err := s.uploader.Upload(ctx, anthropic.BetaFileUploadParams{File: f})
 	if err != nil {
-		return ResolvedFile{}, fmt.Errorf("files: upload %s: %w", abs, err)
+		return ResolvedFile{}, fmt.Errorf("files: upload %s: %w", fr.Path, err)
 	}
 	if uploaded == nil || uploaded.ID == "" {
-		return ResolvedFile{}, fmt.Errorf("files: upload %s: empty file id", abs)
+		return ResolvedFile{}, fmt.Errorf("files: upload %s: empty file id", fr.Path)
 	}
 
 	if err := s.cache.Put(hash, uploaded.ID); err != nil {
