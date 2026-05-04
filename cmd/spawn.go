@@ -61,7 +61,7 @@ var spawnCmd = &cobra.Command{
 		}
 		defer releaseRunLock()
 
-		prompt := injection.BuildPrompt(agent, cfg.Name, state, cfg, nil, "", "", injection.Capabilities{})
+		prompt := injection.BuildPrompt(agent, cfg.Name, state, cfg, nil, injection.Capabilities{})
 
 		model := agent.Lead.Model
 		if model == "" {

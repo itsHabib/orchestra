@@ -7,8 +7,8 @@ A multi-agent autonomous DAG workflow engine for AI agents. Define agents, tasks
 What makes it interesting:
 
 - **Parallel agent execution** — independent agents run concurrently as separate Claude subprocesses or managed-agents sessions, each with their own role, context, and tasks.
-- **[Cross-agent message bus](#message-bus)** — agents don't work in isolation. A file-based inbox system lets them ask questions, share interface contracts, flag blockers, and coordinate in real time. (The bus is on track for replacement by `signal_completion` artifacts + `steer` in v3 phase A — see [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md). Artifacts have shipped: agents can attach structured outputs to `signal_completion(artifacts={...})` and the chat-side LLM reads them via `mcp__orchestra__get_artifacts` / `read_artifact`.)
-- **Flexible coordination** — run an autonomous coordinator agent that monitors all agents, relays messages, and resolves conflicts automatically. Or be the coordinator yourself — the message bus is just files on disk, so you can read inboxes and send messages from any Claude Code session (companion skills are included to streamline this).
+- **Inter-agent data flow via signal events** — agents emit structured outputs at completion via `signal_completion(artifacts={...})`. Orchestra captures the payload host-side; downstream agents and the chat-side LLM consume it via `mcp__orchestra__get_artifacts` / `read_artifact`. The v2 file message bus was removed in v3 phase A (see [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md)).
+- **Steering via session events** — the chat-side LLM can inject a user message into any running managed-agents session via `mcp__orchestra__steer(run_id, agent, content)`. Local-backend steering is deferred to v3.x; restart with appended context as the workaround.
 - **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later agents build on actual output rather than assumptions.
 
 ```
@@ -366,7 +366,7 @@ Orchestra runs teams on one of two backends, selected by the top-level `backend`
 
 ### `backend: local` (default)
 
-Each team is a `claude -p` subprocess running on the host. The cross-team file message bus and the optional coordinator agent both live here.
+Each team is a `claude -p` subprocess running on the host. v3 phase A removed the v2 file message bus and the autonomous coordinator agent; cross-team data flows through dependency-result injection (each team's final `agent.message` persists to `.orchestra/results/<team>/summary.md` and is inlined into downstream prompts), and the chat-side LLM acts as the coordinator.
 
 ### `backend: managed_agents`
 
@@ -403,7 +403,6 @@ A two-team example lives under [`examples/ma_repo_relay/`](examples/ma_repo_rela
 Caveats under `managed_agents`:
 
 - `members:` and `coordinator:` are not supported (validation emits a warning and the orchestration ignores them).
-- The file message bus is disabled — teams cannot read each other's inboxes mid-run.
 - Cross-repo dependencies (downstream team in a different repo than upstream) are out of scope; the validator emits a warning and the upstream branch is not mounted.
 
 ### Steering a run
@@ -429,78 +428,22 @@ Mechanics worth knowing:
 - **Backend gate.** All three commands require `backend: managed_agents`. Local-backend steering is tracked separately as P1.9-E.
 - **No-active-run behavior.** `msg` and `interrupt` exit non-zero with `no active orchestra run in <workspace>`. `sessions ls` exits 0 with an empty table — listing is permissive.
 
-## Message Bus
+## Inter-agent communication (v3)
 
-Orchestra includes a file-based message bus for cross-team communication during execution.
+The v2-era file message bus (`.orchestra/messages/<team>/inbox/`) and the autonomous coordinator agent were removed in v3 phase A. Three primitives replace them:
 
-### Inbox conventions
+| Primitive | What it does | Surface |
+|---|---|---|
+| `signal_completion(artifacts={...})` | Agent emits structured outputs at completion. Orchestra captures the payload host-side. | Per-agent custom tool. Caps: 256KB / artifact, 4MB total / signal. |
+| `mcp__orchestra__get_artifacts` / `read_artifact` | Chat-side LLM (or downstream agents via Phase B recipes) reads what an agent produced. | MCP, read-only. |
+| `mcp__orchestra__steer(run_id, agent, content)` | Inject a `user.message` into a running managed-agents session — the v3 replacement for `send_message`. | MCP. Local-backend deferred to v3.x; restart with appended context. |
 
-Every participant gets a numbered inbox under `.orchestra/messages/`. The number prefix determines sort order and establishes two reserved slots:
+**Migration from v2:**
+- `send_message` (coordinator → agent) → `steer`.
+- `send_message` (inter-agent data) → `signal_completion(artifacts={...})` from the upstream agent + `read_artifact` (or Phase B recipe interpolation) on the downstream side.
+- `coordinator: { enabled: true }` is deprecated; the chat-side LLM (or a saved skill) plays the coordinator role. Existing yamls still parse; the spawn is suppressed with a warning.
 
-| Inbox | Purpose |
-|-------|---------|
-| `0-human/inbox/` | Messages for the human operator. Teams send `gate` or `blocking-issue` messages here when they need a human decision. Nothing reads this inbox automatically today — it's a hook point for future human-in-the-loop workflows (approval gates, escalation policies, etc). |
-| `1-coordinator/inbox/` | Messages for the coordinator agent (if enabled) or for a human acting as coordinator. The coordinator polls this inbox and responds to cross-team questions, blockers, and status updates. |
-| `N-<team>/inbox/` | Per-team inboxes, numbered by tier order (e.g. `2-backend`, `3-frontend`). Teams poll their own inbox and respond to incoming messages. |
-
-The `shared/` directory holds broadcast artifacts like interface contracts and schemas that any team can read.
-
-### Anatomy of a message
-
-Messages are JSON files written to a recipient's inbox. Each message has:
-
-```json
-{
-  "id": "1736941800000-2-backend-interface-contract",
-  "sender": "2-backend",
-  "recipient": "3-frontend",
-  "type": "interface-contract",
-  "subject": "User API endpoints",
-  "content": "GET /api/users, POST /api/users, ...",
-  "reply_to": "",
-  "priority": "normal",
-  "timestamp": "2025-01-15T10:30:00Z",
-  "read": false
-}
-```
-
-`id` is auto-generated from `<timestamp_ms>-<sender>-<type>`. `reply_to` threads a response to a previous message ID. `read` is marked `true` by the recipient after processing. Teams write messages atomically (write `.tmp` then `mv`) to avoid partial reads.
-
-### Message types
-
-| Type | When to use |
-|------|-------------|
-| `bootstrap` | Seeded by orchestrator — result summaries from upstream teams |
-| `question` | Need info from a parallel team |
-| `answer` | Reply to a question |
-| `interface-contract` | Sharing an API or interface definition |
-| `status-update` | Major milestone notification |
-| `blocking-issue` | Blocked and need help |
-| `correction` | Course correction from coordinator or human |
-| `gate` | Human-in-the-loop decision required (sent to `0-human`) |
-
-### How it works at runtime
-
-1. **Bootstrap** — When a team starts, the orchestrator seeds its inbox with result summaries from completed dependency teams.
-2. **Inbox polling** — Each team lead starts a background cron to check their inbox periodically.
-3. **Sending messages** — Teams write JSON files to the recipient's inbox directory.
-4. **Clean exit** — Teams cancel their polling cron when finished so sessions exit cleanly.
-
-### Coordinating an orchestra run
-
-There are two ways to coordinate:
-
-**Autonomous coordinator** — Enable `coordinator.enabled: true` in your config. A long-lived coordinator agent spawns alongside the teams, monitors all inboxes, relays messages, resolves blockers, and escalates to `0-human` when needed.
-
-**Human-as-coordinator** — Be the coordinator yourself from a Claude Code session. Since the message bus is just files on disk, you can read and write to any inbox directly. Companion skills streamline this:
-
-| Skill | Description |
-|-------|-------------|
-| `/orchestra-monitor` | Dashboard view — team status, live activity, costs, unread messages. Run with `/loop` for continuous monitoring. |
-| `/orchestra-inbox` | Read messages from any inbox — summary table with expanded unread messages. |
-| `/orchestra-msg` | Send a message to any team or the coordinator. |
-
-This is often preferable to the autonomous coordinator since you can make judgment calls and course-correct in real time.
+The cross-team `.orchestra/messages/` directory is no longer created on either backend, and `read_messages` / `send_message` MCP tools are no longer registered. See [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md) §6 for the full rationale.
 
 ## Claude Code Skills
 
@@ -510,9 +453,9 @@ Orchestra ships with companion [Claude Code skills](https://docs.anthropic.com/e
 |-------|-------------|
 | `/orchestra-coord` | Bootstrap a Claude Code session as the human coordinator — reads config, shows status, starts a monitor loop, and primes the session for interventions. |
 | `/orchestra-init` | Interactively generate an `orchestra.yaml` from a short conversation about your project. |
-| `/orchestra-monitor` | Single-pass status dashboard — team progress, costs, live activity, unread messages. Designed to run with `/loop` for continuous monitoring. |
-| `/orchestra-inbox` | Read messages from any inbox — summary table with expanded unread messages. |
-| `/orchestra-msg` | Send a message to any team, the coordinator, or broadcast to all teams. |
+| `/orchestra-monitor` | Single-pass status dashboard — team progress, costs, live activity. Designed to run with `/loop` for continuous monitoring. |
+
+> Older skills (`/orchestra-msg`, `/orchestra-inbox`) target the v2 file message bus and no longer function in v3. Use `mcp__orchestra__steer` and `mcp__orchestra__read_artifact` instead.
 
 ## Solo vs Team Mode
 

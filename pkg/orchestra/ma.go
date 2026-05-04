@@ -13,6 +13,7 @@ import (
 	"github.com/itsHabib/orchestra/internal/artifacts"
 	"github.com/itsHabib/orchestra/internal/config"
 	"github.com/itsHabib/orchestra/internal/customtools"
+	"github.com/itsHabib/orchestra/internal/files"
 	"github.com/itsHabib/orchestra/internal/ghhost"
 	"github.com/itsHabib/orchestra/internal/injection"
 	"github.com/itsHabib/orchestra/internal/spawner"
@@ -292,7 +293,7 @@ func (r *orchestrationRun) startTeamMA(ctx context.Context, team *Team, state *s
 		return nil, nil, err
 	}
 
-	resources, err := r.buildSessionResources(team, state)
+	resources, err := r.buildSessionResources(ctx, team, state)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build session resources: %w", err)
 	}
@@ -380,7 +381,7 @@ func (r *orchestrationRun) teamPromptMA(team *Team, state *store.RunState) strin
 	maTeam := *team
 	maTeam.Members = nil
 	caps := injection.Capabilities{ArtifactPublish: r.artifactPublishSpec(team, state)}
-	prompt := injection.BuildPrompt(&maTeam, r.cfg.Name, state, r.cfg, nil, "", "", caps)
+	prompt := injection.BuildPrompt(&maTeam, r.cfg.Name, state, r.cfg, nil, caps)
 	var b strings.Builder
 	b.WriteString(prompt)
 	b.WriteString("\n## Managed Agents Output\n")
@@ -432,26 +433,67 @@ func upstreamMountPath(team string) string {
 	return "/workspace/upstream/" + team
 }
 
-// buildSessionResources composes the github_repository ResourceRefs attached
-// to a managed-agents session. Returns nil for text-only teams (no effective
-// repository). For teams with a repository it returns the team's working-copy
-// mount plus one mount per upstream that has recorded a repository artifact.
-func (r *orchestrationRun) buildSessionResources(team *Team, state *store.RunState) ([]spawner.ResourceRef, error) {
+// buildFileResources resolves the agent's declared `files:` entries against
+// the Anthropic Files API (or the host-side cache) and returns one
+// [spawner.ResourceRef]{Type:"file"} per entry. Returns nil when the agent
+// declares no files. The file service is wired only when at least one agent
+// in the run declares files; nil-fileService is a programming error here
+// because [cfgNeedsFileService] would have flipped on first detection.
+func (r *orchestrationRun) buildFileResources(ctx context.Context, team *Team) ([]spawner.ResourceRef, error) {
+	if len(team.Files) == 0 {
+		return nil, nil
+	}
+	if r.fileService == nil {
+		return nil, fmt.Errorf("agent %q declares files but the file service is not initialized", team.Name)
+	}
+	specs := make([]files.FileResource, len(team.Files))
+	for i := range team.Files {
+		specs[i] = files.FileResource{
+			Path:      team.Files[i].Path,
+			MountPath: team.Files[i].MountPath,
+		}
+	}
+	resolved, err := r.fileService.Resolve(ctx, specs)
+	if err != nil {
+		return nil, fmt.Errorf("agent %q files: %w", team.Name, err)
+	}
+	out := make([]spawner.ResourceRef, 0, len(resolved))
+	for i := range resolved {
+		out = append(out, spawner.ResourceRef{
+			Type:      "file",
+			FileID:    resolved[i].FileID,
+			MountPath: resolved[i].MountPath,
+		})
+	}
+	return out, nil
+}
+
+// buildSessionResources composes the ResourceRefs attached to a managed-
+// agents session: an optional github_repository working-copy mount, one
+// mount per upstream that recorded a repository artifact, and one file
+// mount per entry the agent declared in `files:`. Returns nil only when
+// the team has neither a repository nor declared files.
+func (r *orchestrationRun) buildSessionResources(ctx context.Context, team *Team, state *store.RunState) ([]spawner.ResourceRef, error) {
+	resources, err := r.buildFileResources(ctx, team)
+	if err != nil {
+		return nil, err
+	}
+
 	repo := team.EffectiveRepository(r.cfg)
 	if repo == nil {
-		return nil, nil
+		return resources, nil
 	}
 	if r.ghPAT == "" {
 		return nil, fmt.Errorf("github pat unavailable for team %q with repository %q", team.Name, repo.URL)
 	}
 
-	resources := []spawner.ResourceRef{{
+	resources = append(resources, spawner.ResourceRef{
 		Type:               "github_repository",
 		URL:                repo.URL,
 		MountPath:          repo.MountPath,
 		AuthorizationToken: r.ghPAT,
 		Checkout:           &spawner.RepoCheckout{Type: "branch", Name: repo.DefaultBranch},
-	}}
+	})
 
 	if state == nil {
 		return resources, nil

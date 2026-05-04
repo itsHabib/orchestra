@@ -41,7 +41,7 @@ func newRepoCfg(t *testing.T) *config.Config {
 func TestBuildSessionResources_TextOnlyTeamReturnsNil(t *testing.T) {
 	r := &orchestrationRun{cfg: &config.Config{Name: "p", Backend: config.Backend{Kind: "managed_agents"}}}
 	team := &config.Agent{Name: "alpha"}
-	got, err := r.buildSessionResources(team, &store.RunState{})
+	got, err := r.buildSessionResources(context.Background(), team, &store.RunState{})
 	if err != nil || got != nil {
 		t.Fatalf("text-only team should return (nil, nil), got %v / %v", got, err)
 	}
@@ -51,7 +51,7 @@ func TestBuildSessionResources_Tier0SingleResource(t *testing.T) {
 	cfg := newRepoCfg(t)
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
 
-	got, err := r.buildSessionResources(&cfg.Agents[0], &store.RunState{})
+	got, err := r.buildSessionResources(context.Background(), &cfg.Agents[0], &store.RunState{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestBuildSessionResources_TierNFanIn(t *testing.T) {
 	}
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
 
-	got, err := r.buildSessionResources(&cfg.Agents[2], state)
+	got, err := r.buildSessionResources(context.Background(), &cfg.Agents[2], state)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestBuildSessionResources_SkipsUpstreamWithoutArtifact(t *testing.T) {
 		},
 	}
 	r := &orchestrationRun{cfg: cfg, ghPAT: "secret"}
-	got, err := r.buildSessionResources(&cfg.Agents[1], state)
+	got, err := r.buildSessionResources(context.Background(), &cfg.Agents[1], state)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBuildSessionResources_SkipsUpstreamWithoutArtifact(t *testing.T) {
 func TestBuildSessionResources_PATMissingErrors(t *testing.T) {
 	cfg := newRepoCfg(t)
 	r := &orchestrationRun{cfg: cfg} // ghPAT empty
-	if _, err := r.buildSessionResources(&cfg.Agents[0], &store.RunState{}); err == nil {
+	if _, err := r.buildSessionResources(context.Background(), &cfg.Agents[0], &store.RunState{}); err == nil {
 		t.Fatal("expected error when PAT is unavailable")
 	}
 }

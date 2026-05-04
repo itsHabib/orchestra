@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,9 +18,10 @@ import (
 	"github.com/itsHabib/orchestra/internal/customtools"
 	"github.com/itsHabib/orchestra/internal/dag"
 	"github.com/itsHabib/orchestra/internal/event"
+	"github.com/itsHabib/orchestra/internal/files"
 	"github.com/itsHabib/orchestra/internal/ghhost"
 	"github.com/itsHabib/orchestra/internal/injection"
-	"github.com/itsHabib/orchestra/internal/messaging"
+	"github.com/itsHabib/orchestra/internal/machost"
 	"github.com/itsHabib/orchestra/internal/notify"
 	runsvc "github.com/itsHabib/orchestra/internal/run"
 	"github.com/itsHabib/orchestra/internal/spawner"
@@ -132,6 +132,8 @@ func cloneAgents(in []Agent) []Agent {
 		// silently alias.
 		out[i].Skills = cloneSlice(in[i].Skills)
 		out[i].CustomTools = cloneSlice(in[i].CustomTools)
+		out[i].RequiresCredentials = cloneSlice(in[i].RequiresCredentials)
+		out[i].Files = cloneSlice(in[i].Files)
 		out[i].EnvironmentOverride = cloneEnvironmentOverride(in[i].EnvironmentOverride)
 	}
 	return out
@@ -166,9 +168,6 @@ type orchestrationRun struct {
 	emitter            event.Emitter
 	runService         *runsvc.Service
 	ws                 *workspace.Workspace
-	bus                *messaging.Bus
-	participants       []messaging.Participant
-	inboxLookup        map[string]string
 	maSpawner          *spawner.ManagedAgentsSpawner
 	ghClient           *ghhost.Client  // nil for non-MA runs or when no repository is configured
 	ghPAT              string          // in-memory only; never persisted or logged
@@ -197,6 +196,12 @@ type orchestrationRun struct {
 	// MA backend logs an "MA env injection deferred" warning at session
 	// start (the SDK does not expose per-session env yet — see PR description).
 	agentEnv map[string]map[string]string
+
+	// fileService uploads agent-declared files to the Anthropic Files API
+	// and resolves them into [spawner.ResourceRef]{Type:"file"} mounts on
+	// the MA session. Nil for non-MA runs (local backend ignores Files
+	// declarations with a warning emitted at session start).
+	fileService *files.Service
 }
 
 type tierResult struct {
@@ -215,16 +220,6 @@ func (r *orchestrationRun) emit(ev Event) {
 		return
 	}
 	r.emitter.Emit(ev)
-}
-
-// emitInfo emits an EventInfo with Tier=-1.
-func (r *orchestrationRun) emitInfo(format string, args ...any) {
-	r.emit(Event{
-		Kind:    EventInfo,
-		Tier:    -1,
-		Message: fmt.Sprintf(format, args...),
-		At:      time.Now(),
-	})
 }
 
 // emitWarn emits an EventWarn with Tier=-1.
@@ -268,7 +263,7 @@ func runWithLockedWorkspace(ctx context.Context, cfg *Config, _ *runOptions, wor
 		return nil, err
 	}
 	if handle != nil {
-		handle.setSteering(cfg.Backend.Kind, run.bus, run.inboxLookup, maSessionEvents(run.maSpawner))
+		handle.setSteering(cfg.Backend.Kind, maSessionEvents(run.maSpawner))
 	}
 
 	runErr := run.execute(ctx, tiers)
@@ -369,30 +364,9 @@ func maSessionEvents(ma *spawner.ManagedAgentsSpawner) spawner.SessionEventSende
 }
 
 func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error {
-	if r.cfg.Backend.Kind == BackendManagedAgents && r.cfg.Coordinator.Enabled {
-		r.emitWarn("coordinator is not supported under backend.kind=managed_agents")
+	if r.cfg.Coordinator.Enabled {
+		r.emitWarn("coordinator: {enabled: true} is deprecated in v3.0 — the file message bus was removed; the chat-side LLM now plays the coordinator role. Skipping coordinator spawn.")
 	}
-
-	var coordHandle *spawner.CoordinatorHandle
-	var coordLog io.Closer
-	if r.cfg.Backend.Kind != BackendManagedAgents {
-		var err error
-		coordHandle, coordLog, err = r.startCoordinator(ctx, tiers)
-		if err != nil {
-			return err
-		}
-	}
-	if coordLog != nil {
-		defer func() { _ = coordLog.Close() }()
-	}
-	cleanedUp := false
-	defer func() {
-		if cleanedUp || coordHandle == nil {
-			return
-		}
-		coordHandle.Cancel()
-		<-coordHandle.Done()
-	}()
 
 	if r.handle != nil {
 		r.handle.setPhase(PhaseRunning)
@@ -403,10 +377,6 @@ func (r *orchestrationRun) execute(ctx context.Context, tiers [][]string) error 
 	if r.handle != nil {
 		r.handle.setPhase(PhaseCompleting)
 	}
-	if err := r.stopCoordinator(coordHandle); err != nil {
-		return err
-	}
-	cleanedUp = true
 	return nil
 }
 
@@ -464,7 +434,7 @@ func newRunService(path string, emitter event.Emitter) *runsvc.Service {
 	)
 }
 
-func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter, runService *runsvc.Service, active *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
+func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter, runService *runsvc.Service, _ *runsvc.Active, handle *Handle) (*orchestrationRun, [][]string, error) {
 	ws := runService.Workspace()
 	if ws == nil {
 		return nil, nil, errors.New("run service has no workspace attached")
@@ -493,51 +463,16 @@ func newOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter
 	}
 
 	if cfg.Backend.Kind == BackendManagedAgents {
-		ma, err := initManagedAgentsBackend(cfg, runService, emitter)
-		if err != nil {
-			return nil, nil, err
-		}
-		ghPAT, ghClient, err := initGitHubClient(cfg, emitter)
-		if err != nil {
-			return nil, nil, err
-		}
-		registerBuiltinCustomTools()
-		resources, err := resolveTeamResources(ctx, cfg, emitter)
-		if err != nil {
-			return nil, nil, err
-		}
-		emitMACredentialWarning(emitter, agentEnv)
-		return &orchestrationRun{
-			cfg:             cfg,
-			emitter:         emitter,
-			runService:      runService,
-			ws:              ws,
-			bus:             active.Bus,
-			maSpawner:       ma,
-			ghClient:        ghClient,
-			ghPAT:           ghPAT,
-			handle:          handle,
-			notifier:        defaultNotifier(ws),
-			teamSkills:      resources.Skills,
-			teamCustomTools: resources.CustomTools,
-			agentEnv:        agentEnv,
-		}, tiers, nil
+		return buildMAOrchestrationRun(ctx, cfg, emitter, runService, ws, handle, agentEnv, tiers)
 	}
 
-	participants, lookup, err := initLocalBackend(cfg, ws, active, emitter)
-	if err != nil {
-		return nil, nil, err
-	}
 	return &orchestrationRun{
-		cfg:          cfg,
-		emitter:      emitter,
-		runService:   runService,
-		ws:           ws,
-		bus:          active.Bus,
-		participants: participants,
-		inboxLookup:  lookup,
-		handle:       handle,
-		agentEnv:     agentEnv,
+		cfg:        cfg,
+		emitter:    emitter,
+		runService: runService,
+		ws:         ws,
+		handle:     handle,
+		agentEnv:   agentEnv,
 	}, tiers, nil
 }
 
@@ -662,11 +597,87 @@ func defaultNotifier(ws *workspace.Workspace) notify.Notifier {
 	return notify.Compose(logger, sinks...)
 }
 
+// buildMAOrchestrationRun assembles the MA-backend orchestrationRun. Lifted
+// out of newOrchestrationRun to keep nesting flat — every helper is a single
+// fail-fast call site, so the body becomes a flat sequence of init steps
+// rather than a deeply-nested if block.
+func buildMAOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emitter, runService *runsvc.Service, ws *workspace.Workspace, handle *Handle, agentEnv map[string]map[string]string, tiers [][]string) (*orchestrationRun, [][]string, error) {
+	ma, err := initManagedAgentsBackend(cfg, runService, emitter)
+	if err != nil {
+		return nil, nil, err
+	}
+	ghPAT, ghClient, err := initGitHubClient(cfg, emitter)
+	if err != nil {
+		return nil, nil, err
+	}
+	registerBuiltinCustomTools()
+	resources, err := resolveTeamResources(ctx, cfg, emitter)
+	if err != nil {
+		return nil, nil, err
+	}
+	emitMACredentialWarning(emitter, agentEnv)
+	fileService, err := initFileService(cfg, emitter)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &orchestrationRun{
+		cfg:             cfg,
+		emitter:         emitter,
+		runService:      runService,
+		ws:              ws,
+		maSpawner:       ma,
+		ghClient:        ghClient,
+		ghPAT:           ghPAT,
+		handle:          handle,
+		notifier:        defaultNotifier(ws),
+		teamSkills:      resources.Skills,
+		teamCustomTools: resources.CustomTools,
+		agentEnv:        agentEnv,
+		fileService:     fileService,
+	}, tiers, nil
+}
+
+// initFileService returns a [files.Service] wired to the host Anthropic
+// client when any agent in cfg declares files for upload. Returns (nil, nil)
+// for runs with no Files declarations — avoids a stray API-key requirement
+// on text-only flows.
+func initFileService(cfg *Config, emitter event.Emitter) (*files.Service, error) {
+	if !cfgNeedsFileService(cfg) {
+		return nil, nil
+	}
+	client, err := machost.NewClient()
+	if err != nil {
+		return nil, fmt.Errorf("file service: %w", err)
+	}
+	emitter.Emit(Event{
+		Kind:    EventInfo,
+		Tier:    -1,
+		Message: "File service initialized for managed-agents file mounts",
+		At:      time.Now(),
+	})
+	return files.New(&client.Beta.Files), nil
+}
+
+// cfgNeedsFileService reports whether any MA-backed agent declares file
+// mounts. Local-backend declarations are warned about separately and never
+// touch the SDK, so they don't gate file-service construction.
+func cfgNeedsFileService(cfg *Config) bool {
+	if cfg.Backend.Kind != BackendManagedAgents {
+		return false
+	}
+	for i := range cfg.Agents {
+		if len(cfg.Agents[i].Files) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, emitter event.Emitter) (*spawner.ManagedAgentsSpawner, error) {
 	emitter.Emit(Event{
 		Kind:    EventInfo,
 		Tier:    -1,
-		Message: "Managed-agents backend: file message bus and coordinator workspace are disabled",
+		Message: "Managed-agents backend initialized",
 		At:      time.Now(),
 	})
 	ma, err := spawner.NewHostManagedAgentsSpawner(
@@ -713,25 +724,6 @@ func cfgNeedsGitHub(cfg *Config) bool {
 		}
 	}
 	return false
-}
-
-func initLocalBackend(cfg *Config, ws *workspace.Workspace, active *runsvc.Active, emitter event.Emitter) ([]messaging.Participant, map[string]string, error) {
-	if active.Bus == nil {
-		return nil, nil, errors.New("run began without message bus")
-	}
-	participants := messaging.BuildParticipants(teamNamesFromConfig(cfg.Agents))
-	lookup := inboxLookupFromParticipants(participants)
-	emitter.Emit(Event{
-		Kind:    EventInfo,
-		Tier:    -1,
-		Message: "Message bus initialized at " + active.Bus.Path(),
-		At:      time.Now(),
-	})
-
-	if err := os.MkdirAll(filepath.Join(ws.Path, "coordinator"), 0o755); err != nil {
-		return nil, nil, fmt.Errorf("creating coordinator decisions directory: %w", err)
-	}
-	return participants, lookup, nil
 }
 
 func (r *orchestrationRun) runTiers(ctx context.Context, tiers [][]string) error {
@@ -810,10 +802,6 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 		return r.runTeamMA(ctx, tierIdx, team, state)
 	}
 
-	if err := r.seedBootstrapMessages(team, state); err != nil {
-		return nil, err
-	}
-
 	logWriter, err := r.ws.LogWriter(teamName)
 	if err != nil {
 		return nil, err
@@ -859,7 +847,7 @@ func (r *orchestrationRun) runTeam(ctx context.Context, tierIdx int, teamName st
 }
 
 func (r *orchestrationRun) teamPrompt(team *Team, tierNames []string, state *store.RunState) string {
-	return injection.BuildPrompt(team, r.cfg.Name, state, r.cfg, tierPeers(tierNames), r.inboxLookup[team.Name], r.bus.Path(), injection.Capabilities{})
+	return injection.BuildPrompt(team, r.cfg.Name, state, r.cfg, tierPeers(tierNames), injection.Capabilities{})
 }
 
 func tierPeers(tierNames []string) []string {

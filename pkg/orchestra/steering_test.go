@@ -2,7 +2,6 @@ package orchestra_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,17 +12,13 @@ import (
 	"github.com/itsHabib/orchestra/pkg/orchestra"
 )
 
-// TestHandle_Send_LocalBackend_DeliversToInbox starts a long-running mock-claude
-// run, sends a steering message via Handle.Send while the team is in the
-// running state, and asserts the message lands in the team's local
-// file-bus inbox in the expected JSON shape (sender 0-human, type
-// correction). The mock-claude script is intentionally slow so the test
-// has a window to observe Status() reporting "running".
-func TestHandle_Send_LocalBackend_DeliversToInbox(t *testing.T) {
+// TestHandle_Send_LocalBackend_ReturnsNotSupported asserts that under
+// backend: local, [Handle.Send] surfaces [orchestra.ErrLocalSteeringNotSupported]
+// rather than the (now-removed) file-bus delivery. v3 phase A dropped the
+// file message bus; the local subprocess has no out-of-band steering channel
+// and the documented workaround is to restart the run with appended context.
+func TestHandle_Send_LocalBackend_ReturnsNotSupported(t *testing.T) {
 	binDir := t.TempDir()
-	// 5-second sleep gives a comfortable window for snapshot polling and
-	// inbox delivery before the mock subprocess prints its result frame
-	// and exits.
 	writeMockClaude(t, binDir, mockSuccessStream(), nil, 0, 5_000)
 
 	workDir := t.TempDir()
@@ -47,14 +42,14 @@ func TestHandle_Send_LocalBackend_DeliversToInbox(t *testing.T) {
 
 	waitForTeamRunning(t, h, "solo", 8*time.Second)
 
-	const message = "use int64 for score fields"
-	if err := h.Send("solo", message); err != nil {
-		t.Fatalf("Send: %v", err)
+	if err := h.Send("solo", "use int64 for score fields"); !errors.Is(err, orchestra.ErrLocalSteeringNotSupported) {
+		t.Fatalf("Send local: err = %v, want ErrLocalSteeringNotSupported", err)
 	}
 
-	inboxDir := filepath.Join(workDir, ".orchestra", "messages", "2-solo", "inbox")
-	if !inboxContainsCorrection(t, inboxDir, message) {
-		t.Fatalf("steering message %q not found in %s", message, inboxDir)
+	// The bus directory must not have been created — bus removal means no
+	// .orchestra/messages tree exists at all under the workspace.
+	if _, err := os.Stat(filepath.Join(workDir, ".orchestra", "messages")); !os.IsNotExist(err) {
+		t.Fatalf("messages dir should not exist after bus removal: %v", err)
 	}
 }
 
@@ -73,45 +68,6 @@ func waitForTeamRunning(t *testing.T, h *orchestra.Handle, team string, deadline
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("team %q never reached running within %s", team, deadline)
-}
-
-// inboxContainsCorrection reports whether inboxDir holds at least one
-// correction-typed message from sender 0-human with the given content.
-// Used to assert that Handle.Send wrote the expected message shape under
-// the local backend.
-func inboxContainsCorrection(t *testing.T, inboxDir, content string) bool {
-	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(inboxDir, "*.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) == 0 {
-		entries, _ := os.ReadDir(filepath.Dir(inboxDir))
-		t.Logf("no message JSON in %s; messages dir entries: %+v", inboxDir, entries)
-		return false
-	}
-	for _, path := range matches {
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			continue
-		}
-		var msg map[string]any
-		if err := json.Unmarshal(data, &msg); err != nil {
-			continue
-		}
-		if msg["sender"] != "0-human" || msg["type"] != "correction" || msg["content"] != content {
-			continue
-		}
-		// Recipient should be the indexed inbox folder, not the bare team name.
-		if msg["recipient"] == "" {
-			t.Errorf("steering message recipient is empty in %s", path)
-		}
-		if msg["read"] != false {
-			t.Errorf("steering message read=%v, want false (in %s)", msg["read"], path)
-		}
-		return true
-	}
-	return false
 }
 
 // TestHandle_Send_TeamNotRunning_ReturnsErrTeamNotRunning runs a

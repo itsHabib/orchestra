@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/itsHabib/orchestra/internal/messaging"
 )
 
 func TestParseRunURI(t *testing.T) {
@@ -22,42 +21,12 @@ func TestParseRunURI(t *testing.T) {
 		wantErr bool
 	}{
 		{"orchestra://runs/abc", "abc", false},
-		{"orchestra://runs/abc/messages", "", true},
 		{"orchestra://runs/", "", true},
 		{"orchestra://other/abc", "", true},
+		{"orchestra://runs/abc/extra", "", true},
 	}
 	for _, tc := range cases {
 		runID, err := parseRunURI(tc.uri)
-		if tc.wantErr {
-			if err == nil {
-				t.Fatalf("%s: expected error", tc.uri)
-			}
-			continue
-		}
-		if err != nil {
-			t.Fatalf("%s: unexpected error: %v", tc.uri, err)
-		}
-		if runID != tc.runID {
-			t.Fatalf("%s: got %q, want %q", tc.uri, runID, tc.runID)
-		}
-	}
-}
-
-func TestParseRunMessagesURI(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		uri     string
-		runID   string
-		wantErr bool
-	}{
-		{"orchestra://runs/abc/messages", "abc", false},
-		{"orchestra://runs/abc", "", true},
-		{"orchestra://runs//messages", "", true},
-		{"orchestra://other/abc/messages", "", true},
-	}
-	for _, tc := range cases {
-		runID, err := parseRunMessagesURI(tc.uri)
 		if tc.wantErr {
 			if err == nil {
 				t.Fatalf("%s: expected error", tc.uri)
@@ -97,7 +66,10 @@ func TestReadRunResource_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
-	seedRun(t, srv, nil)
+	wsDir := filepath.Join(t.TempDir(), "alpha")
+	if err := srv.Registry().Put(context.Background(), &Entry{RunID: "alpha", WorkspaceDir: wsDir}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	res, err := srv.readRunResource(context.Background(), &mcp.ReadResourceRequest{
 		Params: &mcp.ReadResourceParams{URI: "orchestra://runs/alpha"},
@@ -130,45 +102,6 @@ func TestReadRunResource_UnknownReturnsResourceNotFound(t *testing.T) {
 	}
 }
 
-func TestReadRunMessagesResource_NewestFirst(t *testing.T) {
-	t.Parallel()
-
-	srv := newTestServer(t, &stubSpawner{}, stateReaderFn(nil))
-	bus := seedRun(t, srv, []string{"design"})
-
-	earlier := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	later := earlier.Add(time.Hour)
-	if err := bus.Send(&messaging.Message{
-		ID: "1", Sender: "0-human", Recipient: "2-design",
-		Type: messaging.MsgCorrection, Content: "old", Timestamp: earlier,
-	}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	if err := bus.Send(&messaging.Message{
-		ID: "2", Sender: "0-human", Recipient: "2-design",
-		Type: messaging.MsgCorrection, Content: "new", Timestamp: later,
-	}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	res, err := srv.readRunMessagesResource(context.Background(), &mcp.ReadResourceRequest{
-		Params: &mcp.ReadResourceParams{URI: "orchestra://runs/alpha/messages"},
-	})
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var out ReadMessagesResult
-	if err := decodeResource(res, &out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(out.Messages) != 2 {
-		t.Fatalf("messages: %d", len(out.Messages))
-	}
-	if out.Messages[0].ID != "2" {
-		t.Fatalf("expected newest-first; got %v then %v", out.Messages[0].ID, out.Messages[1].ID)
-	}
-}
-
 func TestRegisterResources_AdvertisesAll(t *testing.T) {
 	t.Parallel()
 
@@ -194,10 +127,8 @@ func TestRegisterResources_AdvertisesAll(t *testing.T) {
 	for _, tmpl := range templates.ResourceTemplates {
 		gotTemplates[tmpl.URITemplate] = true
 	}
-	for _, want := range []string{ResourceRunTemplateURI, ResourceRunMessagesTemplateURI} {
-		if !gotTemplates[want] {
-			t.Fatalf("missing resource template %q in %v", want, gotTemplates)
-		}
+	if !gotTemplates[ResourceRunTemplateURI] {
+		t.Fatalf("missing resource template %q in %v", ResourceRunTemplateURI, gotTemplates)
 	}
 }
 

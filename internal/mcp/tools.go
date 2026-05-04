@@ -74,20 +74,6 @@ func (s *Server) registerTools() {
 	}, recoverHandler(s.handleRun))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolSendMessage,
-		Description: "Send a message into a run's file-based bus. recipient is a team name, " +
-			"\"coordinator\", \"human\", or \"broadcast\". Works for both local and managed " +
-			"agents backends.",
-	}, recoverHandler(s.handleSendMessage))
-
-	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolReadMessages,
-		Description: "Read messages from a run's file-based bus, newest-first. With recipient " +
-			"set, narrows to that single inbox; without it, aggregates across every inbox. " +
-			"since is an RFC3339 timestamp filter.",
-	}, recoverHandler(s.handleReadMessages))
-
-	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolCancelRun,
 		Description: "Request cancellation of an MCP-managed orchestra run (works on " +
 			"both local and managed_agents backends). Records the request on " +
@@ -113,6 +99,15 @@ func (s *Server) registerTools() {
 			"a JSON string for type=text and any JSON value for type=json. Discover " +
 			"valid (agent, key) pairs via get_artifacts or RunView.Agents[].Artifacts.",
 	}, recoverHandler(s.handleReadArtifact))
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolSteer,
+		Description: "Inject a user.message event into a running agent's managed-agents " +
+			"session, equivalent of `orchestra msg <agent> <content>`. The agent must " +
+			"be in status running with a recorded session id. Returns a documented " +
+			"error on local-backend runs (steering for backend: local is deferred to " +
+			"v3.x; restart the run with appended context as the workaround).",
+	}, recoverHandler(s.handleSteer))
 }
 
 // recoverHandler wraps a typed tool handler with a deferred recover so a
