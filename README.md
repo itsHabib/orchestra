@@ -396,7 +396,7 @@ backend:
     open_pull_requests: false       # set true to also open PRs host-side
 ```
 
-Per-team overrides go on `teams[i].environment_override.repository`. Orchestra resolves a GitHub PAT at startup (env `GITHUB_TOKEN` first, then `github_token` in `<user-config-dir>/orchestra/config.json`) and never persists it. Each team is told to push to `orchestra/<team>-<run-id>`; downstream teams have each upstream's pushed branch mounted read-only at `/workspace/upstream/<upstream-team>/`. After the session reaches `end_turn`, Orchestra reads the branch via the GitHub API and records a `repository_artifacts[]` entry on the team in `state.json`.
+Per-team overrides go on `teams[i].environment_override.repository`. Orchestra resolves a GitHub PAT at startup in this order: env `GITHUB_TOKEN` → `github_token` in `<user-config-dir>/orchestra/credentials.json` (the canonical home for all orchestra secrets) → `github_token` in `<user-config-dir>/orchestra/config.json` (legacy; emits a one-shot deprecation warning to stderr and will be removed in a future release). The token is never persisted by Orchestra. Each team is told to push to `orchestra/<team>-<run-id>`; downstream teams have each upstream's pushed branch mounted read-only at `/workspace/upstream/<upstream-team>/`. After the session reaches `end_turn`, Orchestra reads the branch via the GitHub API and records a `repository_artifacts[]` entry on the team in `state.json`.
 
 A two-team example lives under [`examples/ma_repo_relay/`](examples/ma_repo_relay/orchestra.yaml). An opt-in live-MA + GitHub fixture lives under [`test/integration/ma_repo_relay/`](test/integration/ma_repo_relay/README.md).
 
