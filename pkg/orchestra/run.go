@@ -547,14 +547,25 @@ func resolveAgentCredentials(ctx context.Context, cfg *Config) (map[string]map[s
 // emitMACredentialWarning surfaces a one-shot warning when an MA-backed
 // run declares `requires_credentials:` for any agent. The Anthropic
 // Managed Agents SDK does not currently expose per-session env-var
-// injection; orchestra resolves the names so dev workflows fail fast on
-// missing credentials, but the secret is not propagated into the MA
-// sandbox. See PR description / docs/DESIGN-v3-composable-workflows.md
-// §12.1 — closing this gap is a v3.x follow-up (likely via Vault IDs).
+// injection (anthropic-sdk-go v1.37.0 BetaSessionNewParams has no Env
+// field; the Vault credential auth union only supports mcp_oauth and
+// static_bearer, not generic env vars). Orchestra resolves the names so
+// dev workflows fail fast on missing credentials, but the secret is not
+// propagated into the MA sandbox.
+//
+// For GitHub specifically, the github_repository ResourceRef path
+// (host PAT → BetaManagedAgentsGitHubRepositoryResourceParams.AuthorizationToken)
+// works end-to-end and is the recommended substitute. Any other secret
+// (Polygon, Vault, AWS, etc.) is currently unreachable on MA.
+//
+// Tracking: github.com/itsHabib/orchestra/issues/42 — closing this gap
+// is gated on the SDK exposing per-session env injection. See
+// docs/feedback-phase-a-dogfood.md §B2 for the dogfood finding that
+// surfaced this scope.
 //
 // Sorts the credential names before formatting so the warning text is
-// stable across runs — useful for grep-by-message dashboards and tests
-// that pin the message verbatim.
+// stable across runs — useful for grep-by-message dashboards and the
+// unit test that pins the message verbatim.
 func emitMACredentialWarning(emitter event.Emitter, agentEnv map[string]map[string]string) {
 	if len(agentEnv) == 0 {
 		return
@@ -575,10 +586,17 @@ func emitMACredentialWarning(emitter event.Emitter, agentEnv map[string]map[stri
 	}
 	sort.Strings(flat)
 	emitter.Emit(Event{
-		Kind:    EventWarn,
-		Tier:    -1,
-		Message: fmt.Sprintf("requires_credentials resolved %v but the managed-agents SDK does not yet expose per-session env injection; secrets will not reach the agent sandbox in this run (v3.x follow-up)", flat),
-		At:      time.Now(),
+		Kind: EventWarn,
+		Tier: -1,
+		Message: fmt.Sprintf(
+			"requires_credentials resolved %v but managed-agents SDK does not yet expose "+
+				"per-session env-var injection; secrets will not reach the agent sandbox. "+
+				"For GitHub use the github_repository ResourceRef path. "+
+				"Tracking: https://github.com/itsHabib/orchestra/issues/42 "+
+				"(see docs/feedback-phase-a-dogfood.md §B2).",
+			flat,
+		),
+		At: time.Now(),
 	})
 }
 

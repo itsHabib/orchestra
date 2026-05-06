@@ -5,7 +5,7 @@ ifeq ($(GOBIN),)
 endif
 
 .PHONY: build install uninstall test test-race vet lint check clean \
-        e2e-ma e2e-ma-single e2e-ma-multi e2e-ma-steering
+        e2e-ma e2e-ma-single e2e-ma-multi e2e-ma-steering e2e-ma-credentials
 
 build:
 	go build -o $(BINARY) .
@@ -42,7 +42,7 @@ check: lint test build
 # with managed-agents access. See TESTING.md for cost estimates and the
 # expected post-run state.json checks.
 
-e2e-ma: e2e-ma-single e2e-ma-multi e2e-ma-steering
+e2e-ma: e2e-ma-single e2e-ma-multi e2e-ma-steering e2e-ma-credentials
 
 e2e-ma-single: build
 	@if [ -z "$$ANTHROPIC_API_KEY" ]; then \
@@ -68,6 +68,15 @@ e2e-ma-steering:
 		exit 1; \
 	fi
 	ORCHESTRA_MA_INTEGRATION=1 go test -count=1 -v ./test/integration/ma_steering/...
+
+# e2e-ma-credentials pins the requires_credentials → MA env-var injection
+# requirement (dogfood §B2). The test always skips today: the Anthropic SDK
+# does not yet expose per-session env injection on BetaSessionNewParams.
+# Tracking: https://github.com/itsHabib/orchestra/issues/42. Once the SDK
+# adds the field and orchestra plumbs it through, removing the second skip
+# in credentials_test.go is enough to make this exercise the full path.
+e2e-ma-credentials:
+	ORCHESTRA_MA_INTEGRATION=1 go test -count=1 -v ./test/integration/ma_credentials/...
 
 clean:
 	rm -f $(BINARY)

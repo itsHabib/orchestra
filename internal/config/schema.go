@@ -176,12 +176,21 @@ type Defaults struct {
 	// the engine resolves the union via internal/credentials at run start,
 	// failing fast on any missing name.
 	//
-	// Backend coverage: under `backend.kind=local` the resolved values
-	// reach `claude -p` via cmd.Env. Under `backend.kind=managed_agents`
-	// the engine resolves the names but emits a one-shot warning at run
-	// start — the SDK does not yet expose per-session env injection, so
-	// secrets do not reach the MA sandbox. Closing the MA gap is a v3.x
-	// follow-up; see docs/DESIGN-v3-composable-workflows.md §12.1.
+	// Backend coverage:
+	//   - backend.kind=local: resolved values reach `claude -p` via cmd.Env.
+	//     Verified end-to-end by internal/spawner.TestSpawn_EnvOverlayReachesChild.
+	//   - backend.kind=managed_agents: the engine resolves the names but
+	//     emits a one-shot warning at run start — the Anthropic Managed
+	//     Agents SDK does not yet expose per-session env injection
+	//     (BetaSessionNewParams has no Env field; Vault credentials only
+	//     support mcp_oauth/static_bearer, not generic env vars). For
+	//     GitHub specifically, the github_repository ResourceRef path
+	//     (host PAT → AuthorizationToken on the resource) works
+	//     end-to-end and is the recommended substitute. Other secrets
+	//     are unreachable on MA today.
+	//
+	// Tracking: github.com/itsHabib/orchestra/issues/42 — closes when the
+	// SDK gap closes. See docs/feedback-phase-a-dogfood.md §B2.
 	RequiresCredentials []string `yaml:"requires_credentials,omitempty" json:"requires_credentials,omitempty"`
 }
 

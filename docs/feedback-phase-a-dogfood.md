@@ -269,3 +269,9 @@ The PR's deliverable (`docs/ideas/orchestra-future-2026-05-03.md`) is itself a P
 - If `cancel_run` is called, does the run terminate cleanly with proper state.json updates?
 
 Each of these adds another check to either A (works), B (gap), or C (live observation).
+
+## SDK-blocked follow-ups
+
+Items that require an upstream SDK change before orchestra can close them. Tracked in the issue tracker; the relevant call sites carry pointers to the issue so the gap is discoverable from code, not just docs.
+
+- **§B2 — `requires_credentials` env injection on MA**: tracked in [orchestra#42](https://github.com/itsHabib/orchestra/issues/42). The Anthropic Managed Agents SDK does not currently expose per-session env-var injection. `anthropic-sdk-go` v1.37.0 `BetaSessionNewParams` has no `Env` field; the `Vault` credential auth union only supports `mcp_oauth` and `static_bearer`, not generic env vars. Orchestra emits a one-shot warning at run start with a pointer to this issue + dogfood §B2. The local backend already injects via `cmd.Env` (verified by `internal/spawner/local_test.go::TestSpawn_EnvOverlayReachesChild`); the gated/skipped MA mirror lives at `test/integration/ma_credentials/` and becomes a real assertion once the SDK adds the field. For GitHub-token specifically, the `github_repository` ResourceRef path (host PAT → SDK `AuthorizationToken` field) works end-to-end and is the recommended substitute today.
