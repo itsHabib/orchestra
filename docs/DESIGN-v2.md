@@ -542,10 +542,11 @@ backend:
       type: github_repository
       url: https://github.com/org/repo
       mount_path: /workspace/repo
-      # Auth: orchestra reads a GitHub PAT (priority: GITHUB_TOKEN env var →
-      # ~/.config/orchestra/config.json `github_token` → actionable error) and passes it
-      # per-session as resources[].authorization_token. The token is write-only at the API
-      # layer and never persisted to orchestra.yaml or state.json.
+      # Auth: orchestra reads a GitHub PAT in this order: GITHUB_TOKEN env var →
+      # ~/.config/orchestra/credentials.json `github_token` (canonical) →
+      # ~/.config/orchestra/config.json `github_token` (legacy, deprecated; emits a one-shot
+      # warning) → actionable error. Passed per-session as resources[].authorization_token.
+      # Write-only at the API layer; never persisted to orchestra.yaml or state.json.
     vault_ids: []               # optional — only needed if a team's agent declares an MCP server
                                 # requiring auth (e.g. the GitHub MCP for PR creation). Vaults
                                 # are MCP-auth-only; they do not surface inside the container.

@@ -606,7 +606,7 @@ func buildMAOrchestrationRun(ctx context.Context, cfg *Config, emitter event.Emi
 	if err != nil {
 		return nil, nil, err
 	}
-	ghPAT, ghClient, err := initGitHubClient(cfg, emitter)
+	ghPAT, ghClient, err := initGitHubClient(ctx, cfg, emitter)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -694,11 +694,11 @@ func initManagedAgentsBackend(cfg *Config, runService *runsvc.Service, emitter e
 // any team has an effective repository configured. Returns ("", nil, nil) for
 // runs that do not need GitHub access (text-only managed-agents flows).
 // Resolved at startup so missing-token errors fail fast.
-func initGitHubClient(cfg *Config, emitter event.Emitter) (string, *ghhost.Client, error) {
+func initGitHubClient(ctx context.Context, cfg *Config, emitter event.Emitter) (string, *ghhost.Client, error) {
 	if !cfgNeedsGitHub(cfg) {
 		return "", nil, nil
 	}
-	pat, err := ghhost.ResolvePAT()
+	pat, err := ghhost.ResolvePAT(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("github pat: %w", err)
 	}
