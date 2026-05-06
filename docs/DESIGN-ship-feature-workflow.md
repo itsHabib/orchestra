@@ -344,7 +344,7 @@ var SignalCompletion = customtools.Definition{
         "type": "object",
         "properties": map[string]any{
             "status":  map[string]any{"type": "string", "enum": []string{"done", "blocked"}},
-            "pr_url":  map[string]any{"type": "string", "description": "Required when status=done"},
+            "pr_url":  map[string]any{"type": "string", "description": "Optional. Recipes that ship PRs include the URL here for chat-side observability."},
             "summary": map[string]any{"type": "string", "description": "One-line summary of what was shipped or why it's blocked"},
             "reason":  map[string]any{"type": "string", "description": "Required when status=blocked. A sentence the human can act on."},
         },

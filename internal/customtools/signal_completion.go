@@ -48,10 +48,12 @@ func NewSignalCompletion() SignalCompletionHandler {
 }
 
 // Tool returns the tool definition. The schema mirrors §7.1 of the design
-// doc: required `status` enum + `summary`, optional `pr_url` (used when
-// status=done) and `reason` (required when status=blocked, enforced by
-// Handle rather than the schema since JSON Schema can't express "required
-// when sibling=X" without anyOf gymnastics).
+// doc: required `status` enum + `summary`, optional `pr_url` (purely
+// informational at the substrate level — recipes that ship PRs include it
+// for chat-side observability, but artifact-only workflows omit it) and
+// `reason` (required when status=blocked, enforced by Handle rather than
+// the schema since JSON Schema can't express "required when sibling=X"
+// without anyOf gymnastics).
 func (SignalCompletionHandler) Tool() Definition {
 	return Definition{
 		Name:        SignalCompletionTool,
@@ -62,7 +64,7 @@ func (SignalCompletionHandler) Tool() Definition {
 				"status": map[string]any{
 					"type":        "string",
 					"enum":        []string{signalDone, signalBlocked},
-					"description": "done when the PR is merge-ready; blocked when human input is required to proceed.",
+					"description": "done when the work is complete; blocked when human input is required to proceed.",
 				},
 				"summary": map[string]any{
 					"type":        "string",
@@ -70,7 +72,7 @@ func (SignalCompletionHandler) Tool() Definition {
 				},
 				"pr_url": map[string]any{
 					"type":        "string",
-					"description": "Required when status=done. The merge-ready PR URL.",
+					"description": "Optional. Recipes that ship PRs include the URL here for chat-side observability; artifact-only workflows omit it.",
 				},
 				"reason": map[string]any{
 					"type":        "string",
@@ -131,6 +133,11 @@ type signalCompletionResult struct {
 // set, the second call is a no-op and returns ok=true,duplicate=true (per
 // §14 Q10) — a confused agent calling twice cannot erase the original
 // outcome or re-fire the notification.
+//
+// pr_url is optional at the substrate level: artifact-only recipes
+// (brainstorm/review/synthesize) reach status=done without ever opening a
+// PR. Recipes that DO ship PRs (e.g. /ship-feature) enforce pr_url at the
+// recipe layer via the kickoff prompt.
 //
 // Exception: the blocked → done transition is allowed and overwrites the
 // recorded state. This is the legitimate recovery flow from §7.2 (the
@@ -245,9 +252,6 @@ func parseSignalCompletionInput(raw json.RawMessage) (signalCompletionInput, err
 	}
 	if in.Summary == "" {
 		return in, errors.New("signal_completion: summary is required")
-	}
-	if in.Status == signalDone && in.PRURL == "" {
-		return in, errors.New("signal_completion: pr_url is required when status=done")
 	}
 	if in.Status == signalBlocked && in.Reason == "" {
 		return in, errors.New("signal_completion: reason is required when status=blocked")

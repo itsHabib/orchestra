@@ -140,6 +140,49 @@ func TestSignalCompletionDoneFiresNotification(t *testing.T) {
 	}
 }
 
+// TestSignalCompletionDoneWithoutPRURLAcceptsArtifacts covers the
+// artifact-only workflow class (brainstorm/review/synthesize): status=done
+// with summary + artifacts but no pr_url must succeed and persist artifacts
+// cleanly. The substrate validator no longer requires pr_url; recipes that
+// ship PRs enforce it at the recipe layer.
+func TestSignalCompletionDoneWithoutPRURLAcceptsArtifacts(t *testing.T) {
+	t.Parallel()
+	rc, st, root := newSignalContextWithArtifacts(t, "")
+	ctx := context.Background()
+
+	res, err := NewSignalCompletion().Handle(ctx, rc, testTeam, mustJSON(t, map[string]any{
+		"status":  "done",
+		"summary": "synthesized top 3 ideas",
+		"artifacts": map[string]any{
+			"top_3_ideas": map[string]any{"type": "json", "content": []map[string]string{{"title": "idea 1"}}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	var decoded signalCompletionResult
+	if err := json.Unmarshal(res, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !decoded.OK || decoded.Status != "done" {
+		t.Fatalf("result: %+v", decoded)
+	}
+
+	ts := loadTeamState(t, st)
+	if ts.SignalStatus != "done" {
+		t.Fatalf("SignalStatus = %q, want done", ts.SignalStatus)
+	}
+	if ts.SignalPRURL != "" {
+		t.Fatalf("SignalPRURL should be empty, got %q", ts.SignalPRURL)
+	}
+	if !reflect.DeepEqual(ts.Artifacts, []string{"top_3_ideas"}) {
+		t.Fatalf("Artifacts = %v, want [top_3_ideas]", ts.Artifacts)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, testTeam, "top_3_ideas.json")); statErr != nil {
+		t.Fatalf("expected artifact file: %v", statErr)
+	}
+}
+
 func TestSignalCompletionBlockedRequiresReason(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -330,11 +373,6 @@ func TestSignalCompletionRejectsBadInput(t *testing.T) {
 			name:    "missing summary",
 			payload: map[string]string{"status": "done"},
 			want:    "summary is required",
-		},
-		{
-			name:    "done without pr_url",
-			payload: map[string]string{"status": "done", "summary": "shipped"},
-			want:    "pr_url is required when status=done",
 		},
 		{
 			name:    "empty input",
