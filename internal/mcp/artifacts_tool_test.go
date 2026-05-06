@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
 	"github.com/itsHabib/orchestra/internal/artifacts"
 )
 
@@ -229,8 +231,8 @@ func TestHandleReadArtifact_HappyPath(t *testing.T) {
 	if out.Phase != "design" {
 		t.Errorf("Phase = %q, want design", out.Phase)
 	}
-	if string(out.Content) != `"the doc"` {
-		t.Errorf("Content = %s, want %q", out.Content, `"the doc"`)
+	if got, ok := out.Content.(string); !ok || got != "the doc" {
+		t.Errorf("Content = %v (%T), want string %q", out.Content, out.Content, "the doc")
 	}
 
 	res2, out2, err := fx.srv.handleReadArtifact(ctx, nil, ReadArtifactArgs{
@@ -245,8 +247,107 @@ func TestHandleReadArtifact_HappyPath(t *testing.T) {
 	if out2.Type != "json" {
 		t.Errorf("Type = %q, want json", out2.Type)
 	}
-	if string(out2.Content) != `{"k":"v"}` {
-		t.Errorf("Content = %s, want %q", out2.Content, `{"k":"v"}`)
+	got, ok := out2.Content.(map[string]any)
+	if !ok {
+		t.Fatalf("Content = %T, want map[string]any", out2.Content)
+	}
+	if got["k"] != "v" {
+		t.Errorf("Content[k] = %v, want %q", got["k"], "v")
+	}
+}
+
+// TestHandleReadArtifact_OutputValidatesAgainstInferredSchema locks in the
+// Phase A dogfood §C4 fix: the SDK's reflection-based schema generator
+// previously inferred `content` as `array of integer` (the underlying
+// []byte of json.RawMessage), so every real JSON-array or JSON-object
+// artifact failed post-marshal output validation. The fix declares
+// Content as `any`, which the generator translates to an unrestricted
+// schema. This test exercises the full marshal→resolve→validate loop the
+// SDK runs internally for every tool result, against the three artifact
+// shapes that exist in the wild: text (JSON string), JSON object, JSON
+// array. If any of these regresses the integer-items shape, validation
+// here will fail with the same error the chat-side LLM saw in production.
+func TestHandleReadArtifact_OutputValidatesAgainstInferredSchema(t *testing.T) {
+	t.Parallel()
+	fx := seedRunForArtifacts(t)
+	resolved := resolvedReadArtifactSchema(t)
+	for _, s := range seedReadArtifactShapes(t, fx) {
+		t.Run(s.key, func(t *testing.T) {
+			assertReadArtifactValidates(t, fx, resolved, s.key)
+		})
+	}
+}
+
+// readArtifactSeed names one (key, phase, type, content) tuple to seed under
+// the fixture's "alpha" agent. Kept as a flat tuple so the surrounding test
+// stays inside gocognit's threshold.
+type readArtifactSeed struct {
+	key, phase string
+	typ        artifacts.Type
+	content    string
+}
+
+func seedReadArtifactShapes(t *testing.T, fx artifactFixture) []readArtifactSeed {
+	t.Helper()
+	store := artifacts.NewFileStore(artifactsRoot(fx.wsDir))
+	seed := []readArtifactSeed{
+		{"design_doc", "design", artifacts.TypeText, `"the doc"`},
+		{"verdict", "review", artifacts.TypeJSON, `{"decision":"proceed","score":0.92}`},
+		{"top_5_ideas", "design", artifacts.TypeJSON, `[{"title":"a","rank":1},{"title":"b","rank":2}]`},
+	}
+	ctx := context.Background()
+	for _, s := range seed {
+		if _, err := store.Put(ctx, fx.runID, "alpha", s.key, s.phase, artifacts.Artifact{
+			Type:    s.typ,
+			Content: json.RawMessage(s.content),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", s.key, err)
+		}
+	}
+	return seed
+}
+
+// resolvedReadArtifactSchema builds the inferred output schema the same way
+// the SDK does at AddTool time, then resolves it for validation. If Content
+// ever regresses to json.RawMessage (or anything else inferred as a typed
+// array), this schema will gain `items: integer` and validation against a
+// JSON-array artifact result will fail — the exact symptom the dogfood hit.
+func resolvedReadArtifactSchema(t *testing.T) *jsonschema.Resolved {
+	t.Helper()
+	schema, err := jsonschema.For[ReadArtifactResult](nil)
+	if err != nil {
+		t.Fatalf("infer schema: %v", err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve schema: %v", err)
+	}
+	return resolved
+}
+
+func assertReadArtifactValidates(t *testing.T, fx artifactFixture, resolved *jsonschema.Resolved, key string) {
+	t.Helper()
+	res, out, err := fx.srv.handleReadArtifact(context.Background(), nil, ReadArtifactArgs{
+		RunID: fx.runID, Agent: "alpha", Key: key,
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError: %s", resultText(res))
+	}
+	// Round-trip through JSON the same way the SDK does before validation:
+	// marshal the typed Out, then validate the bytes.
+	outBytes, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var instance any
+	if err := json.Unmarshal(outBytes, &instance); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := resolved.Validate(instance); err != nil {
+		t.Fatalf("output validation: %v\nschema rejected: %s", err, outBytes)
 	}
 }
 

@@ -61,13 +61,17 @@ type ReadArtifactArgs struct {
 	Key   string `json:"key" jsonschema:"artifact key from get_artifacts or RunView.Agents[].Artifacts[]"`
 }
 
-// ReadArtifactResult is the read_artifact tool output. Content is the raw
-// JSON the agent emitted: a JSON string for type=text, an arbitrary JSON value
-// for type=json. Clients decide how to deserialize.
+// ReadArtifactResult is the read_artifact tool output. Content is the
+// decoded JSON value the agent emitted — a string for type=text, any JSON
+// shape (object/array/scalar) for type=json. The field is typed as `any`
+// so the SDK's reflection-based schema generator emits an unrestricted
+// content schema; declaring it as [json.RawMessage] makes the SDK infer
+// `array of integer` (its underlying []byte) and the post-marshal output
+// validation rejects every real artifact (Phase A dogfood §C4).
 type ReadArtifactResult struct {
-	Type    string          `json:"type"`
-	Phase   string          `json:"phase,omitempty"`
-	Content json.RawMessage `json:"content"`
+	Type    string `json:"type"`
+	Phase   string `json:"phase,omitempty"`
+	Content any    `json:"content"`
 }
 
 func (s *Server) handleGetArtifacts(ctx context.Context, _ *mcp.CallToolRequest, args GetArtifactsArgs) (*mcp.CallToolResult, GetArtifactsResult, error) {
@@ -132,11 +136,18 @@ func (s *Server) handleReadArtifact(ctx context.Context, _ *mcp.CallToolRequest,
 		}
 		return errResult("read artifact: %v", err), ReadArtifactResult{}, nil
 	}
+	// Decode the raw JSON into a Go value so the SDK marshals it back as the
+	// agent's intended shape (string, object, array, scalar) rather than as
+	// the []byte that backs json.RawMessage. See ReadArtifactResult.Content.
+	var content any
+	if err := json.Unmarshal(art.Content, &content); err != nil {
+		return errResult("decode artifact %q content: %v", args.Key, err), ReadArtifactResult{}, nil
+	}
 	return textResult(fmt.Sprintf("artifact %s/%s (%s, %d bytes)", args.Agent, args.Key, art.Type, meta.Size)),
 		ReadArtifactResult{
 			Type:    string(art.Type),
 			Phase:   meta.Phase,
-			Content: art.Content,
+			Content: content,
 		}, nil
 }
 
