@@ -33,9 +33,23 @@ type RunArgs struct {
 // `agents:` is the v3 canonical key; `teams:` is accepted as an alias by
 // [InlineDAG.UnmarshalJSON] so v2 clients keep working.
 type InlineDAG struct {
-	ProjectName string        `json:"project_name,omitempty"`
-	Backend     string        `json:"backend,omitempty" jsonschema:"\"local\" (default) or \"managed_agents\""`
-	Agents      []InlineAgent `json:"agents,omitempty"`
+	ProjectName string `json:"project_name,omitempty"`
+	Backend     string `json:"backend,omitempty" jsonschema:"\"local\" (default) or \"managed_agents\""`
+
+	// RequiresCredentials applies to every agent in the run; the engine
+	// merges it with each agent's per-agent list and resolves the union via
+	// internal/credentials at run start. Mirrors Defaults.RequiresCredentials
+	// in the on-disk YAML schema.
+	RequiresCredentials []string `json:"requires_credentials,omitempty" jsonschema:"credential names every agent in this run needs. Resolved via internal/credentials at run start; failing fast on any missing name."`
+
+	// Files applies to every agent. Each entry is fanned out onto the
+	// resolved config.Agent.Files list at toConfig time so the engine sees
+	// the same per-agent shape it gets from on-disk YAML. Paths must be
+	// absolute — there is no source YAML directory to resolve relative
+	// entries against on the inline path.
+	Files []config.FileMount `json:"files,omitempty" jsonschema:"file mounts shared by every agent. Each FileMount.Path must be absolute. Phase A: managed_agents only."`
+
+	Agents []InlineAgent `json:"agents,omitempty"`
 }
 
 // UnmarshalJSON accepts the legacy `teams:` key alongside `agents:` so v2
@@ -50,10 +64,12 @@ func (d *InlineDAG) UnmarshalJSON(data []byte) error {
 	}
 	hasAgents, hasTeams := keys.Agents, keys.Teams
 	type rawInlineDAG struct {
-		ProjectName string        `json:"project_name,omitempty"`
-		Backend     string        `json:"backend,omitempty"`
-		Agents      []InlineAgent `json:"agents"`
-		Teams       []InlineAgent `json:"teams"`
+		ProjectName         string             `json:"project_name,omitempty"`
+		Backend             string             `json:"backend,omitempty"`
+		RequiresCredentials []string           `json:"requires_credentials,omitempty"`
+		Files               []config.FileMount `json:"files,omitempty"`
+		Agents              []InlineAgent      `json:"agents"`
+		Teams               []InlineAgent      `json:"teams"`
 	}
 	var raw rawInlineDAG
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -64,6 +80,8 @@ func (d *InlineDAG) UnmarshalJSON(data []byte) error {
 	}
 	d.ProjectName = raw.ProjectName
 	d.Backend = raw.Backend
+	d.RequiresCredentials = raw.RequiresCredentials
+	d.Files = raw.Files
 	d.Agents = raw.Agents
 	if hasTeams {
 		d.Agents = raw.Teams
@@ -99,6 +117,20 @@ type InlineAgent struct {
 	Role   string   `json:"role" jsonschema:"lead role/persona, e.g. designer, engineer, reviewer"`
 	Prompt string   `json:"prompt" jsonschema:"free-form text describing what the agent should accomplish; folded into a single Task.summary"`
 	Deps   []string `json:"deps,omitempty" jsonschema:"agent names this agent depends on"`
+
+	// RequiresCredentials extends the top-level InlineDAG.RequiresCredentials
+	// for this agent. The engine sees the union (deduped + sorted) of both
+	// lists at run start.
+	RequiresCredentials []string `json:"requires_credentials,omitempty" jsonschema:"credential names this agent needs in addition to the top-level requires_credentials."`
+
+	// Files extends the top-level InlineDAG.Files for this agent. Paths
+	// must be absolute (same reason as the top-level field).
+	Files []config.FileMount `json:"files,omitempty" jsonschema:"file mounts for this agent. Each FileMount.Path must be absolute. Phase A: managed_agents only."`
+
+	// EnvironmentOverride substitutes backend-level environment fields for
+	// this agent only — currently just repository, used by recipes that have
+	// most agents share one repo but a single agent push to a different one.
+	EnvironmentOverride *config.EnvironmentOverride `json:"environment_override,omitempty" jsonschema:"per-agent environment override; currently just repository (override the backend-level managed_agents repository for this one agent)."`
 }
 
 // RunResult is the run tool output.
@@ -177,6 +209,12 @@ func (a *RunArgs) resolveConfig() (*config.Config, error) {
 // toConfig folds the simplified InlineDAG shape into a full config.Config.
 // The richer shape (custom tools, skills, member roster, multi-task agents) is
 // reachable through ConfigPath and is intentionally out of reach inline.
+//
+// Inline file mounts must carry absolute paths — the on-disk YAML loader
+// resolves relative paths against the YAML file's directory, but the inline
+// path has no source file to resolve against. The MCP server's CWD is not a
+// useful anchor either (it depends on whichever process spawned the server).
+// Callers compose absolute paths chat-side.
 func (d *InlineDAG) toConfig(projectOverride string) (*config.Config, error) {
 	if d == nil {
 		return nil, errors.New("nil inline_dag")
@@ -184,9 +222,15 @@ func (d *InlineDAG) toConfig(projectOverride string) (*config.Config, error) {
 	if len(d.Agents) == 0 {
 		return nil, errors.New("inline_dag.agents must have at least one agent")
 	}
+	if err := validateInlineFiles("inline_dag.files", d.Files); err != nil {
+		return nil, err
+	}
 	cfg := &config.Config{
 		Name:    d.ProjectName,
 		Backend: config.Backend{Kind: d.Backend},
+		Defaults: config.Defaults{
+			RequiresCredentials: append([]string(nil), d.RequiresCredentials...),
+		},
 	}
 	if projectOverride != "" {
 		cfg.Name = projectOverride
@@ -195,7 +239,8 @@ func (d *InlineDAG) toConfig(projectOverride string) (*config.Config, error) {
 		cfg.Name = "mcp-run"
 	}
 	cfg.Agents = make([]config.Agent, len(d.Agents))
-	for i, a := range d.Agents {
+	for i := range d.Agents {
+		a := &d.Agents[i]
 		if a.Name == "" {
 			return nil, fmt.Errorf("inline_dag.agents[%d].name is required", i)
 		}
@@ -205,14 +250,51 @@ func (d *InlineDAG) toConfig(projectOverride string) (*config.Config, error) {
 		if a.Prompt == "" {
 			return nil, fmt.Errorf("inline_dag.agents[%d].prompt is required (got agent %q)", i, a.Name)
 		}
-		cfg.Agents[i] = config.Agent{
-			Name:      a.Name,
-			Lead:      config.Lead{Role: a.Role},
-			DependsOn: append([]string(nil), a.Deps...),
-			Tasks:     []config.Task{{Summary: a.Prompt}},
+		if err := validateInlineFiles(fmt.Sprintf("inline_dag.agents[%d].files", i), a.Files); err != nil {
+			return nil, err
 		}
+		agent := config.Agent{
+			Name:                a.Name,
+			Lead:                config.Lead{Role: a.Role},
+			DependsOn:           append([]string(nil), a.Deps...),
+			Tasks:               []config.Task{{Summary: a.Prompt}},
+			RequiresCredentials: append([]string(nil), a.RequiresCredentials...),
+			Files:               mergeFileMounts(d.Files, a.Files),
+		}
+		if a.EnvironmentOverride != nil {
+			agent.EnvironmentOverride = *a.EnvironmentOverride
+		}
+		cfg.Agents[i] = agent
 	}
 	return cfg, nil
+}
+
+// validateInlineFiles enforces the absolute-path requirement on inline file
+// mounts. The error message names the mount entry (path prefix + index) so a
+// chat-side composer can fix the right one without re-reading the whole DAG.
+func validateInlineFiles(prefix string, mounts []config.FileMount) error {
+	for i, m := range mounts {
+		if m.Path == "" {
+			return fmt.Errorf("%s[%d].path is required", prefix, i)
+		}
+		if !filepath.IsAbs(m.Path) {
+			return fmt.Errorf("%s[%d].path must be absolute (got %q)", prefix, i, m.Path)
+		}
+	}
+	return nil
+}
+
+// mergeFileMounts concatenates the top-level shared mounts with the per-agent
+// mounts. Returns a fresh slice so neither input is aliased into the resolved
+// config (mutating either later would otherwise change the agent's view).
+func mergeFileMounts(shared, agent []config.FileMount) []config.FileMount {
+	if len(shared) == 0 && len(agent) == 0 {
+		return nil
+	}
+	out := make([]config.FileMount, 0, len(shared)+len(agent))
+	out = append(out, shared...)
+	out = append(out, agent...)
+	return out
 }
 
 func loadConfigFromPath(path, projectOverride string) (*config.Config, error) {
