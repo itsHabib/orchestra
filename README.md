@@ -1,389 +1,303 @@
 # Orchestra
 
-A multi-agent autonomous DAG workflow engine for AI agents. Define agents, tasks, and dependencies in a single `orchestra.yaml` — Orchestra builds a dependency graph, executes agents tier-by-tier (parallel within a tier, sequential across tiers), and flows results forward so downstream agents get full context of what upstream agents built.
+Define a set of AI agents, the tasks each one owns, and the dependencies between them in a single `orchestra.yaml`. Orchestra builds a dependency graph, runs the agents tier-by-tier — parallel within a tier, sequential across tiers — and flows each completed agent's output into the prompts of the agents that depend on it. Each agent is either a `claude -p` subprocess on the host (`backend: local`) or a sandboxed [Managed Agents](https://platform.claude.com/docs/en/managed-agents) session (`backend: managed_agents`).
 
-> **v3 naming.** Agents replace the v2 noun "teams" in YAML, the MCP surface, and the SDK. The legacy `teams:` key still parses (with a one-shot deprecation warning); pkg/orchestra exposes `Team*` aliases for one minor version. New work should use `agents:` and the `Agent*` types. Removed in v3.x.
+There are two ways to drive it:
 
-What makes it interesting:
+- **CLI** — `orchestra run project.yaml` validates the config, builds the DAG, executes every tier, and prints a summary. This is the human-driver path.
+- **MCP server** — `orchestra mcp` exposes the run primitives (`run`, `list_runs`, `get_run`, `cancel_run`, `get_artifacts`, `read_artifact`, `steer`) to a parent Claude Code session so the chat-side LLM spawns runs, polls them, reads what agents produced, and steers them — without a separate human at the terminal.
 
-- **Parallel agent execution** — independent agents run concurrently as separate Claude subprocesses or managed-agents sessions, each with their own role, context, and tasks.
-- **Inter-agent data flow via signal events** — agents emit structured outputs at completion via `signal_completion(artifacts={...})`. Orchestra captures the payload host-side; downstream agents and the chat-side LLM consume it via `mcp__orchestra__get_artifacts` / `read_artifact`. The v2 file message bus was removed in v3 phase A (see [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md)).
-- **Steering via session events** — the chat-side LLM can inject a user message into any running managed-agents session via `mcp__orchestra__steer(run_id, agent, content)`. Local-backend steering is deferred to v3.x; restart with appended context as the workaround.
-- **DAG-driven flow** — results from completed tiers are injected into downstream prompts, so later agents build on actual output rather than assumptions.
-
-```
+```bash
 orchestra run project.yaml
 ```
 
+> **v3 naming.** Agents replaced the v2 noun "teams" across YAML, the MCP surface, and the SDK. The legacy `teams:` key still parses (with a one-shot deprecation warning); `pkg/orchestra` keeps `Team*` aliases for the migration window. New work uses `agents:` and the `Agent*` types. The aliases are removed in v3.x.
+
+## Why it exists
+
+Orchestra is a DAG runner for agents and nothing more. Its job is: topologically sort agents into tiers, run a tier in parallel, inject completed-dependency output into the next tier's prompts, and persist run state. The core stays minimal and unopinionated on purpose — richer behavior ships as add-ons, not as core features.
+
+What stays out of scope:
+
+- **No autonomous coordinator.** The v2 coordinator agent was removed. The chat-side LLM (driving via MCP) or a human plays coordinator. `coordinator: { enabled: true }` still parses but the spawn is suppressed with a deprecation warning.
+- **No general message bus.** The v2 file message bus is gone. Cross-agent data flows one way: an upstream agent's output is injected into downstream prompts. Structured payloads travel via `signal_completion(artifacts={...})`; the chat-side LLM reads them with `read_artifact`. A human nudges a running agent with `steer` / `orchestra msg`.
+- **No scheduler, no queue, no retries-as-a-service.** Orchestra runs a graph once and exits. Re-running and recurrence live in whatever drives it.
+- **No model/provider abstraction.** Agents are Claude — `claude -p` locally or Managed Agents remotely.
+
+## Status
+
+Dogfooded WIP. The v3 "phase A" surface — the agent rename, artifact substrate, `steer`, file mounts, the MCP server, the two backends, and the Go SDK — has landed and been self-dogfooded (see [docs/feedback-phase-a-dogfood.md](docs/feedback-phase-a-dogfood.md)). Known gaps, all tracked:
+
+- The Go SDK at `pkg/orchestra` is labelled **experimental**: the surface may change without semver signaling until it is marked stable. See [CHANGELOG.md](CHANGELOG.md).
+- `steer` works only on `backend: managed_agents`. Local-backend steering is deferred to v3.x; restart the run with appended context as the workaround.
+- `requires_credentials` resolution works end-to-end on `backend: local`, but on `managed_agents` the secret does not reach the sandbox — the Managed Agents SDK does not yet expose per-session env injection. GitHub is the exception (the `repository` resource path works). Tracked at [issues/42](https://github.com/itsHabib/orchestra/issues/42).
+- `orchestra mcp --transport http` listens with **no authentication**; loopback only, trusted hosts only. HTTP auth is a follow-up.
+
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph CLI["CLI (cobra)"]
-        validate["validate"]
-        init["init"]
-        run["run"]
-        spawn["spawn"]
-        status["status"]
-        runs["runs"]
-        plan["plan"]
-        debug["debug"]
-    end
-
-    yaml[/"orchestra.yaml"/] --> CLI
-
-    run --> Orchestration
-
-    subgraph Orchestration["Orchestration Loop"]
-        direction TB
-        WS_INIT["workspace.Init()
-        seed state.json + registry.json"] --> DAG_BUILD
-
-        DAG_BUILD["dag.BuildTiers()
-        Kahn's algorithm → [][]string tiers"] --> TIER_LOOP
-
-        subgraph TIER_LOOP["Tier Execution Loop"]
-            direction TB
-            READ_STATE["ws.ReadState()
-            snapshot completed results"] --> PARALLEL
-
-            subgraph PARALLEL["Parallel per team (goroutines)"]
-                direction LR
-                INJECT["injection.BuildPrompt()
-                role + context + tasks + deps"] --> SPAWN_PROC
-                SPAWN_PROC["spawner.Spawn()
-                claude -p --output-format stream-json"]
-            end
-
-            PARALLEL --> COLLECT["Collect results
-            update state + registry + results/"]
-        end
-    end
-
-    subgraph Workspace[".orchestra/"]
-        STATE["state.json
-        shared team states"]
-        REGISTRY["registry.json
-        execution metadata"]
-        RESULTS["results/<team>.json
-        full TeamResult"]
-        LOGS["logs/<team>.log
-        raw NDJSON stream"]
-    end
-
-    COLLECT --> STATE
-    COLLECT --> REGISTRY
-    COLLECT --> RESULTS
-    SPAWN_PROC --> LOGS
-    READ_STATE -.->|reads| STATE
-
-    subgraph Agents["Claude Subprocesses"]
-        direction LR
-        A1["claude -p
-        Team A Lead"]
-        A2["claude -p
-        Team B Lead"]
-        A3["claude -p
-        Team C Lead"]
-    end
-
-    SPAWN_PROC --> Agents
-
-    style yaml fill:#f9f,stroke:#333
-    style Workspace fill:#e8f4e8,stroke:#2d8a2d
-    style Agents fill:#e8e8f4,stroke:#2d2d8a
-    style CLI fill:#f4e8e8,stroke:#8a2d2d
+```
+                 orchestra.yaml
+                       │
+         ┌─────────────┴──────────────┐
+         │                            │
+   CLI (cobra)                  MCP server
+   run / plan / status          run / list_runs / get_run
+   spawn / runs / sessions      cancel_run / steer
+   msg / interrupt / mcp        get_artifacts / read_artifact
+   skills / credentials                 │
+         │                              │
+         └──────────────┬───────────────┘
+                        ▼
+              pkg/orchestra.Run
+   ┌────────────────────────────────────────────┐
+   │ dag.BuildTiers (Kahn) → [][]string tiers     │
+   │ for each tier:                               │
+   │   snapshot state → inject deps into prompts  │
+   │   spawn agents in parallel (goroutines)      │
+   │   collect results → persist state            │
+   └────────────────────────────────────────────┘
+         │ local backend          │ managed_agents backend
+         ▼                        ▼
+   claude -p subprocess     Beta.Sessions container
+   (host filesystem)        (sandboxed; optional repo mount)
+         │                        │
+         └──────────┬─────────────┘
+                    ▼
+              .orchestra/
+   state.json · per-agent results · logs · artifacts · archive
 ```
 
-### DAG Execution
+| Package | Responsibility |
+|---------|----------------|
+| `cmd/` | Cobra CLI commands |
+| `internal/config/` | YAML parsing + two-level validation (hard errors / soft warnings) |
+| `internal/dag/` | Topological sort (Kahn's algorithm) → execution tiers |
+| `internal/injection/` | Prompt construction (role + context + tasks + dependency results) |
+| `internal/spawner/` | Spawns `claude -p --output-format stream-json`; Managed Agents spawner |
+| `internal/agents/`, `internal/machost/` | Managed Agents client, session lifecycle, cache prune/reconcile |
+| `internal/artifacts/` | Host-side persistence for `signal_completion(artifacts={...})` |
+| `internal/files/` | Anthropic Files API uploader for agent-declared file mounts |
+| `internal/ghhost/` | GitHub PAT resolution + branch/PR flow for repo-backed MA agents |
+| `internal/run/` | Run lifecycle service (lock, archive, seed state, agent transitions) |
+| `internal/store/` | Persistence: run state, agent/env registries, run locks (memstore + filestore) |
+| `internal/mcp/` | MCP server + tool handlers |
+| `internal/credentials/`, `internal/skills/`, `internal/customtools/` | Credential store, skills cache, host-side custom tools |
+| `internal/fsutil/`, `internal/workspace/`, `internal/log/` | Atomic file I/O, workspace helpers, NDJSON logging |
+| `pkg/orchestra/` | Experimental Go SDK — the same code path the CLI uses |
 
-Teams execute in topologically-sorted tiers. Teams within a tier run in parallel; tiers run sequentially. Results from completed tiers are injected into the prompts of downstream teams.
-
-```mermaid
-flowchart LR
-    subgraph Tier0["Tier 0"]
-        backend["backend"]
-        auth["auth"]
-    end
-
-    subgraph Tier1["Tier 1"]
-        frontend["frontend"]
-        devops["devops"]
-    end
-
-    subgraph Tier2["Tier 2"]
-        integration["integration"]
-    end
-
-    backend --> frontend
-    backend --> devops
-    auth --> frontend
-    frontend --> integration
-    devops --> integration
-
-    style Tier0 fill:#d4edda,stroke:#28a745
-    style Tier1 fill:#fff3cd,stroke:#ffc107
-    style Tier2 fill:#d1ecf1,stroke:#17a2b8
-```
-
-### Prompt Injection Flow
-
-Each team receives a constructed prompt based on its configuration and execution context:
-
-```mermaid
-flowchart LR
-    ROLE["Lead Role"] --> PROMPT
-    CTX["Technical Context"] --> PROMPT
-    TASKS["Tasks + Deliverables
-    + Verify Commands"] --> PROMPT
-    MEMBERS["Team Members
-    (if team mode)"] --> PROMPT
-    DEPS["Completed Dependency
-    Results from state.json"] --> PROMPT
-
-    PROMPT["BuildPrompt()"] --> CLAUDE["claude -p"]
-
-    style PROMPT fill:#ffeaa7,stroke:#fdcb6e
-```
-
-## Installation
+## Install
 
 ```bash
-# Build
-make build
-
-# Install to $GOBIN
-make install
+make build      # build ./orchestra
+make install    # build + copy to $GOBIN
 ```
 
-Requires Go 1.22+ and the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed.
+Requires Go 1.26+ and the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) on `PATH`. `backend: managed_agents` additionally requires `ANTHROPIC_API_KEY`.
 
-## Quick Start
+## Quick start
 
-**1. Create an `orchestra.yaml`:**
+**1. Write an `orchestra.yaml`** (`backend: local` is the default):
 
 ```yaml
-name: "my-saas-app"
+name: my-saas-app
 
 defaults:
   model: sonnet
   max_turns: 200
   permission_mode: acceptEdits
   timeout_minutes: 45
-  inbox_poll_interval: 5m
 
 agents:
   - name: backend
     lead:
-      role: "Backend Lead"
+      role: Backend Lead
       model: opus
     context: |
       Go 1.22, Chi router, PostgreSQL, sqlc
     members:
-      - role: "API Engineer"
-        focus: "REST endpoints, request validation"
-      - role: "DB Engineer"
-        focus: "Postgres schema, migrations, queries"
+      - role: API Engineer
+        focus: REST endpoints, request validation
+      - role: DB Engineer
+        focus: Postgres schema, migrations, queries
     tasks:
-      - summary: "Design and implement REST API"
-        details: "Create Chi router with CRUD endpoints for users and projects"
+      - summary: Design and implement REST API
+        details: Create a Chi router with CRUD endpoints for users and projects
         deliverables:
-          - "src/api/router.go"
-          - "src/api/handlers/"
-        verify: "go build ./..."
+          - src/api/router.go
+          - src/api/handlers/
+        verify: go build ./...
 
   - name: frontend
     depends_on: [backend]
     lead:
-      role: "Frontend Lead"
+      role: Frontend Lead
     context: |
       React 18, TypeScript, Tailwind CSS
     tasks:
-      - summary: "Build dashboard UI"
-        details: "Create React components consuming the backend API"
+      - summary: Build dashboard UI
+        details: Create React components consuming the backend API
         deliverables:
-          - "web/src/components/"
-        verify: "npm run build"
+          - web/src/components/
+        verify: npm run build
 ```
 
-> The legacy `teams:` key parses with a deprecation warning; the v3 canonical key is `agents:`.
-
-**2. Validate:**
+**2. Validate, preview, run:**
 
 ```bash
 orchestra validate orchestra.yaml
-```
-
-**3. Preview the execution plan:**
-
-```bash
-orchestra plan orchestra.yaml
-orchestra plan orchestra.yaml --show-prompts   # see full prompts
-orchestra plan orchestra.yaml --json           # structured JSON output
-```
-
-**4. Run:**
-
-```bash
+orchestra plan orchestra.yaml                 # DAG order without running
+orchestra plan orchestra.yaml --show-prompts  # full prompt each agent would receive
 orchestra run orchestra.yaml
 ```
 
+Runnable examples live under [`examples/`](examples/): `miniflow`, `taskqueue`, `url-shortener` (local backend); `ma_multi_team`, `ma_repo_relay` (managed agents).
+
+## CLI commands
+
+| Command | What it does |
+|---------|--------------|
+| `orchestra validate <config>` | Parse, validate, print a config summary. Exits 1 on hard errors. |
+| `orchestra plan <config>` | Show the DAG execution order without running. `--show-prompts`, `--json`. |
+| `orchestra init <config>` | Validate and create the `.orchestra/` workspace. |
+| `orchestra run <config>` | Build the DAG, execute every tier, print the summary. |
+| `orchestra spawn <config> --agent <name>` | Spawn a single agent; print its raw result JSON. (`--team` is the deprecated alias.) |
+| `orchestra status [--workspace <path>]` | Per-agent status table: status, tokens, duration. |
+| `orchestra runs ls` | List recent active and archived runs (status, cost, duration, start time). |
+| `orchestra runs show <run-id>` | One run's agents, DAG tier, cached MA agent/env/session IDs. |
+| `orchestra runs prune [--older-than 720h] [--apply]` | Dry-run stale MA cache pruning in a run context; `--apply` deletes. |
+| `orchestra mcp [--transport stdio\|http]` | Start the MCP server (parent-Claude entry point). |
+| `orchestra msg --team <name> --message <text> [--no-retry]` | Deliver a `user.message` to a running MA agent. See [Steering](#steering-a-run). |
+| `orchestra interrupt --team <name>` | Deliver a `user.interrupt` to a running MA agent (always at-most-once). |
+| `orchestra sessions ls [--all]` | List agents in the active run with their MA session info. |
+| `orchestra skills upload\|ls\|sync` | Manage skills registered with the Anthropic Skills API (MA backend). |
+| `orchestra credentials set\|get\|list\|delete` | Manage credentials Orchestra injects into agent sessions. |
+| `orchestra debug agents ls\|prune` | Low-level MA cache inspection. |
+
+### MCP tools
+
+`orchestra mcp` registers these tools for a parent Claude Code session (stdio by default):
+
+| Tool | What it does |
+|------|--------------|
+| `run` | Spawn a run subprocess from an `inline_dag` or a `config_path`. Returns the run id. |
+| `list_runs` | List MCP-managed runs with derived status and per-agent `signal_completion` outcomes. |
+| `get_run` | One run's current status and per-agent breakdown. |
+| `cancel_run` | Request cancellation (local or MA); records it, signals the subprocess, waits for clean shutdown. |
+| `get_artifacts` | List artifacts an agent emitted via `signal_completion` (metadata only). |
+| `read_artifact` | Read one artifact's content (`{type, phase?, content}`). |
+| `steer` | Inject a `user.message` into a running MA agent's session. MA backend only. |
+
 ## Use as a Go library
 
-Orchestra exposes an experimental Go SDK at [`pkg/orchestra`](./pkg/orchestra). It is the same code path the CLI uses — `orchestra run` is now a thin wrapper around `orchestra.Run`. The SDK lets you drive a workflow from another Go program: load (or construct) a `Config`, call `Run`, inspect per-team results.
+`pkg/orchestra` is the same code path the CLI uses — `orchestra run` is a thin wrapper over `orchestra.Run`. Load (or build) a `Config`, call `Run`, inspect per-agent results.
 
 ```go
 import (
-    "context"
-    "fmt"
-    "os"
+	"context"
+	"fmt"
+	"os"
 
-    "github.com/itsHabib/orchestra/pkg/orchestra"
+	"github.com/itsHabib/orchestra/pkg/orchestra"
 )
 
 func main() {
-    res, err := orchestra.LoadConfig("orchestra.yaml")
-    if err != nil {
-        fmt.Fprintln(os.Stderr, err)
-        os.Exit(1)
-    }
-    for _, w := range res.Warnings {
-        fmt.Fprintln(os.Stderr, w)
-    }
-    if !res.Valid() {
-        fmt.Fprintln(os.Stderr, res.Err())
-        os.Exit(1)
-    }
+	res, err := orchestra.LoadConfig("orchestra.yaml")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err) // I/O or parse failure
+		os.Exit(1)
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
+	if !res.Valid() {
+		fmt.Fprintln(os.Stderr, res.Err())
+		os.Exit(1)
+	}
 
-    out, err := orchestra.Run(context.Background(), res.Config,
-        orchestra.WithLogger(orchestra.NewCLILogger()),
-    )
-    if err != nil {
-        fmt.Fprintln(os.Stderr, err)
-        os.Exit(1)
-    }
-    for name, team := range out.Teams {
-        fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
-            name, team.Status, team.NumTurns, team.CostUSD)
-    }
+	out, err := orchestra.Run(context.Background(), res.Config,
+		orchestra.WithEventHandler(func(ev orchestra.Event) {
+			orchestra.PrintEvent(os.Stderr, ev)
+		}),
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for name, agent := range out.Agents {
+		fmt.Printf("%s: %s (%d turns, %.2f USD)\n",
+			name, agent.Status, agent.NumTurns, agent.CostUSD)
+	}
 }
 ```
 
-The surface is currently labelled **experimental** — it may change without semver signaling until it is explicitly stabilized. See [CHANGELOG.md](./CHANGELOG.md) for the per-release surface change log.
+`Start` returns a `*Handle` for the streaming case (`Events()`, `Wait()`, `Cancel()`, `Send`, `Interrupt`). Options are `WithWorkspaceDir`, `WithEventBuffer`, `WithEventHandler`. The surface is **experimental** — see [CHANGELOG.md](CHANGELOG.md) for per-release changes.
 
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `orchestra validate <config>` | Parse, validate, and print config summary. Exits 1 on errors. |
-| `orchestra init <config>` | Validate config and create `.orchestra/` workspace directory. |
-| `orchestra run <config>` | Full orchestration: build DAG, execute all tiers, print summary. |
-| `orchestra spawn <config> --team <name>` | Spawn a single named team. Prints raw `TeamResult` JSON. |
-| `orchestra status [--workspace <path>]` | Print workspace status table (team, status, tokens, duration). Shows summary counts, live duration for running teams, and token totals. |
-| `orchestra runs ls [--workspace <path>]` | List recent active and archived workflow runs with status, cost, duration, and start time. |
-| `orchestra runs show <run-id> [--workspace <path>]` | Show one run's teams, DAG tier, cached MA agent/environment IDs, and session IDs. |
-| `orchestra runs prune [--workspace <path>] [--older-than 720h] [--apply] [--reconcile]` | Dry-run stale Managed Agents cache pruning in a workflow context; `--apply` deletes eligible cache records. |
-| `orchestra plan <config>` | Preview DAG execution order without running anything. |
-| `orchestra debug agents ls/prune` | Low-level Managed Agents cache inspection for debugging. |
-| `orchestra msg --team <name> --message <text> [--no-retry]` | Steer a running managed-agents team by delivering a `user.message` to its session. See [Steering a run](#steering-a-run). |
-| `orchestra interrupt --team <name>` | Send a `user.interrupt` to a running team's managed-agents session (always at-most-once). |
-| `orchestra sessions ls [--all]` | List teams in the active run with their managed-agents session info. Defaults to steerable rows; `--all` includes pending / done / failed / terminated. |
-
-### `plan` flags
-
-| Flag | Description |
-|------|-------------|
-| `--show-prompts` | Print the full prompt each team would receive |
-| `--json` | Emit the entire plan as structured JSON |
-
-## Configuration Reference
+## Configuration reference
 
 ### Top-level
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | Project name |
-| `defaults` | no | Default settings applied to all teams |
-| `coordinator` | no | Coordinator agent settings (see below) |
-| `teams` | yes | List of team definitions |
+| `agents` | yes | List of agent definitions (legacy `teams:` accepted with a warning) |
+| `backend` | no | `local` (default) or `managed_agents`; scalar or mapping form |
+| `defaults` | no | Defaults applied to every agent |
+| `coordinator` | no | Deprecated; the spawn is suppressed with a warning |
 
 ### `defaults`
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `model` | `sonnet` | Claude model for all teams |
-| `max_turns` | `200` | Max agentic turns per team |
-| `permission_mode` | `acceptEdits` | Permission mode for claude subprocess |
-| `timeout_minutes` | `30` | Timeout per team spawn |
-| `inbox_poll_interval` | `5m` | How often team leads poll their inbox for messages (Go duration format, e.g. `2m`, `30s`) |
-| `ma_concurrent_sessions` | `20` | Max in-flight `Beta.Sessions.New` calls under `backend: managed_agents`. Bounds the create rate against MA's 60/min org limit; ignored under `backend: local`. |
+| `model` | `sonnet` | Claude model for all agents |
+| `max_turns` | `200` | Max agentic turns per agent |
+| `permission_mode` | `acceptEdits` | Permission mode for the `claude` subprocess |
+| `timeout_minutes` | `30` | Per-agent spawn timeout |
+| `ma_concurrent_sessions` | `20` | Cap on in-flight `Beta.Sessions.New` calls (MA backend; bounds against the 60/min org limit) |
+| `requires_credentials` | — | Credential names every agent needs; resolved at run start (see [credentials](#credentials)) |
 
-### `teams[]`
+### `agents[]`
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | yes | Unique team identifier |
-| `lead.role` | yes | Role description injected into prompt |
-| `lead.model` | no | Model override for this team |
+| `name` | yes | Unique agent identifier |
+| `lead.role` | yes | Role description injected into the prompt |
+| `lead.model` | no | Model override for this agent |
 | `context` | no | Technical context injected verbatim |
-| `members` | no | If present, enables team-lead mode |
-| `tasks` | yes | At least one task required |
-| `depends_on` | no | List of team names this team depends on |
+| `tasks` | yes | At least one task (`summary` required; `details` and `verify` recommended; `deliverables` optional) |
+| `depends_on` | no | Names of agents this one depends on |
+| `members` | no | Sub-roles (`role` + `focus`); presence enables team-lead mode. Ignored with a warning under `managed_agents` |
+| `requires_credentials` | no | Credential names this agent needs (unioned with `defaults`) |
+| `skills` | no | Skills to attach to the MA agent (resolve via `orchestra skills upload`). MA backend only |
+| `custom_tools` | no | Host-side custom tools by registered name. MA backend only |
+| `files` | no | Host files to upload + mount read-only in the MA container. MA backend only |
+| `environment_override.repository` | no | Per-agent repository override (MA repo flow) |
 
-### `teams[].members[]`
+Validation is two levels. **Hard errors** block the run: empty project/agent name, no agents or no tasks, duplicate names, `depends_on` on an unknown agent, self-dependency, dependency cycle. **Soft warnings** print but don't block: an agent with > 5 members, a task/member ratio outside 2–8, a task missing `details` or `verify`, and the legacy-key / unsupported-field-under-backend notices.
 
-| Field | Description |
-|-------|-------------|
-| `role` | Member's role title |
-| `focus` | What this member specializes in |
+### Solo vs team-lead mode
 
-### `teams[].tasks[]`
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `summary` | yes | Short task description |
-| `details` | recommended | Specific requirements |
-| `deliverables` | no | Expected output files/directories |
-| `verify` | recommended | Shell command to confirm completion |
-
-### `coordinator`
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `false` | Spawn a long-lived coordinator agent alongside tier execution |
-| `model` | defaults.model | Model for the coordinator |
-| `max_turns` | `500` | Max turns for the coordinator session |
-
-When enabled, the coordinator monitors team progress, relays messages between teams, resolves blocking issues, and escalates decisions to `0-human`. The coordinator's timeout scales with project size (`timeout_minutes × number_of_tiers`).
-
-### Timeouts and force-kill
-
-Each team has a per-spawn timeout set by `defaults.timeout_minutes`. When a team exceeds its timeout, the process is cancelled. If it doesn't exit within 60 seconds of cancellation, it is force-killed to prevent hung processes from blocking tier progression.
+An agent's mode is determined by `members`. **Solo** (no `members`): the lead works through all tasks directly. **Team-lead** (`members` present): the lead spawns teammates via `TeamCreate`, assigns tasks, and verifies. Team-lead mode is `local`-backend only.
 
 ## Backends
 
-Orchestra runs teams on one of two backends, selected by the top-level `backend` field. The default is `local`.
+The top-level `backend` selects where agents run; the default is `local`. Cross-agent data flows the same way on both: each agent's final output is persisted under `.orchestra/results/<agent>/summary.md` and inlined into the prompts of downstream agents.
 
 ### `backend: local` (default)
 
-Each team is a `claude -p` subprocess running on the host. v3 phase A removed the v2 file message bus and the autonomous coordinator agent; cross-team data flows through dependency-result injection (each team's final `agent.message` persists to `.orchestra/results/<team>/summary.md` and is inlined into downstream prompts), and the chat-side LLM acts as the coordinator.
+Each agent is a `claude -p` subprocess on the host. Agents have direct host filesystem access; `skills`, `custom_tools`, and `files` are ignored with a warning.
 
 ### `backend: managed_agents`
 
-Each team is a [Managed Agents](https://platform.claude.com/docs/en/managed-agents) session — a sandboxed container provisioned through the Anthropic Beta SDK. Requires `ANTHROPIC_API_KEY`. Cross-team data flows through dependency-result injection: each team's final `agent.message` is persisted under `.orchestra/results/<team>/summary.md` and inlined into downstream prompts the same way the local backend does it.
+Each agent is a sandboxed [Managed Agents](https://platform.claude.com/docs/en/managed-agents) session provisioned through the Anthropic Beta SDK. Requires `ANTHROPIC_API_KEY`.
 
 ```yaml
 backend:
   kind: managed_agents
 defaults:
-  ma_concurrent_sessions: 20  # default; cap on in-flight Beta.Sessions.New
+  ma_concurrent_sessions: 20
 ```
 
-A canonical multi-team example lives under [`examples/ma_multi_team/`](examples/ma_multi_team/orchestra.yaml) — a `planner` team writes an outline that the dependent `analyst` team expands. An opt-in live-MA smoke fixture lives under [`test/integration/ma_multi_team/`](test/integration/ma_multi_team/README.md).
-
-#### Repo-backed artifacts
-
-Teams whose deliverable is code can push to a deterministic branch instead of returning a text summary. Add a `repository` block under `backend.managed_agents`:
+Agents whose deliverable is code can push to a deterministic branch instead of returning a text summary. Add a `repository` block:
 
 ```yaml
 backend:
@@ -392,149 +306,90 @@ backend:
     repository:
       url: https://github.com/your-user/your-repo
       mount_path: /workspace/repo  # default
-      default_branch: main          # default
-    open_pull_requests: false       # set true to also open PRs host-side
+      default_branch: main         # default
+    open_pull_requests: false      # true also opens PRs host-side
 ```
 
-Per-team overrides go on `teams[i].environment_override.repository`. Orchestra resolves a GitHub PAT at startup in this order: env `GITHUB_TOKEN` → `github_token` in `<user-config-dir>/orchestra/credentials.json` (the canonical home for all orchestra secrets) → `github_token` in `<user-config-dir>/orchestra/config.json` (legacy; emits a one-shot deprecation warning to stderr and will be removed in a future release). The token is never persisted by Orchestra. Each team is told to push to `orchestra/<team>-<run-id>`; downstream teams have each upstream's pushed branch mounted read-only at `/workspace/upstream/<upstream-team>/`. After the session reaches `end_turn`, Orchestra reads the branch via the GitHub API and records a `repository_artifacts[]` entry on the team in `state.json`.
+Per-agent overrides go on `agents[i].environment_override.repository`. Orchestra resolves a GitHub PAT at startup: `GITHUB_TOKEN` → `github_token` in `<user-config-dir>/orchestra/credentials.json` → `github_token` in `<user-config-dir>/orchestra/config.json` (legacy; warns). The token is never persisted. Each agent pushes to `orchestra/<agent>-<run-id>`; downstream agents get each upstream branch mounted read-only at `/workspace/upstream/<upstream-agent>/`. On `end_turn`, Orchestra reads the branch via the GitHub API and records a `repository_artifacts[]` entry on the agent in `state.json`.
 
-A two-team example lives under [`examples/ma_repo_relay/`](examples/ma_repo_relay/orchestra.yaml). An opt-in live-MA + GitHub fixture lives under [`test/integration/ma_repo_relay/`](test/integration/ma_repo_relay/README.md).
+Caveats under `managed_agents`: `members:` and `coordinator:` are ignored (warned). Cross-repo dependencies are out of scope (warned; upstream branch not mounted). Generic `requires_credentials` secrets do not reach the sandbox yet — see [Status](#status).
 
-Caveats under `managed_agents`:
+A two-agent repo example lives under [`examples/ma_repo_relay/`](examples/ma_repo_relay/orchestra.yaml); a text-only multi-agent example under [`examples/ma_multi_team/`](examples/ma_multi_team/orchestra.yaml). Opt-in live-MA fixtures live under [`test/integration/`](test/integration/).
 
-- `members:` and `coordinator:` are not supported (validation emits a warning and the orchestration ignores them).
-- Cross-repo dependencies (downstream team in a different repo than upstream) are out of scope; the validator emits a warning and the upstream branch is not mounted.
+## Inter-agent communication
 
-### Steering a run
-
-While `orchestra run` is going, three commands let a human nudge a running team without restarting the run:
-
-```bash
-orchestra sessions ls                                          # what's currently steerable
-orchestra msg --team <name> --message "use the JSON store"     # deliver a user.message
-orchestra interrupt --team <name>                              # deliver a user.interrupt
-```
-
-These commands talk directly to Managed Agents using the workspace's `state.json` to look up the team's session ID. The running `orchestra run` process picks up MA's echo of the steering event and logs it as `[team] human: <text>`.
-
-Mechanics worth knowing:
-
-- **Lock-free state read.** `msg`, `interrupt`, and `sessions ls` read `state.json` without acquiring the workspace's run lock. The atomic-write pattern keeps the snapshot consistent; the data may be stale but is never torn.
-- **Targeting.** `--team` is the team name from `orchestra.yaml`. The CLI looks up its current MA session ID itself.
-- **Status check.** `msg` and `interrupt` require the team to be in `running` state. The check is best-effort under TOCTOU: a team can transition between read and send, and MA's response is surfaced if that happens.
-- **Retry semantics.**
-  - `orchestra msg` defaults to **at-least-once with retry** on 429 / 5xx. In the rare 5xx-then-success case the agent may observe the same message twice. Pass `--no-retry` for at-most-once.
-  - `orchestra interrupt` is **always at-most-once** (no retries) — duplicate interrupts could double-cancel a recovery cycle.
-- **Backend gate.** All three commands require `backend: managed_agents`. Local-backend steering is tracked separately as P1.9-E.
-- **No-active-run behavior.** `msg` and `interrupt` exit non-zero with `no active orchestra run in <workspace>`. `sessions ls` exits 0 with an empty table — listing is permissive.
-
-## Inter-agent communication (v3)
-
-The v2-era file message bus (`.orchestra/messages/<team>/inbox/`) and the autonomous coordinator agent were removed in v3 phase A. Three primitives replace them:
+Three primitives carry everything the v2 message bus and coordinator used to:
 
 | Primitive | What it does | Surface |
 |---|---|---|
-| `signal_completion(artifacts={...})` | Agent emits structured outputs at completion. Orchestra captures the payload host-side. | Per-agent custom tool. Caps: 256KB / artifact, 4MB total / signal. |
-| `mcp__orchestra__get_artifacts` / `read_artifact` | Chat-side LLM (or downstream agents via Phase B recipes) reads what an agent produced. | MCP, read-only. |
-| `mcp__orchestra__steer(run_id, agent, content)` | Inject a `user.message` into a running managed-agents session — the v3 replacement for `send_message`. | MCP. Local-backend deferred to v3.x; restart with appended context. |
+| `signal_completion(artifacts={...})` | An agent emits structured outputs at completion; Orchestra captures them host-side. | Per-agent custom tool. Caps: 256 KB / artifact, 4 MB / signal. |
+| `get_artifacts` / `read_artifact` | The chat-side LLM reads what an agent produced. | MCP, read-only. |
+| `steer` / `orchestra msg` | Inject a `user.message` into a running MA agent's session. | MCP / CLI. MA backend only. |
 
-**Migration from v2:**
-- `send_message` (coordinator → agent) → `steer`.
-- `send_message` (inter-agent data) → `signal_completion(artifacts={...})` from the upstream agent + `read_artifact` (or Phase B recipe interpolation) on the downstream side.
-- `coordinator: { enabled: true }` is deprecated; the chat-side LLM (or a saved skill) plays the coordinator role. Existing yamls still parse; the spawn is suppressed with a warning.
+### Steering a run
 
-The cross-team `.orchestra/messages/` directory is no longer created on either backend, and `read_messages` / `send_message` MCP tools are no longer registered. See [DESIGN-v3](docs/DESIGN-v3-composable-workflows.md) §6 for the full rationale.
+While `orchestra run` is in flight, three commands nudge a running agent without restarting:
 
-## Claude Code Skills
+```bash
+orchestra sessions ls                                       # what's currently steerable
+orchestra msg --team <name> --message "use the JSON store"  # deliver a user.message
+orchestra interrupt --team <name>                           # deliver a user.interrupt
+```
 
-Orchestra ships with companion [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code) in `.claude/skills/` that are automatically available when you open the project in Claude Code. These are especially useful when acting as a human coordinator during a run.
+These read the workspace's `state.json` lock-free (atomic writes keep the snapshot consistent; data may be stale but is never torn) to look up the agent's MA session id, then talk to Managed Agents directly. The running `orchestra run` picks up MA's echo and logs it as `[agent] human: <text>`. `orchestra msg` is at-least-once with retry on 429/5xx (pass `--no-retry` for at-most-once); `orchestra interrupt` is always at-most-once. All three require `backend: managed_agents`.
+
+## Credentials
+
+`orchestra credentials set/get/list/delete` manages secrets stored under `<user-config-dir>/orchestra/credentials.json`. Names listed in `defaults.requires_credentials` or `agents[i].requires_credentials` are resolved at run start (failing fast on any missing name). On `backend: local` the resolved values reach `claude -p` via the child environment. On `managed_agents` they are resolved but **not** injected into the sandbox (SDK gap — see [Status](#status)); GitHub uses the `repository` resource path instead.
+
+## Companion skills
+
+Orchestra ships [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code) under `.claude/skills/`, available when you open the project in Claude Code:
 
 | Skill | Description |
 |-------|-------------|
-| `/orchestra-coord` | Bootstrap a Claude Code session as the human coordinator — reads config, shows status, starts a monitor loop, and primes the session for interventions. |
-| `/orchestra-init` | Interactively generate an `orchestra.yaml` from a short conversation about your project. |
-| `/orchestra-monitor` | Single-pass status dashboard — team progress, costs, live activity. Designed to run with `/loop` for continuous monitoring. |
+| `/orchestra-coord` | Bootstrap a session as the human coordinator — reads config, shows status, starts a monitor loop. |
+| `/orchestra-init` | Interactively generate an `orchestra.yaml` from a short conversation. |
+| `/orchestra-monitor` | Single-pass status dashboard (agent progress, costs, activity); pair with `/loop`. |
 
-> Older skills (`/orchestra-msg`, `/orchestra-inbox`) target the v2 file message bus and no longer function in v3. Use `mcp__orchestra__steer` and `mcp__orchestra__read_artifact` instead.
-
-## Solo vs Team Mode
-
-A team's mode is determined by the presence of `members`:
-
-- **Solo mode** (no `members`): The lead agent works through all tasks directly, runs verify commands, and produces a summary.
-- **Team-lead mode** (`members` present): The lead uses `TeamCreate` to spawn teammates, assigns 2-6 tasks each, runs them in parallel, verifies results, and iterates if needed.
-
-## Validation
-
-Orchestra performs two levels of validation:
-
-**Hard errors** (block execution):
-- Empty project name or team names
-- No teams or no tasks defined
-- Duplicate team names
-- `depends_on` referencing nonexistent teams
-- Self-dependencies
-- Dependency cycles (detected via DFS)
-
-**Soft warnings** (printed but don't block):
-- Team has > 5 members
-- Task/member ratio outside [2, 8]
-- Task missing `details` or `verify`
+The older `/orchestra-msg` and `/orchestra-inbox` skills targeted the v2 file message bus and no longer function; use `steer` and `read_artifact`.
 
 ## Workspace
 
-Running `orchestra run` creates an `.orchestra/` directory:
+`orchestra run` creates an `.orchestra/` directory. All writes are atomic (write `.tmp`, then `os.Rename`); concurrent access within a single run process is mutex-guarded.
 
 ```
 .orchestra/
-├── state.json          # Shared state: per-team status, results, token counts, duration
-├── registry.json       # Execution metadata: PIDs, session IDs, timestamps, live status
-├── coordinator/        # Coordinator decisions log (if enabled)
-├── results/
-│   └── <team>.json     # Full TeamResult per completed team
-├── logs/
-│   └── <team>.log      # Raw NDJSON stream from claude subprocess
-├── archive/
-│   └── <run-id>/       # Prior active run state, results, logs, messages
-└── messages/
-    ├── 0-human/inbox/  # Messages for the human operator
-    ├── 1-coordinator/  # Messages for the coordinator agent
-    ├── N-<team>/inbox/ # Per-team inboxes
-    └── shared/         # Broadcast artifacts
+├── state.json          # per-agent status, results, token counts, duration
+├── registry.json       # execution metadata: PIDs, session IDs, timestamps
+├── results/<agent>/    # per-agent result + summary.md inlined into downstream prompts
+├── artifacts/          # signal_completion(artifacts={...}) payloads
+├── logs/<agent>.log    # raw NDJSON stream from the agent
+└── archive/<run-id>/   # prior run state, results, logs
 ```
 
-All writes are atomic (write to `.tmp`, then `os.Rename`). Concurrent access within a single `orchestra run` process is protected by a mutex.
-
-## Development
+## Develop
 
 ```bash
-make build       # Build binary
-make test        # Run tests
-make vet         # Run go vet
-make clean       # Remove binary
-make install     # Build + install to $GOBIN
-make uninstall   # Remove from $GOBIN
+make build       # build ./orchestra
+make test        # go test ./...
+make test-race   # go test -race ./... (needs CGO)
+make vet         # go vet ./...
+make lint        # go vet + golangci-lint
+make check       # lint + test + build
+make install     # build + copy to $GOBIN
 ```
 
-### Testing
+The unit + integration suite covers config, DAG, injection, spawner, store, MCP, and the SDK. End-to-end tests build the real binary and drive a mock `claude` script emitting valid stream-json — the spawner is tested through its real code path, no interfaces or mocks. Live Managed Agents fixtures (`make e2e-ma*`) hit real Anthropic infrastructure, spend tokens, and are opt-in (see [TESTING.md](TESTING.md)).
 
-```bash
-go test ./...          # Unit + integration tests
-go test -race ./...    # With race detector
-go test -v ./e2e_test.go  # End-to-end tests only
-```
+## Docs
 
-The test suite covers config, DAG, injection, spawner, and workspace packages with unit tests, plus end-to-end tests that build the real binary and use a mock `claude` script emitting valid stream-json.
-
-The spawner is tested without mocks or interfaces — `SpawnOpts.Command` points at a shell script that emits realistic NDJSON, exercising the real code path.
-
-## Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| [cobra](https://github.com/spf13/cobra) | CLI framework |
-| [yaml.v3](https://gopkg.in/yaml.v3) | YAML config parsing |
-| [color](https://github.com/fatih/color) | Colored terminal output |
+| Doc | Contents |
+|-----|----------|
+| [docs/DESIGN-v3-composable-workflows.md](docs/DESIGN-v3-composable-workflows.md) | The v3 design: artifact substrate, steering, removal of the message bus and coordinator |
+| [docs/feedback-phase-a-dogfood.md](docs/feedback-phase-a-dogfood.md) | Self-dogfood findings that drove the phase-A polish |
+| [CHANGELOG.md](CHANGELOG.md) | Per-release public-surface changes (SDK is experimental) |
+| [TESTING.md](TESTING.md) | Test layout + live-MA cost estimates |
 
 ## License
 
