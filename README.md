@@ -15,14 +15,14 @@ orchestra run project.yaml
 
 ## Why it exists
 
-Orchestra is a DAG runner for agents and nothing more. Its job is: topologically sort agents into tiers, run a tier in parallel, inject completed-dependency output into the next tier's prompts, and persist run state. The core stays minimal and unopinionated on purpose — richer behavior ships as add-ons, not as core features.
+Orchestra is a focused DAG runner for agents. Its job is: topologically sort agents into tiers, run a tier in parallel, inject completed-dependency output into the next tier's prompts, and persist run state. The core stays minimal and unopinionated on purpose — richer behavior composes *around* it as add-ons rather than swelling the core. That's a bias toward a sharp core and sequencing, not a vow to stay small; the core earns the next capability when a real need shows up.
 
-What stays out of scope:
+Some jobs live outside the core by design — where they compose best, revisited as the work demands:
 
-- **No autonomous coordinator.** The v2 coordinator agent was removed. The chat-side LLM (driving via MCP) or a human plays coordinator. `coordinator: { enabled: true }` still parses but the spawn is suppressed with a deprecation warning.
-- **No general message bus.** The v2 file message bus is gone. Cross-agent data flows one way: an upstream agent's output is injected into downstream prompts. Structured payloads travel via `signal_completion(artifacts={...})`; the chat-side LLM reads them with `read_artifact`. A human nudges a running agent with `steer` / `orchestra msg`.
-- **No scheduler, no queue, no retries-as-a-service.** Orchestra runs a graph once and exits. Re-running and recurrence live in whatever drives it.
-- **No model/provider abstraction.** Agents are Claude — `claude -p` locally or Managed Agents remotely.
+- **Autonomous coordinator.** The v2 coordinator agent was removed; the chat-side LLM (driving via MCP) or a human plays coordinator. `coordinator: { enabled: true }` still parses but the spawn is suppressed with a deprecation warning. Coordination lives with whoever drives the run.
+- **General message bus.** The v2 file message bus is gone. Cross-agent data flows one way: an upstream agent's output is injected into downstream prompts. Structured payloads travel via `signal_completion(artifacts={...})`; the chat-side LLM reads them with `read_artifact`, and a human nudges a running agent with `steer` / `orchestra msg`. Free-form chat isn't the model today.
+- **Scheduling, queueing, retries.** Orchestra runs a graph once and exits; re-running and recurrence live in whatever drives it.
+- **Model/provider abstraction.** Agents are Claude — `claude -p` locally or Managed Agents remotely — until a second provider is a real requirement.
 
 ## Status
 
