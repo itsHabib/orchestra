@@ -124,7 +124,10 @@ func readArtifactOutputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"type":    map[string]any{"type": "string"},
+			"type": map[string]any{
+				"type": "string",
+				"enum": []string{"text", "json"},
+			},
 			"phase":   map[string]any{"type": "string"},
 			"content": map[string]any{"anyOf": contentTypes},
 		},

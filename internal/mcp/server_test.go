@@ -235,6 +235,14 @@ func assertReadArtifactSchemaIsConcrete(t *testing.T, schema any) {
 	if _, ok := content["anyOf"]; !ok {
 		t.Fatalf("read_artifact content schema missing anyOf: %#v", content)
 	}
+	typeSchema, ok := properties["type"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_artifact type schema = %T", properties["type"])
+	}
+	typeEnum, ok := typeSchema["enum"].([]any)
+	if !ok || len(typeEnum) != 2 || typeEnum[0] != "text" || typeEnum[1] != "json" {
+		t.Fatalf("read_artifact type enum = %#v", typeSchema["enum"])
+	}
 }
 
 func assertEmptyListRuns(ctx context.Context, t *testing.T, c *mcp.ClientSession) {
