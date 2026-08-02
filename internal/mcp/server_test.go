@@ -203,11 +203,37 @@ func assertToolsRegistered(ctx context.Context, t *testing.T, c *mcp.ClientSessi
 		if _, ok := want[tool.Name]; ok {
 			want[tool.Name] = true
 		}
+		if tool.Name == ToolReadArtifact {
+			assertReadArtifactSchemaIsConcrete(t, tool.OutputSchema)
+		}
 	}
 	for name, seen := range want {
 		if !seen {
 			t.Fatalf("ListTools missing %q", name)
 		}
+	}
+}
+
+func assertReadArtifactSchemaIsConcrete(t *testing.T, schema any) {
+	t.Helper()
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal read_artifact schema: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode read_artifact schema: %v", err)
+	}
+	properties, ok := decoded["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_artifact properties = %T", decoded["properties"])
+	}
+	content, ok := properties["content"].(map[string]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("read_artifact content schema must be concrete: %#v", properties["content"])
+	}
+	if _, ok := content["anyOf"]; !ok {
+		t.Fatalf("read_artifact content schema missing anyOf: %#v", content)
 	}
 }
 
