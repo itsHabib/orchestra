@@ -98,6 +98,7 @@ func (s *Server) registerTools() {
 		Description: "Read one artifact's content. Returns {type, phase?, content}; content is " +
 			"a JSON string for type=text and any JSON value for type=json. Discover " +
 			"valid (agent, key) pairs via get_artifacts or RunView.Agents[].Artifacts.",
+		OutputSchema: readArtifactOutputSchema(),
 	}, recoverHandler(s.handleReadArtifact))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
@@ -108,6 +109,30 @@ func (s *Server) registerTools() {
 			"error on local-backend runs (steering for backend: local is deferred to " +
 			"v3.x; restart the run with appended context as the workaround).",
 	}, recoverHandler(s.handleSteer))
+}
+
+// readArtifactOutputSchema spells out the otherwise-unrestricted Content
+// union. jsonschema-go infers an empty schema ({}) for an `any` field, which
+// is valid JSON Schema but rejected by Claude's MCP schema validator. Keeping
+// the union explicit preserves the API's arbitrary-JSON behavior while every
+// property schema remains concrete enough for strict clients.
+func readArtifactOutputSchema() map[string]any {
+	contentTypes := []any{}
+	for _, typ := range []string{"string", "object", "array", "number", "boolean", "null"} {
+		contentTypes = append(contentTypes, map[string]any{"type": typ})
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type": "string",
+				"enum": []string{"text", "json"},
+			},
+			"phase":   map[string]any{"type": "string"},
+			"content": map[string]any{"anyOf": contentTypes},
+		},
+		"required": []string{"type", "content"},
+	}
 }
 
 // recoverHandler wraps a typed tool handler with a deferred recover so a

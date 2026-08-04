@@ -307,16 +307,19 @@ func seedReadArtifactShapes(t *testing.T, fx artifactFixture) []readArtifactSeed
 	return seed
 }
 
-// resolvedReadArtifactSchema builds the inferred output schema the same way
-// the SDK does at AddTool time, then resolves it for validation. If Content
-// ever regresses to json.RawMessage (or anything else inferred as a typed
-// array), this schema will gain `items: integer` and validation against a
-// JSON-array artifact result will fail — the exact symptom the dogfood hit.
+// resolvedReadArtifactSchema builds the explicit output schema used at
+// AddTool time, then resolves it for validation. The schema must accept every
+// JSON shape without falling back to an empty property schema, which strict
+// MCP clients such as Claude reject while loading the tool list.
 func resolvedReadArtifactSchema(t *testing.T) *jsonschema.Resolved {
 	t.Helper()
-	schema, err := jsonschema.For[ReadArtifactResult](nil)
+	raw, err := json.Marshal(readArtifactOutputSchema())
 	if err != nil {
-		t.Fatalf("infer schema: %v", err)
+		t.Fatalf("marshal schema: %v", err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
 	}
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
