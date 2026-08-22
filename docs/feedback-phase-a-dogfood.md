@@ -7,7 +7,7 @@ Workflow shape (decided live with the user):
 - **Tier 2 — one reviewer** consumes all three designer summaries via dependency-context injection, produces a critique.
 - **Tier 3 — one synthesizer** picks the top 3 across the corpus, writes `docs/ideas/orchestra-future-2026-05-03.md` to `/workspace/repo`, commits + pushes its branch (auth via MA's `github_repository` resource using the host's `ghPAT`). Coordinator opens the PR post-run via host `gh` (we couldn't enable `open_pull_requests:true` for reasons in §Findings).
 
-Run id: `20260504T130908.059706400Z`. Workspace: `C:\Users\MichaelHabib\AppData\Local\orchestra\mcp-runs\20260504T130908.059706400Z\`.
+Run id: `20260504T130908.059706400Z`. Workspace: `%LOCALAPPDATA%\orchestra\mcp-runs\20260504T130908.059706400Z\`.
 
 The dogfood **prompt itself was the first thing that didn't work**, before agents even spawned. Findings below split between (A) Phase A wins worth keeping, (B) substrate gaps surfaced before the run, and (C) live observations.
 
