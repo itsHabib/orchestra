@@ -228,7 +228,7 @@ When frontend spawns, this state is injected into its prompt — so the frontend
 ```
 agent-orchestra/
 ├── main.go
-├── go.mod                          # module: github.com/michaelhabib/orchestra
+├── go.mod                          # module: github.com/itsHabib/orchestra
 ├── cmd/
 │   ├── root.go                     # cobra root command, global flags
 │   ├── validate.go                 # orchestra validate — parse + check config + print warnings
