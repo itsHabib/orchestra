@@ -1,24 +1,20 @@
 name: CI
 
+# No `paths:` filter, deliberately. `vet / test / lint` is a required check on
+# main, and a required check that is path-filtered never reports on a PR that
+# misses the filter — branch protection then blocks that PR forever. Any
+# docs-only or LICENSE-only change hit that wall.
+#
+# The usual workaround, a second workflow with the same job name under
+# `paths-ignore`, is worse: a PR touching Go *and* docs matches both, so two
+# check runs publish the same context. If the real run fails and the stub
+# passes after it, protection is satisfied with failing tests. Running the job
+# unconditionally costs a couple of runner-minutes on doc PRs and cannot lie.
 on:
   push:
     branches: [main]
-    paths:
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Makefile'
-      - '.golangci.yml'
-      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
-    paths:
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Makefile'
-      - '.golangci.yml'
-      - '.github/workflows/ci.yml'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
